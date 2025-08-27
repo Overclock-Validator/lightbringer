@@ -45,6 +45,7 @@ impl<const CAP: usize> ThreadManager<CAP> {
     pub fn join_with_cancel_handler(self, on_cancel: impl FnOnce() + 'static) {
         let tx = self.cancel_tx;
         ctrlc::set_handler(move || {
+            log::info!("Received CTRL+C, stopping");
             let cnt = tx.receiver_count();
             for _ in 0..cnt {
                 if let Err(e) = tx.send(()) {

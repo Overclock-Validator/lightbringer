@@ -28,7 +28,8 @@ impl GossipManager {
             bind_ip_addr: my_ip,
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
-            num_tvu_sockets: NonZeroUsize::new(1).unwrap(),
+            num_tvu_receive_sockets: NonZeroUsize::new(1).unwrap(),
+            num_tvu_retransmit_sockets: NonZeroUsize::new(1).unwrap(),
             num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
         };
 
