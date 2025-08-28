@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, net::SocketAddr};
 
+use base64::{Engine, prelude::BASE64_STANDARD};
 use ohkami::{IntoResponse, Json, Ohkami, Path, Response, Route, fang::Context};
 use solana_entry::entry::Entry;
 use solana_ledger::shred::{self, Shred, ShredType, Shredder};
@@ -122,10 +123,51 @@ async fn get_slot(
     Ok(Json(entries))
 }
 
+async fn get_data_shreds_sorted(
+    shred_store: Context<'_, ShredStore>,
+    Path(slot): Path<u64>,
+) -> Result<Json<Vec<String>>, RpcError> {
+    let shred_store = shred_store.0.clone();
+    // TODO: this blocks the current thread, we should probably implement a separate thread for fjall
+    // spawn_blocking can't be used with ohkami right now :|
+    let unsorted_shreds = shred_store.get_slot_shreds(slot)?;
+    let mut shreds_for_slot = BTreeMap::<u32, Vec<Shred>>::new();
+    log::info!("found {} shreds for slot", unsorted_shreds.len());
+
+    for shred in unsorted_shreds {
+        let deser =
+            Shred::new_from_serialized_shred(shred.to_vec()).map_err(RpcError::ShredDeser)?;
+        shreds_for_slot
+            .entry(deser.fec_set_index())
+            .or_default()
+            .push(deser);
+    }
+    let mut data_shreds = Vec::<String>::new();
+    for (batch_index, shred_list) in shreds_for_slot {
+        let coding = shred_list.iter().find_map(|s| match s {
+            Shred::ShredCode(c) => Some(c.coding_header()),
+            Shred::ShredData(_) => None,
+        });
+        log::info!(
+            "decoding {batch_index}, slot: {slot}, shreds_cnt {}, header: {coding:?}",
+            shred_list.len()
+        );
+        let (new_data_shreds, _coding_shreds) = process_shreds_with_recovery(shred_list)?;
+        data_shreds.extend(
+            new_data_shreds
+                .into_iter()
+                .map(|s| BASE64_STANDARD.encode(s.payload())),
+        );
+    }
+
+    Ok(Json(data_shreds))
+}
+
 pub async fn debug_rpc_listener(init: DebugRpcInit) {
     Ohkami::new((
         Context::new(init.shred_store),
         "/slot_entries/:slot".GET(get_slot),
+        "/raw_slot_entries/:slot".GET(get_data_shreds_sorted),
     ))
     .howl(init.listen_addr)
     .await
