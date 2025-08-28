@@ -107,10 +107,14 @@ async fn get_slot(
             Shred::ShredData(_) => None,
         });
         log::info!(
-            "decoding {batch_index}, slot: {slot}, shreds_cnt {}, shreds {shred_list:?}, header: {coding:?}",
+            "decoding {batch_index}, slot: {slot}, shreds_cnt {}, header: {coding:?}",
             shred_list.len()
         );
         let (data_shreds, _coding_shreds) = process_shreds_with_recovery(shred_list)?;
+        log::info!(
+            "deshreding {batch_index}, slot: {slot}, shreds {:?}",
+            data_shreds
+        );
         let mut new_entries = deshred_to_entries(&data_shreds)?;
         entries.append(&mut new_entries);
     }

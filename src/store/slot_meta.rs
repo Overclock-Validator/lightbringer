@@ -13,6 +13,7 @@ use glommio::{channels::local_channel, spawn_local, timer::TimerActionOnce};
 use kanal::AsyncReceiver;
 use lru::LruCache;
 use solana_ledger::shred::Shred;
+use solana_sdk::clock::Slot;
 
 use crate::{thread_manager::CancelRx, types::ShredInfo};
 
@@ -45,6 +46,12 @@ impl SlotMetadata {
 }
 
 fn store_slot_metadata(cache: &mut SlotMetaStore, shred: Shred) {}
+
+enum SlotMetaStoreRes {
+    Complete,
+    Incomplete,
+    Ignored,
+}
 
 #[derive(Clone)]
 pub struct SlotMetadataStore {
@@ -81,12 +88,13 @@ impl SlotMetadataStore {
                 };
 
                 let slot = deser_shred.slot();
-                let completed = self.store_shred(deser_shred).await;
-                _ = timer_tx.try_send(if completed {
-                    SlotTimerMsg::ShredCompletion { slot }
-                } else {
-                    SlotTimerMsg::ShredInsertion { slot }
-                });
+                let store_res = self.store_shred(deser_shred).await;
+                let timer_msg = match store_res {
+                    SlotMetaStoreRes::Ignored => continue,
+                    SlotMetaStoreRes::Complete => SlotTimerMsg::ShredCompletion { slot },
+                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
+                };
+                _ = timer_tx.try_send(timer_msg);
             }
         });
 
@@ -132,7 +140,7 @@ impl SlotMetadataStore {
     }
 
     // stores the shred, returning whether slots are complete or not
-    async fn store_shred(&self, shred: Shred) -> bool {
+    async fn store_shred(&self, shred: Shred) -> SlotMetaStoreRes {
         let slot = shred.slot();
         let fec_index = shred.fec_set_index();
         let shred_index = shred.index();
@@ -157,7 +165,7 @@ impl SlotMetadataStore {
                 });
         let shred_meta = shred_entry.get_mut();
         if shred_meta.is_complete() {
-            return true;
+            return SlotMetaStoreRes::Ignored;
         }
 
         let fec_map = match &shred {
@@ -204,6 +212,10 @@ impl SlotMetadataStore {
             shred_meta.completed_batches.insert(fec_index);
         }
 
-        shred_meta.is_complete()
+        if shred_meta.is_complete() {
+            SlotMetaStoreRes::Complete
+        } else {
+            SlotMetaStoreRes::Incomplete
+        }
     }
 }
