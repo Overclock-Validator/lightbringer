@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use ohkami::{IntoResponse, Json, Ohkami, Path, Response, Route, fang::Context};
 use solana_entry::entry::Entry;
-use solana_ledger::shred::{Shred, Shredder};
+use solana_ledger::shred::{self, Shred, ShredType, Shredder};
 use thiserror::Error;
 
 use crate::store::shred::ShredStore;
@@ -40,6 +40,47 @@ pub struct DebugRpcInit {
     pub shred_store: ShredStore,
 }
 
+pub fn sort_shreds_by_type(shreds: Vec<Shred>) -> (Vec<Shred>, Vec<Shred>) {
+    let mut data_shreds: Vec<Shred> = vec![];
+    let mut coding_shreds: Vec<Shred> = vec![];
+
+    for s in shreds {
+        if s.shred_type() == ShredType::Data {
+            data_shreds.push(s);
+        } else {
+            coding_shreds.push(s);
+        }
+    }
+
+    data_shreds.sort_by_key(|x| x.index());
+    coding_shreds.sort_by_key(|x| x.index());
+
+    (data_shreds, coding_shreds)
+}
+
+pub fn process_shreds_with_recovery(
+    shreds: Vec<Shred>,
+) -> Result<(Vec<Shred>, Vec<Shred>), RpcError> {
+    // Perform recovery on shreds
+    let recovery: Vec<Shred> = shred::recover(shreds.clone(), &Default::default())
+        .map_err(RpcError::ShredRecovery)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RpcError::ShredRecovery)?;
+
+    // Combine original and recovered shreds
+    let all_shreds: Vec<Shred> = [shreds, recovery].concat();
+
+    // Sort into data and coding shreds
+    Ok(sort_shreds_by_type(all_shreds))
+}
+
+pub fn deshred_to_entries(data_shreds: &[Shred]) -> Result<Vec<Entry>, RpcError> {
+    let shreds = data_shreds.iter().map(Shred::payload);
+    let deshred_payload = Shredder::deshred(shreds).map_err(RpcError::Deshred)?;
+    let deshred_entries: Vec<Entry> = bincode::deserialize(&deshred_payload)?;
+    Ok(deshred_entries)
+}
+
 async fn get_slot(
     shred_store: Context<'_, ShredStore>,
     Path(slot): Path<u64>,
@@ -53,12 +94,9 @@ async fn get_slot(
         .map(|raw_shred| Shred::new_from_serialized_shred(raw_shred.to_vec()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(RpcError::ShredDeser)?;
-    let recovered =
-        Shredder::try_recovery(shreds, &Default::default()).map_err(RpcError::ShredRecovery)?;
+    let (data_shreds, _coding_shreds) = process_shreds_with_recovery(shreds)?;
 
-    let raw_entries =
-        Shredder::deshred(recovered.iter().map(|s| s.payload())).map_err(RpcError::Deshred)?;
-    let entries: Vec<Entry> = bincode::deserialize(&raw_entries)?;
+    let entries = deshred_to_entries(&data_shreds)?;
 
     Ok(Json(entries))
 }
