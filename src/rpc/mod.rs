@@ -11,8 +11,12 @@ use crate::store::shred::ShredStore;
 pub enum RpcError {
     #[error("database error: {0}")]
     Fjall(#[from] fjall::Error),
-    #[error("invalid shreds for slot: {0}")]
-    InvalidShred(#[from] solana_ledger::shred::Error),
+    #[error("failed to deserialize shreds for slot: {0}")]
+    ShredDeser(solana_ledger::shred::Error),
+    #[error("failed to recover data shreds for slot: {0}")]
+    ShredRecovery(solana_ledger::shred::Error),
+    #[error("failed to deshred data shreds for slot: {0}")]
+    Deshred(solana_ledger::shred::Error),
     #[error("failed to deserialize entries: {0}")]
     InvalidEntries(#[from] bincode::Error),
 }
@@ -20,9 +24,13 @@ pub enum RpcError {
 impl IntoResponse for RpcError {
     fn into_response(self) -> Response {
         match self {
-            Self::Fjall(_) => Response::InternalServerError().with_text(self.to_string()),
-            Self::InvalidShred(_) => Response::InternalServerError().with_text(self.to_string()),
-            Self::InvalidEntries(_) => Response::InternalServerError().with_text(self.to_string()),
+            Self::Fjall(_)
+            | Self::ShredDeser(_)
+            | Self::ShredRecovery(_)
+            | Self::Deshred(_)
+            | Self::InvalidEntries(_) => {
+                Response::InternalServerError().with_text(self.to_string())
+            }
         }
     }
 }
@@ -43,10 +51,13 @@ async fn get_slot(
         .get_slot_shreds(slot)?
         .into_iter()
         .map(|raw_shred| Shred::new_from_serialized_shred(raw_shred.to_vec()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let recovered = Shredder::try_recovery(shreds, &Default::default())?;
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RpcError::ShredDeser)?;
+    let recovered =
+        Shredder::try_recovery(shreds, &Default::default()).map_err(RpcError::ShredRecovery)?;
 
-    let raw_entries = Shredder::deshred(recovered.iter().map(|s| s.payload()))?;
+    let raw_entries =
+        Shredder::deshred(recovered.iter().map(|s| s.payload())).map_err(RpcError::Deshred)?;
     let entries: Vec<Entry> = bincode::deserialize(&raw_entries)?;
 
     Ok(Json(entries))
