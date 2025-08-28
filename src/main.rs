@@ -92,6 +92,7 @@ fn main() {
     let persist_ks = lsm_ks.clone();
 
     let gossip = GossipManager::new(args.entrypoint).unwrap();
+    let version = gossip.version;
 
     let mut threadpool = ThreadManager::<5>::new();
 
@@ -117,12 +118,12 @@ fn main() {
         }
     });
 
-    let shred_store = ShredStore::new(&lsm_ks).unwrap();
+    let shred_store = ShredStore::new(&lsm_ks, version).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.packet_listener_loop(exit, slot_store_rx)),
     );
 
-    let slot_meta_store = SlotMetadataStore::default();
+    let slot_meta_store = SlotMetadataStore::new(version);
     threadpool.spawn(move |exit| slot_meta_store.packet_listener_loop(exit, slot_meta_rx));
 
     threadpool.spawn_rpc_with_cancel_handler(

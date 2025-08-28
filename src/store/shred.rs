@@ -17,14 +17,16 @@ pub struct ShredRes {
 #[derive(Clone)]
 pub struct ShredStore {
     shred_partition: fjall::Partition,
+    version: u16,
 }
 
 impl ShredStore {
-    pub fn new(keyspace: &fjall::Keyspace) -> anyhow::Result<Self> {
+    pub fn new(keyspace: &fjall::Keyspace, version: u16) -> anyhow::Result<Self> {
         let partition = keyspace.open_partition("shred_store", Default::default())?;
 
         Ok(Self {
             shred_partition: partition,
+            version,
         })
     }
 
@@ -38,6 +40,9 @@ impl ShredStore {
                 };
                 let slot = deser_shred.slot();
                 let index = deser_shred.index();
+                if deser_shred.version() != self.version {
+                    continue;
+                }
 
                 let this = self.clone();
                 spawn_local(executor.spawn_blocking(move || {

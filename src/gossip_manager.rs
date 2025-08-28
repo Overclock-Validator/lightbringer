@@ -21,6 +21,7 @@ pub struct GossipManager {
     exit: Arc<AtomicBool>,
     gossip_service: GossipService,
     cluster_info: Arc<ClusterInfo>,
+    pub version: u16,
 }
 
 impl GossipManager {
@@ -69,6 +70,7 @@ impl GossipManager {
             exit,
             gossip_service,
             cluster_info,
+            version: ep_shred_version,
         })
     }
 

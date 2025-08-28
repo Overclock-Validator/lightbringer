@@ -56,16 +56,7 @@ enum SlotMetaStoreRes {
 #[derive(Clone)]
 pub struct SlotMetadataStore {
     inner: Arc<scc::HashCache<u64, SlotMetadata>>,
-}
-
-impl Default for SlotMetadataStore {
-    fn default() -> Self {
-        // stores the last 4096 slots only
-        let hash_cache = scc::HashCache::with_capacity(0, 4096);
-        Self {
-            inner: Arc::new(hash_cache),
-        }
-    }
+    version: u16,
 }
 
 enum SlotTimerMsg {
@@ -75,10 +66,19 @@ enum SlotTimerMsg {
 }
 
 impl SlotMetadataStore {
+    pub fn new(version: u16) -> Self {
+        // stores the last 4096 slots only
+        let hash_cache = scc::HashCache::with_capacity(0, 4096);
+        Self {
+            inner: Arc::new(hash_cache),
+            version,
+        }
+    }
     pub async fn packet_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<ShredInfo>) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();
         let timer_tx = Rc::new(timer_tx);
 
+        let shred_version = self.version;
         let meta_timer_tx = timer_tx.clone();
         let metadata_handler_task = spawn_local(async move {
             let timer_tx = meta_timer_tx.clone();
@@ -86,6 +86,9 @@ impl SlotMetadataStore {
                 let Ok(deser_shred) = Shred::new_from_serialized_shred(shred.to_vec()) else {
                     continue;
                 };
+                if deser_shred.version() != shred_version {
+                    continue;
+                }
 
                 let slot = deser_shred.slot();
                 let store_res = self.store_shred(deser_shred).await;
