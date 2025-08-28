@@ -98,7 +98,7 @@ impl ShredStore {
         Ok(res)
     }
 
-    pub fn get_slot_shreds(&self, slot: u64) -> anyhow::Result<Vec<ShredInfoView>> {
+    pub fn get_slot_shreds(&self, slot: u64) -> fjall::Result<Vec<ShredInfoView>> {
         let mut shred_prefix = [0; 8];
         shred_prefix[0..8].copy_from_slice(&slot.to_le_bytes());
 

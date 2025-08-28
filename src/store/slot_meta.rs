@@ -103,9 +103,11 @@ impl SlotMetadataStore {
                         if let Some(timer) = timers.remove(&slot) {
                             timer.destroy();
                         }
+                        log::debug!("slot {slot} has all shreds!");
                     }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
+                        log::debug!("slot {slot} has timed out, need to send to repair!");
                         // TODO: send to repair manager
                     }
                 }
