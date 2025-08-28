@@ -90,6 +90,7 @@ async fn get_slot(
     // spawn_blocking can't be used with ohkami right now :|
     let unsorted_shreds = shred_store.get_slot_shreds(slot)?;
     let mut shreds_for_slot = HashMap::<u32, Vec<Shred>>::new();
+    log::info!("found {} shreds for slot", unsorted_shreds.len());
 
     for shred in unsorted_shreds {
         let deser =
@@ -100,7 +101,15 @@ async fn get_slot(
             .push(deser);
     }
     let mut entries = Vec::<Entry>::new();
-    for (_, shred_list) in shreds_for_slot {
+    for (batch_index, shred_list) in shreds_for_slot {
+        let coding = shred_list.iter().find_map(|s| match s {
+            Shred::ShredCode(c) => Some(c.coding_header()),
+            Shred::ShredData(_) => None,
+        });
+        log::info!(
+            "decoding {batch_index}, slot: {slot}, shreds_cnt {}, shreds {shred_list:?}, header: {coding:?}",
+            shred_list.len()
+        );
         let (data_shreds, _coding_shreds) = process_shreds_with_recovery(shred_list)?;
         let mut new_entries = deshred_to_entries(&data_shreds)?;
         entries.append(&mut new_entries);
