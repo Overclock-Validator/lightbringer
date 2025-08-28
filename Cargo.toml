@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-solana-gossip = "2.2.1"
-solana-sdk = "2.2.1"
-solana-streamer = "2.2.1"
-solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "5cb66c1dc49a3e1ddbdaec4875fcac3960f238b6" }
-solana-entry = "2.2.1"
-solana-net-utils = "2.2.1"
+solana-gossip = "2.3.7"
+solana-sdk = "2.3.1"
+solana-streamer = "2.3.7"
+solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "886782a443cabe9aedf0f1deea358a4a983ffb5d" }
+solana-entry = "2.3.7"
+solana-net-utils = "2.3.7"
 signal-hook = "0.3"
 libc = "0.2.171"
 heapless = "0.8.0"

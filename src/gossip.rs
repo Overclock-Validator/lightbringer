@@ -1,5 +1,5 @@
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::num::NonZeroUsize;
+use std::num::{NonZero, NonZeroUsize};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 use solana_gossip::cluster_info::{ClusterInfo, Node, NodeConfig};
@@ -46,11 +46,16 @@ impl GossipManager {
             bind_ip_addr: my_ip,
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
-            num_tvu_sockets: NonZeroUsize::new(1).unwrap(),
+            num_tvu_receive_sockets: NonZeroUsize::new(1).unwrap(),
+            num_tvu_retransmit_sockets: NonZeroUsize::new(1).unwrap(),
             num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
         };
 
-        let node = Node::new_with_external_ip(&keypair.pubkey(), node_config);
+        let ep_shred_version = solana_net_utils::get_cluster_shred_version(&gossip_entry)?;
+
+        let mut node = Node::new_with_external_ip(&keypair.pubkey(), node_config);
+        node.info.set_shred_version(ep_shred_version);
+
         let mut cluster_info = ClusterInfo::new(
             node.info.clone(),
             keypair.clone(),
