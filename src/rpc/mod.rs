@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use ohkami::{IntoResponse, Json, Ohkami, Path, Response, Route, fang::Context};
 use solana_entry::entry::Entry;
@@ -89,7 +89,7 @@ async fn get_slot(
     // TODO: this blocks the current thread, we should probably implement a separate thread for fjall
     // spawn_blocking can't be used with ohkami right now :|
     let unsorted_shreds = shred_store.get_slot_shreds(slot)?;
-    let mut shreds_for_slot = HashMap::<u32, Vec<Shred>>::new();
+    let mut shreds_for_slot = BTreeMap::<u32, Vec<Shred>>::new();
     log::info!("found {} shreds for slot", unsorted_shreds.len());
 
     for shred in unsorted_shreds {

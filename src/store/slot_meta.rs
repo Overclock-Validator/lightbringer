@@ -3,7 +3,7 @@
 // FOR later: investigate queues
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -17,6 +17,7 @@ use solana_ledger::shred::Shred;
 use crate::{thread_manager::CancelRx, types::ShredInfo};
 
 pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_secs(200);
+const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
 pub struct FecMetadata {
     pub num_data_shreds: u16,
@@ -33,7 +34,14 @@ pub struct SlotMetadata {
     pub fec_coding_map: FecMap,
     pub fec_meta: FecInfoMap,
     pub timestamp_ms: u64,
-    pub last_fec_set: Option<u32>,
+    pub completed_batches: HashSet<u32>,
+    pub required_batches: Option<usize>,
+}
+
+impl SlotMetadata {
+    pub fn is_complete(&self) -> bool {
+        Some(self.completed_batches.len()) == self.required_batches
+    }
 }
 
 fn store_slot_metadata(cache: &mut SlotMetaStore, shred: Shred) {}
@@ -144,14 +152,20 @@ impl SlotMetadataStore {
                     fec_coding_map: HashMap::new(),
                     fec_meta: HashMap::new(),
                     timestamp_ms,
-                    last_fec_set: None,
+                    completed_batches: HashSet::new(),
+                    required_batches: None,
                 });
         let shred_meta = shred_entry.get_mut();
+        if shred_meta.is_complete() {
+            return true;
+        }
 
         let fec_map = match &shred {
             Shred::ShredData(_) => {
                 if shred.last_in_slot() {
-                    shred_meta.last_fec_set = Some(fec_index);
+                    shred_meta.required_batches = Some(
+                        (fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET,
+                    );
                 }
                 &mut shred_meta.fec_data_map
             }
@@ -175,12 +189,21 @@ impl SlotMetadataStore {
             .push(shred_index);
         shred_meta.timestamp_ms = timestamp_ms;
 
-        let shred_cnt = shred_meta.fec_data_map.len() + shred_meta.fec_coding_map.len();
-        shred_meta
-            .fec_meta
-            .values()
-            .next()
-            .map(|header| shred_cnt >= header.num_data_shreds as usize)
+        let completed_batch = shred_meta
+            .fec_coding_map
+            .get(&fec_index)
+            .map(|m| m.len())
             .unwrap_or_default()
+            + shred_meta
+                .fec_data_map
+                .get(&fec_index)
+                .map(|m| m.len())
+                .unwrap_or_default()
+            >= DATA_SHREDS_PER_FEC_SET;
+        if completed_batch {
+            shred_meta.completed_batches.insert(fec_index);
+        }
+
+        shred_meta.is_complete()
     }
 }
