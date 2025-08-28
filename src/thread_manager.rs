@@ -50,7 +50,7 @@ impl<const CAP: usize> ThreadManager<CAP> {
             panic!("RPC thread must be started in the end");
         }
 
-        let cancel_tx = self.cancel_tx;
+        let cancel_tx = self.cancel_tx.clone();
         let handle = LocalExecutorBuilder::default()
             .spawn(move || async move {
                 debug_rpc_listener(init_args).await;
