@@ -1,17 +1,22 @@
-use std::net::SocketAddr;
 use anyhow::anyhow;
+use std::net::SocketAddr;
 
 use arrayvec::ArrayVec;
-use futures::{select_biased, FutureExt};
-use glommio::{net::UdpSocket, spawn_local, spawn_scoped_local};
+use glommio::{net::UdpSocket, spawn_local};
 use solana_sdk::packet;
 
 use crate::{thread_manager::CancelRx, types::ShredInfo};
 
 const BUFFER_SIZE: usize = packet::PACKET_DATA_SIZE;
 
-pub async fn start_turbine_manager(exit: CancelRx, addr: SocketAddr, slot_store_tx: kanal::AsyncSender<ShredInfo>, slot_meta_tx: kanal::AsyncSender<ShredInfo>) -> anyhow::Result<()> {
-    let socket = UdpSocket::bind(addr).map_err(|e| anyhow!("failed to create turbine socket {e}"))?;
+pub async fn start_turbine_manager(
+    exit: CancelRx,
+    addr: SocketAddr,
+    slot_store_tx: kanal::AsyncSender<ShredInfo>,
+    slot_meta_tx: kanal::AsyncSender<ShredInfo>,
+) -> anyhow::Result<()> {
+    let socket =
+        UdpSocket::bind(addr).map_err(|e| anyhow!("failed to create turbine socket {e}"))?;
 
     let packet_task = spawn_local(async move {
         loop {

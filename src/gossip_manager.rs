@@ -1,7 +1,18 @@
-use std::{net::SocketAddr, num::NonZeroUsize, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::{
+    net::SocketAddr,
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::anyhow;
-use solana_gossip::{cluster_info::{ClusterInfo, Node, NodeConfig}, contact_info::ContactInfo, gossip_service::GossipService};
+use solana_gossip::{
+    cluster_info::{ClusterInfo, Node, NodeConfig},
+    contact_info::ContactInfo,
+    gossip_service::GossipService,
+};
 use solana_net_utils::get_public_ip_addr;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 use solana_streamer::socket::SocketAddrSpace;
@@ -16,11 +27,10 @@ impl GossipManager {
     pub fn new(gossip_entry: SocketAddr) -> anyhow::Result<Self> {
         let keypair = Arc::new(Keypair::new());
 
-        let cluster_entrypoints = vec![
-            ContactInfo::new_gossip_entry_point(&gossip_entry),
-        ];
+        let cluster_entrypoints = vec![ContactInfo::new_gossip_entry_point(&gossip_entry)];
 
-        let my_ip = get_public_ip_addr(&gossip_entry).map_err(|e| anyhow!("Failed to get public IP: {}", e))?;
+        let my_ip = get_public_ip_addr(&gossip_entry)
+            .map_err(|e| anyhow!("Failed to get public IP: {}", e))?;
         let gossip_addr = SocketAddr::new(my_ip, 65509);
         let node_config = NodeConfig {
             gossip_addr,
@@ -33,15 +43,13 @@ impl GossipManager {
             num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
         };
 
-        let ep_shred_version = solana_net_utils::get_cluster_shred_version(&gossip_entry).map_err(|e| anyhow!("Failed to fetch shred version from entrypoint {e}"))?;
+        let ep_shred_version = solana_net_utils::get_cluster_shred_version(&gossip_entry)
+            .map_err(|e| anyhow!("Failed to fetch shred version from entrypoint {e}"))?;
 
         let mut node = Node::new_with_external_ip(&keypair.pubkey(), node_config);
         node.info.set_shred_version(ep_shred_version);
-        let mut cluster_info = ClusterInfo::new(
-            node.info.clone(),
-            keypair.clone(),
-            SocketAddrSpace::Global,
-        );
+        let mut cluster_info =
+            ClusterInfo::new(node.info.clone(), keypair.clone(), SocketAddrSpace::Global);
         cluster_info.set_contact_debug_interval(10_000);
         cluster_info.set_entrypoints(cluster_entrypoints);
 
@@ -64,7 +72,6 @@ impl GossipManager {
         })
     }
 
-
     pub fn lookup_my_info(&self) -> ContactInfo {
         self.cluster_info.my_contact_info()
     }
@@ -84,7 +91,9 @@ impl GossipManager {
     pub fn stop(self) -> anyhow::Result<()> {
         self.exit.store(true, Ordering::Relaxed);
 
-        self.gossip_service.join().map_err(|_| anyhow!("Failed to join gossip service"))?;
+        self.gossip_service
+            .join()
+            .map_err(|_| anyhow!("Failed to join gossip service"))?;
 
         Ok(())
     }

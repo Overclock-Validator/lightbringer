@@ -2,12 +2,17 @@
 // we'll use scc::HashMap
 // FOR later: investigate queues
 
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::HashMap,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use glommio::{channels::local_channel, spawn_local, timer::TimerActionOnce};
 use kanal::AsyncReceiver;
 use lru::LruCache;
-use solana_ledger::shred::{Shred, ShredType};
+use solana_ledger::shred::Shred;
 
 use crate::{thread_manager::CancelRx, types::ShredInfo};
 
@@ -31,16 +36,11 @@ pub struct SlotMetadata {
     pub last_fec_set: Option<u32>,
 }
 
-fn store_slot_metadata(
-    cache: &mut SlotMetaStore,
-    shred: Shred, 
-) {
-
-}
+fn store_slot_metadata(cache: &mut SlotMetaStore, shred: Shred) {}
 
 #[derive(Clone)]
 pub struct SlotMetadataStore {
-    inner: Arc<scc::HashCache<u64, SlotMetadata>>
+    inner: Arc<scc::HashCache<u64, SlotMetadata>>,
 }
 
 impl Default for SlotMetadataStore {
@@ -54,15 +54,9 @@ impl Default for SlotMetadataStore {
 }
 
 enum SlotTimerMsg {
-    ShredInsertion {
-        slot: u64,
-    },
-    ShredCompletion {
-        slot: u64,
-    },
-    ShredTimeout {
-        slot: u64,
-    }
+    ShredInsertion { slot: u64 },
+    ShredCompletion { slot: u64 },
+    ShredTimeout { slot: u64 },
 }
 
 impl SlotMetadataStore {
@@ -93,23 +87,23 @@ impl SlotMetadataStore {
             while let Some(msg) = timer_rx.recv().await {
                 match msg {
                     SlotTimerMsg::ShredInsertion { slot } => {
-                        timers.entry(slot).and_modify(|timer| {
-                            timer.rearm_in(DEFER_REPAIR_THRESHOLD);
-                        }).or_insert_with(|| {
-                            let timer_tx = timer_tx.clone();
-                            TimerActionOnce::do_in(
-                                DEFER_REPAIR_THRESHOLD,
-                                async move {
+                        timers
+                            .entry(slot)
+                            .and_modify(|timer| {
+                                timer.rearm_in(DEFER_REPAIR_THRESHOLD);
+                            })
+                            .or_insert_with(|| {
+                                let timer_tx = timer_tx.clone();
+                                TimerActionOnce::do_in(DEFER_REPAIR_THRESHOLD, async move {
                                     _ = timer_tx.send(SlotTimerMsg::ShredTimeout { slot }).await;
-                                } 
-                            )
-                        });
-                    },
+                                })
+                            });
+                    }
                     SlotTimerMsg::ShredCompletion { slot } => {
                         if let Some(timer) = timers.remove(&slot) {
                             timer.destroy();
                         }
-                    },
+                    }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
                         // TODO: send to repair manager
@@ -118,30 +112,35 @@ impl SlotMetadataStore {
             }
         });
         exit.await;
-        futures::join!(metadata_handler_task.cancel(), staleness_monitor_task.cancel());
+        futures::join!(
+            metadata_handler_task.cancel(),
+            staleness_monitor_task.cancel()
+        );
     }
 
     // stores the shred, returning whether slots are complete or not
-    async fn store_shred(
-        &self,
-        shred: Shred
-    ) -> bool {
+    async fn store_shred(&self, shred: Shred) -> bool {
         let slot = shred.slot();
         let fec_index = shred.fec_set_index();
-        let shred_index = shred.index();  
+        let shred_index = shred.index();
 
-        let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
 
-        let (_, mut shred_entry) = self.inner.entry_async(slot).await.or_put_with(|| {
-            SlotMetadata {
-                slot_num: slot,
-                fec_data_map: HashMap::new(),
-                fec_coding_map: HashMap::new(),
-                fec_meta: HashMap::new(),
-                timestamp_ms,
-                last_fec_set: None,
-            }
-        });
+        let (_, mut shred_entry) =
+            self.inner
+                .entry_async(slot)
+                .await
+                .or_put_with(|| SlotMetadata {
+                    slot_num: slot,
+                    fec_data_map: HashMap::new(),
+                    fec_coding_map: HashMap::new(),
+                    fec_meta: HashMap::new(),
+                    timestamp_ms,
+                    last_fec_set: None,
+                });
         let shred_meta = shred_entry.get_mut();
 
         let fec_map = match &shred {
@@ -150,7 +149,7 @@ impl SlotMetadataStore {
                     shred_meta.last_fec_set = Some(fec_index);
                 }
                 &mut shred_meta.fec_data_map
-            },
+            }
             Shred::ShredCode(code_shred) => {
                 if !shred_meta.fec_meta.contains_key(&shred.fec_set_index()) {
                     let header = code_shred.coding_header();
@@ -159,7 +158,7 @@ impl SlotMetadataStore {
                         FecMetadata {
                             num_coding_shreds: header.num_coding_shreds,
                             num_data_shreds: header.num_data_shreds,
-                        }
+                        },
                     );
                 }
                 &mut shred_meta.fec_coding_map
@@ -172,8 +171,11 @@ impl SlotMetadataStore {
         shred_meta.timestamp_ms = timestamp_ms;
 
         let shred_cnt = shred_meta.fec_data_map.len() + shred_meta.fec_coding_map.len();
-        shred_meta.fec_meta.values().next().map(|header| {
-            shred_cnt >= header.num_data_shreds as usize
-        }).unwrap_or_default()
+        shred_meta
+            .fec_meta
+            .values()
+            .next()
+            .map(|header| shred_cnt >= header.num_data_shreds as usize)
+            .unwrap_or_default()
     }
 }

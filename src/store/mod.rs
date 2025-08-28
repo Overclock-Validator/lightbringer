@@ -1,2 +1,2 @@
-pub mod slot_meta;
 pub mod shred;
+pub mod slot_meta;

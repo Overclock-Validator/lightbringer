@@ -1,12 +1,11 @@
-use std::collections::HashMap;
-
 use glommio::{executor, spawn_local};
 use kanal::AsyncReceiver;
-use rkyv::{access_mut, rancor, util::AlignedVec, Archive, Deserialize, Serialize};
 use solana_ledger::shred::{Shred, ShredType};
-use solana_sdk::packet;
 
-use crate::{thread_manager::CancelRx, types::{ShredInfo, ShredInfoView}};
+use crate::{
+    thread_manager::CancelRx,
+    types::{ShredInfo, ShredInfoView},
+};
 
 pub struct ShredRes {
     data: Option<ShredInfoView>,
@@ -17,7 +16,7 @@ pub struct ShredRes {
 // TODO: use a more efficient storage format in memory (Storing all coding shreds & data shreds vs Reconstructing from 32 shreds)
 #[derive(Clone)]
 pub struct ShredStore {
-    shred_partition: fjall::Partition
+    shred_partition: fjall::Partition,
 }
 
 impl ShredStore {
@@ -42,16 +41,12 @@ impl ShredStore {
 
                 let this = self.clone();
                 spawn_local(executor.spawn_blocking(move || {
-                    let res = this.store_shred(
-                        slot,
-                        index,
-                        shred,
-                        deser_shred.shred_type(),
-                    );
+                    let res = this.store_shred(slot, index, shred, deser_shred.shred_type());
                     if let Err(e) = res {
                         log::warn!("failed to store shred {e}");
                     }
-                })).detach();
+                }))
+                .detach();
             }
             log::warn!("shred store thread died?!")
         });
@@ -59,20 +54,26 @@ impl ShredStore {
         task.cancel().await;
     }
 
-    fn store_shred(&self, slot: u64, shred_index: u32, shred: ShredInfo, shred_type: ShredType) -> anyhow::Result<()> {
+    fn store_shred(
+        &self,
+        slot: u64,
+        shred_index: u32,
+        shred: ShredInfo,
+        shred_type: ShredType,
+    ) -> anyhow::Result<()> {
         // slot_number::le_bytes | shred_index::le_bytes | shred_type
         let mut key = [0; 13];
         key[0..8].copy_from_slice(&slot.to_le_bytes());
         key[8..12].copy_from_slice(&shred_index.to_le_bytes());
         key[12] = shred_type as u8;
 
-        self.shred_partition.insert(&key, shred.as_slice())?;
+        self.shred_partition.insert(key, shred.as_slice())?;
 
         Ok(())
     }
 
     pub fn get_shred(&self, slot: u64, shred_index: u32) -> anyhow::Result<ShredRes> {
-        let mut shred_prefix = [0; 12]; 
+        let mut shred_prefix = [0; 12];
         shred_prefix[0..8].copy_from_slice(&slot.to_le_bytes());
         shred_prefix[8..12].copy_from_slice(&shred_index.to_le_bytes());
 
@@ -98,10 +99,12 @@ impl ShredStore {
     }
 
     pub fn get_slot_shreds(&self, slot: u64) -> anyhow::Result<Vec<ShredInfoView>> {
-        let mut shred_prefix = [0; 8]; 
+        let mut shred_prefix = [0; 8];
         shred_prefix[0..8].copy_from_slice(&slot.to_le_bytes());
 
-        let res = self.shred_partition.prefix(&shred_prefix)
+        let res = self
+            .shred_partition
+            .prefix(&shred_prefix)
             .map(|shred_res| shred_res.map(|(_, v)| v))
             .collect::<fjall::Result<_>>()?;
 

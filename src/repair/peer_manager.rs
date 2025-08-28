@@ -1,6 +1,10 @@
-use std::{collections::HashMap, net::{IpAddr, SocketAddr}, pin::pin, sync::Arc, time::{Duration, SystemTime}};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
-use futures::{select_biased, FutureExt};
 use glommio::spawn_local;
 use solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol};
 
@@ -35,22 +39,35 @@ pub async fn start_repair_peer_manager(exit: CancelRx, cluster_info: Arc<Cluster
                     continue;
                 };
                 let ip = peer_repair_addr.ip();
-                repair_peers.insert(ip, RepairPeerInfo {
-                    socket_addr: peer_repair_addr,
-                    last_seen: now,
-                });
+                repair_peers.insert(
+                    ip,
+                    RepairPeerInfo {
+                        socket_addr: peer_repair_addr,
+                        last_seen: now,
+                    },
+                );
             }
 
-            log::info!("Refreshed repair peers. Current count: {}", repair_peers.len());
+            log::info!(
+                "Refreshed repair peers. Current count: {}",
+                repair_peers.len()
+            );
 
             glommio::timer::sleep(REFRESH_INTERVAL).await;
-        
+
             #[cfg(feature = "debug")]
             {
                 for (ip, info) in repair_peers.iter() {
-                    let duration = SystemTime::now().duration_since(info.last_seen).unwrap_or(Duration::from_secs(0));
-                    log::debug!("Repair Peer, IP: {}, Address: {:?}, Last seen: {} seconds ago", ip, info.socket_addr, duration.as_secs());
-                } 
+                    let duration = SystemTime::now()
+                        .duration_since(info.last_seen)
+                        .unwrap_or(Duration::from_secs(0));
+                    log::debug!(
+                        "Repair Peer, IP: {}, Address: {:?}, Last seen: {} seconds ago",
+                        ip,
+                        info.socket_addr,
+                        duration.as_secs()
+                    );
+                }
             }
         }
     });
