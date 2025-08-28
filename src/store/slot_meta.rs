@@ -83,10 +83,13 @@ impl SlotMetadataStore {
         });
 
         let staleness_monitor_task = spawn_local(async move {
+            log::info!("started staleness monitor");
             let mut timers: HashMap<u64, TimerActionOnce<()>> = HashMap::new();
             while let Some(msg) = timer_rx.recv().await {
+                log::info!("received slot timer message");
                 match msg {
                     SlotTimerMsg::ShredInsertion { slot } => {
+                        log::info!("updating timer for slot {slot}");
                         timers
                             .entry(slot)
                             .and_modify(|timer| {
@@ -103,11 +106,11 @@ impl SlotMetadataStore {
                         if let Some(timer) = timers.remove(&slot) {
                             timer.destroy();
                         }
-                        log::debug!("slot {slot} has all shreds!");
+                        log::info!("slot {slot} has all shreds!");
                     }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
-                        log::debug!("slot {slot} has timed out, need to send to repair!");
+                        log::info!("[UNIMPLIMENTED] slot {slot} has timed out, need to send to repair!");
                         // TODO: send to repair manager
                     }
                 }

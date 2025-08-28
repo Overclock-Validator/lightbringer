@@ -50,6 +50,7 @@ fn init_logger() -> Result<(), log::SetLoggerError> {
             }
         })
         .with_module_level("solana_metrics", log::LevelFilter::Warn)
+        .with_module_level("solana_gossip::cluster_info", log::LevelFilter::Warn)
         .init()
 }
 
