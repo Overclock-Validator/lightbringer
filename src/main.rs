@@ -49,7 +49,7 @@ fn init_logger() -> Result<(), log::SetLoggerError> {
                 log::LevelFilter::Info
             }
         })
-        .with_module_level("solana_metrics", log::LevelFilter::Info)
+        .with_module_level("solana_metrics", log::LevelFilter::Warn)
         .init()
 }
 
