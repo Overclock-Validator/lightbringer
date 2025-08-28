@@ -74,7 +74,7 @@ impl SlotMetadataStore {
 
                 let slot = deser_shred.slot();
                 let completed = self.store_shred(deser_shred).await;
-                _ = timer_tx.send(if completed {
+                _ = timer_tx.try_send(if completed {
                     SlotTimerMsg::ShredCompletion { slot }
                 } else {
                     SlotTimerMsg::ShredInsertion { slot }
@@ -110,7 +110,9 @@ impl SlotMetadataStore {
                     }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
-                        log::info!("[UNIMPLIMENTED] slot {slot} has timed out, need to send to repair!");
+                        log::info!(
+                            "[UNIMPLIMENTED] slot {slot} has timed out, need to send to repair!"
+                        );
                         // TODO: send to repair manager
                     }
                 }
