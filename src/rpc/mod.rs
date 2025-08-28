@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 use ohkami::{IntoResponse, Json, Ohkami, Path, Response, Route, fang::Context};
 use solana_entry::entry::Entry;
@@ -88,15 +88,23 @@ async fn get_slot(
     let shred_store = shred_store.0.clone();
     // TODO: this blocks the current thread, we should probably implement a separate thread for fjall
     // spawn_blocking can't be used with ohkami right now :|
-    let shreds = shred_store
-        .get_slot_shreds(slot)?
-        .into_iter()
-        .map(|raw_shred| Shred::new_from_serialized_shred(raw_shred.to_vec()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(RpcError::ShredDeser)?;
-    let (data_shreds, _coding_shreds) = process_shreds_with_recovery(shreds)?;
+    let unsorted_shreds = shred_store.get_slot_shreds(slot)?;
+    let mut shreds_for_slot = HashMap::<u32, Vec<Shred>>::new();
 
-    let entries = deshred_to_entries(&data_shreds)?;
+    for shred in unsorted_shreds {
+        let deser =
+            Shred::new_from_serialized_shred(shred.to_vec()).map_err(RpcError::ShredDeser)?;
+        shreds_for_slot
+            .entry(deser.fec_set_index())
+            .or_default()
+            .push(deser);
+    }
+    let mut entries = Vec::<Entry>::new();
+    for (_, shred_list) in shreds_for_slot {
+        let (data_shreds, _coding_shreds) = process_shreds_with_recovery(shred_list)?;
+        let mut new_entries = deshred_to_entries(&data_shreds)?;
+        entries.append(&mut new_entries);
+    }
 
     Ok(Json(entries))
 }
