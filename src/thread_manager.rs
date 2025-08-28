@@ -1,10 +1,12 @@
 use arrayvec::ArrayVec;
 use glommio::{ExecutorJoinHandle, LocalExecutorBuilder, Task, spawn_local};
 
+use crate::rpc::{DebugRpcInit, debug_rpc_listener};
+
 pub type CancelRx = Task<()>;
 
 pub struct ThreadManager<const CAP: usize> {
-    cancel_tx: kanal::Sender<()>,
+    cancel_tx: kanal::AsyncSender<()>,
     cancel_rx: kanal::AsyncReceiver<()>,
     threads: ArrayVec<ExecutorJoinHandle<()>, CAP>,
 }
@@ -13,7 +15,7 @@ impl<const CAP: usize> ThreadManager<CAP> {
     pub fn new() -> Self {
         let (cancel_tx, cancel_rx) = kanal::bounded_async(1);
         Self {
-            cancel_tx: cancel_tx.to_sync(),
+            cancel_tx,
             cancel_rx,
             threads: ArrayVec::new(),
         }
@@ -39,25 +41,34 @@ impl<const CAP: usize> ThreadManager<CAP> {
         self.threads.push(handle);
     }
 
-    /// wait for all threads to finish
-    /// also sets up ctrl-c handler to stop all threads
-    pub fn join_with_cancel_handler(self, on_cancel: impl FnOnce() + 'static) {
-        let tx = self.cancel_tx;
-        ctrlc::set_handler(move || {
-            let cnt = tx.receiver_count();
-            for _ in 0..cnt {
-                if let Err(e) = tx.send(()) {
-                    log::warn!("failed to send cancel signal: {e}");
-                }
-            }
-        })
-        .expect("failed to set ctrlc handler");
+    pub fn spawn_rpc_with_cancel_handler(
+        self,
+        init_args: DebugRpcInit,
+        on_cancel: impl FnOnce() + 'static,
+    ) {
+        if self.threads.len() != CAP {
+            panic!("RPC thread must be started in the end");
+        }
 
-        self.cancel_rx.to_sync().recv().unwrap();
-        log::info!("Received CTRL+C, stopping");
+        let cancel_tx = self.cancel_tx;
+        let handle = LocalExecutorBuilder::default()
+            .spawn(move || async move {
+                debug_rpc_listener(init_args).await;
+                log::info!("Received CTRL+C, stopping");
+                let cnt = cancel_tx.receiver_count();
+                for _ in 0..cnt {
+                    if let Err(e) = cancel_tx.send(()).await {
+                        log::warn!("failed to send cancel signal: {e}");
+                    }
+                }
+            })
+            .unwrap();
+
+        if let Err(e) = handle.join() {
+            log::error!("rpc thread panicked: {e:?}");
+        };
 
         on_cancel();
-
         for thread in self.threads {
             if let Err(e) = thread.join() {
                 log::error!("thread panicked: {e:?}");

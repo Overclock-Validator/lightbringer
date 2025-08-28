@@ -90,7 +90,7 @@ fn main() {
 
     let gossip = GossipManager::new(args.entrypoint).unwrap();
 
-    let mut threadpool = ThreadManager::<6>::new();
+    let mut threadpool = ThreadManager::<5>::new();
 
     // fjall persist thread
     threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
@@ -122,19 +122,15 @@ fn main() {
     let slot_meta_store = SlotMetadataStore::default();
     threadpool.spawn(move |exit| slot_meta_store.packet_listener_loop(exit, slot_meta_rx));
 
-    threadpool.spawn(move |exit| async move {
-        rpc::debug_rpc_listener(DebugRpcInit {
+    threadpool.spawn_rpc_with_cancel_handler(
+        DebugRpcInit {
             listen_addr: args.rpc_addr,
             shred_store,
-        })
-        .await;
-        // ohkami handles ctrl-c, so we don't need to do anything
-        exit.await;
-    });
-
-    threadpool.join_with_cancel_handler(move || {
-        if let Err(e) = gossip.stop() {
-            log::warn!("failed to stop gossip service {e}");
-        }
-    });
+        },
+        move || {
+            if let Err(e) = gossip.stop() {
+                log::warn!("failed to stop gossip service {e}");
+            }
+        },
+    );
 }
