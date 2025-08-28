@@ -86,10 +86,8 @@ impl SlotMetadataStore {
             log::info!("started staleness monitor");
             let mut timers: HashMap<u64, TimerActionOnce<()>> = HashMap::new();
             while let Some(msg) = timer_rx.recv().await {
-                log::info!("received slot timer message");
                 match msg {
                     SlotTimerMsg::ShredInsertion { slot } => {
-                        log::info!("updating timer for slot {slot}");
                         timers
                             .entry(slot)
                             .and_modify(|timer| {

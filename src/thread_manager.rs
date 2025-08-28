@@ -74,5 +74,6 @@ impl<const CAP: usize> ThreadManager<CAP> {
                 log::error!("thread panicked: {e:?}");
             }
         }
+        std::mem::drop(self.cancel_tx);
     }
 }
