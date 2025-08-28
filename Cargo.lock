@@ -4002,6 +4002,7 @@ dependencies = [
  "ohkami",
  "rkyv",
  "scc",
+ "serde_json",
  "simple_logger",
  "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-gossip",

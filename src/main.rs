@@ -7,6 +7,8 @@ mod store;
 mod thread_manager;
 mod turbine_manager;
 mod types;
+#[cfg(test)]
+mod coding;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
