@@ -62,37 +62,11 @@ pub fn sort_shreds_by_type(shreds: Vec<Shred>) -> (Vec<Shred>, Vec<Shred>) {
 pub fn process_shreds_with_recovery(
     shreds: Vec<Shred>,
 ) -> Result<(Vec<Shred>, Vec<Shred>), RpcError> {
-    let (data_shreds, coding_shreds) = sort_shreds_by_type(shreds.clone());
     // Perform recovery on shreds
-    let recovery: Vec<Shred> = shred::recover(
-        data_shreds.into_iter().chain(coding_shreds),
-        &Default::default(),
-    )
-    .map_err(RpcError::ShredRecovery)?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(RpcError::ShredRecovery)?;
-
-    let recovered_indices = recovery.iter().map(|s| s.index()).collect::<Vec<_>>();
-    log::info!("recovered the following indices: {recovered_indices:?}");
-
-    for shred in shreds.iter() {
-        if shred.is_code() {
-            continue;
-        }
-        for rec_shred in recovery.iter() {
-            if rec_shred.index() != shred.index() {
-                continue;
-            }
-            if rec_shred != shred {
-                let slot = shred.slot();
-                let idx = shred.index();
-                let batch = shred.fec_set_index();
-                log::info!(
-                    "data shred mismatch! slot {slot}, batch {batch}, idx {idx}, data_shred: {shred:?}, recovered shred: {rec_shred:?}"
-                )
-            }
-        }
-    }
+    let recovery: Vec<Shred> = shred::recover(shreds.clone(), &Default::default())
+        .map_err(RpcError::ShredRecovery)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(RpcError::ShredRecovery)?;
 
     // Combine original and recovered shreds
     let all_shreds: Vec<Shred> = [shreds, recovery].concat();
