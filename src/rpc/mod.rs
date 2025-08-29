@@ -62,11 +62,15 @@ pub fn sort_shreds_by_type(shreds: Vec<Shred>) -> (Vec<Shred>, Vec<Shred>) {
 pub fn process_shreds_with_recovery(
     shreds: Vec<Shred>,
 ) -> Result<(Vec<Shred>, Vec<Shred>), RpcError> {
+    let (data_shreds, coding_shreds) = sort_shreds_by_type(shreds.clone());
     // Perform recovery on shreds
-    let recovery: Vec<Shred> = shred::recover(shreds.clone(), &Default::default())
-        .map_err(RpcError::ShredRecovery)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(RpcError::ShredRecovery)?;
+    let recovery: Vec<Shred> = shred::recover(
+        data_shreds.into_iter().chain(coding_shreds),
+        &Default::default(),
+    )
+    .map_err(RpcError::ShredRecovery)?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(RpcError::ShredRecovery)?;
 
     // Combine original and recovered shreds
     let all_shreds: Vec<Shred> = [shreds, recovery].concat();
