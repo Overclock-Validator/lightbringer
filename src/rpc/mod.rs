@@ -75,6 +75,25 @@ pub fn process_shreds_with_recovery(
     let recovered_indices = recovery.iter().map(|s| s.index()).collect::<Vec<_>>();
     log::info!("recovered the following indices: {recovered_indices:?}");
 
+    for shred in shreds.iter() {
+        if shred.is_code() {
+            continue;
+        }
+        for rec_shred in recovery.iter() {
+            if rec_shred.index() != shred.index() {
+                continue;
+            }
+            if rec_shred != shred {
+                let slot = shred.slot();
+                let idx = shred.index();
+                let batch = shred.fec_set_index();
+                log::info!(
+                    "data shred mismatch! slot {slot}, batch {batch}, idx {idx}, data_shred: {shred:?}, recovered shred: {rec_shred:?}"
+                )
+            }
+        }
+    }
+
     // Combine original and recovered shreds
     let all_shreds: Vec<Shred> = [shreds, recovery].concat();
 
@@ -178,11 +197,25 @@ async fn get_data_shreds_sorted(
     Ok(Json(data_shreds))
 }
 
+async fn get_stored_shreds_raw(
+    shred_store: Context<'_, ShredStore>,
+    Path(slot): Path<u64>,
+) -> Result<Json<Vec<String>>, RpcError> {
+    let shred_store = shred_store.0.clone();
+    let shreds = shred_store
+        .get_slot_shreds(slot)?
+        .into_iter()
+        .map(|s| BASE64_STANDARD.encode(s))
+        .collect::<Vec<_>>();
+    Ok(Json(shreds))
+}
+
 pub async fn debug_rpc_listener(init: DebugRpcInit) {
     Ohkami::new((
         Context::new(init.shred_store),
         "/slot_entries/:slot".GET(get_slot),
         "/raw_slot_entries/:slot".GET(get_data_shreds_sorted),
+        "/stored_shreds/:slot".GET(get_stored_shreds_raw),
     ))
     .howl(init.listen_addr)
     .await
