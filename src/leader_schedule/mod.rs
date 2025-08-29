@@ -30,15 +30,16 @@ impl Default for LeaderScheduleStore {
 }
 
 impl LeaderScheduleStore {
-    pub fn store_leaders(&mut self, leaders: RpcLeaderSchedule) {
-        for (leader, slots) in leaders.into_iter() {
+    pub fn store_leaders(&mut self, leaders: RpcLeaderSchedule, epoch_start_slot: u64) {
+        for (leader, relative_slots) in leaders.into_iter() {
             let Ok(parsed) = Pubkey::from_str(&leader) else {
                 log::warn!("received invalid leader from rpc: {leader}, ignoring");
                 continue;
             };
-            for slot in slots {
-                _ = self.leaders.put(slot as u64, parsed);
-                self.max_slot = self.max_slot.max(slot as u64);
+            for relative_slot in relative_slots {
+                let slot = epoch_start_slot + relative_slot as u64;
+                _ = self.leaders.put(slot, parsed);
+                self.max_slot = self.max_slot.max(slot);
             }
         }
     }
@@ -57,7 +58,11 @@ impl LeaderScheduleSync {
             .get_leader_schedule()
             .await?
             .ok_or_else(|| anyhow!("leader schedule was None?!"))?;
-        store.store_leaders(schedule);
+        let epoch_info = rpc
+            .get_epoch_info()
+            .await?
+            .ok_or_else(|| anyhow!("epoch info was None?!"))?;
+        store.store_leaders(schedule, epoch_info.absolute_slot - epoch_info.slot_index);
 
         Ok(Self { store, rpc })
     }
@@ -66,11 +71,26 @@ impl LeaderScheduleSync {
         if let Some(pubkey) = self.store.leaders.get(&slot) {
             return Some(*pubkey);
         }
-        let diff = self.store.max_slot;
+        let diff = slot.saturating_sub(self.store.max_slot);
         // either the slot is too old or too new
         if diff == 0 || diff > SLOTS_PER_EPOCH as u64 {
             return None;
         }
+        let epoch_info = match self.rpc.get_epoch_info().await {
+            Ok(Some(schedule)) => schedule,
+            Ok(None) => {
+                log::warn!("leader schedule was None for slot: {slot}, ignoring shred");
+                return None;
+            }
+            Err(e) => {
+                log::warn!("failed to get leader schedule for slot: {slot}, {e} ignoring shred");
+                return None;
+            }
+        };
+        if epoch_info.absolute_slot < slot {
+            return None;
+        }
+
         let schedule = match self.rpc.get_leader_schedule().await {
             Ok(Some(schedule)) => schedule,
             Ok(None) => {
@@ -82,7 +102,9 @@ impl LeaderScheduleSync {
                 return None;
             }
         };
-        self.store.store_leaders(schedule);
+
+        self.store
+            .store_leaders(schedule, epoch_info.absolute_slot - epoch_info.slot_index);
 
         self.store.leaders.get(&slot).copied()
     }
