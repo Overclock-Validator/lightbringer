@@ -13,7 +13,6 @@ use glommio::{channels::local_channel, spawn_local, timer::TimerActionOnce};
 use kanal::AsyncReceiver;
 use lru::LruCache;
 use solana_ledger::shred::Shred;
-use solana_sdk::clock::Slot;
 
 use crate::{thread_manager::CancelRx, types::ShredInfo};
 

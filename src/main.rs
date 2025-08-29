@@ -1,14 +1,16 @@
 // TODO: something for monitoring
 
+#[cfg(test)]
+mod coding;
 mod gossip_manager;
+mod leader_schedule;
+mod packet_filter;
 mod repair;
 mod rpc;
 mod store;
 mod thread_manager;
 mod turbine_manager;
 mod types;
-#[cfg(test)]
-mod coding;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
@@ -22,7 +24,7 @@ use store::{shred::ShredStore, slot_meta::SlotMetadataStore};
 use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
-use crate::{rpc::DebugRpcInit, thread_manager::CancelRx};
+use crate::{packet_filter::packet_filter_loop, rpc::DebugRpcInit, thread_manager::CancelRx};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -94,7 +96,7 @@ fn main() {
     let gossip = GossipManager::new(args.entrypoint).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<5>::new();
+    let mut threadpool = ThreadManager::<6>::new();
 
     // fjall persist thread
     threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
@@ -108,14 +110,24 @@ fn main() {
         .unwrap();
     log::info!("me: {my_tvu_addr:?}");
 
+    let (filter_tx, filter_rx) = kanal::unbounded_async();
     let (slot_store_tx, slot_store_rx) = kanal::unbounded_async();
     let (slot_meta_tx, slot_meta_rx) = kanal::unbounded_async();
 
     threadpool.spawn(move |exit| async move {
-        let res = start_turbine_manager(exit, my_tvu_addr, slot_store_tx, slot_meta_tx).await;
+        let res = start_turbine_manager(exit, my_tvu_addr, filter_tx).await;
         if let Err(e) = res {
             log::error!("failed to start turbine manager: {e}");
         }
+    });
+
+    threadpool.spawn(move |exit| {
+        packet_filter_loop(
+            exit,
+            filter_rx,
+            slot_store_tx.to_sync(),
+            slot_meta_tx.to_sync(),
+        )
     });
 
     let shred_store = ShredStore::new(&lsm_ks, version).unwrap();

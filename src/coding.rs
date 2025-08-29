@@ -7,7 +7,7 @@ fn try_deshred() {
     let f = fs::read("./decoded_shreds.json").unwrap();
     let raw_shreds: Vec<String> = serde_json::from_slice(&f).unwrap();
     let shreds = raw_shreds.into_iter().map(|s| {
-        use base64::{prelude::BASE64_STANDARD, Engine};
+        use base64::{Engine, prelude::BASE64_STANDARD};
 
         let d = BASE64_STANDARD.decode(s).unwrap();
         let s = Shred::new_from_serialized_shred(d).unwrap();

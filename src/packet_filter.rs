@@ -1,0 +1,137 @@
+use std::{sync::Arc, thread::JoinHandle};
+
+use glommio::spawn_local;
+use solana_ledger::shred::{self};
+use solana_sdk::{pubkey::Pubkey, signature::Signature};
+
+use crate::{leader_schedule::LeaderScheduleSync, thread_manager::CancelRx, types::ShredInfo};
+
+type SigCacheKey = (Signature, Pubkey, [u8; 32]);
+
+const PACKET_PROCESSOR_THREADS: usize = 4;
+
+#[derive(Clone)]
+struct PacketProcessor {
+    sig_cache: Arc<scc::HashCache<SigCacheKey, ()>>,
+    store_tx: kanal::Sender<ShredInfo>,
+    meta_tx: kanal::Sender<ShredInfo>,
+}
+
+impl PacketProcessor {
+    fn new(store_tx: kanal::Sender<ShredInfo>, meta_tx: kanal::Sender<ShredInfo>) -> Self {
+        let sig_cache = scc::HashCache::with_capacity(0, 262144);
+        Self {
+            sig_cache: Arc::new(sig_cache),
+            store_tx,
+            meta_tx,
+        }
+    }
+
+    fn validate_packet(&self, packet: &ShredInfo, leader: Pubkey) -> bool {
+        let Some(sig) = shred::layout::get_signature(packet) else {
+            return false;
+        };
+        let Some(data) = shred::layout::get_signed_data(packet) else {
+            return false;
+        };
+        let key: SigCacheKey = (sig, leader, data.as_ref().try_into().unwrap());
+
+        if self.sig_cache.contains(&key) {
+            return true;
+        }
+
+        if key.0.verify(key.1.as_array(), &key.2) {
+            _ = self.sig_cache.put(key, ());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn filter_packet(&self, packet: ShredInfo, leader: Pubkey) {
+        if self.validate_packet(&packet, leader) {
+            if let Err(e) = self.store_tx.send(packet.clone()) {
+                log::warn!("failed to send packet to slot store: {e}");
+            }
+            if let Err(e) = self.meta_tx.send(packet) {
+                log::warn!("failed to send packet to slot meta: {e}");
+            }
+        }
+    }
+}
+struct PacketProcessorPool {
+    jobs: Vec<JoinHandle<()>>,
+    senders: Vec<kanal::AsyncSender<(ShredInfo, Pubkey)>>,
+    leader_schedule: LeaderScheduleSync,
+}
+
+impl PacketProcessorPool {
+    fn new(
+        threads: usize,
+        store_tx: kanal::Sender<ShredInfo>,
+        meta_tx: kanal::Sender<ShredInfo>,
+        leader_schedule: LeaderScheduleSync,
+    ) -> Self {
+        let mut jobs = vec![];
+        let mut senders = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let (tx, rx) = kanal::bounded_async(4096);
+            senders.push(tx);
+            let store_tx = store_tx.clone();
+            let meta_tx = meta_tx.clone();
+            let handle = std::thread::spawn(move || {
+                let rx = rx.to_sync();
+                let processor = PacketProcessor::new(store_tx, meta_tx);
+                while let Ok((shred, pubkey)) = rx.recv() {
+                    processor.filter_packet(shred, pubkey);
+                }
+            });
+            jobs.push(handle);
+        }
+
+        Self {
+            jobs,
+            senders,
+            leader_schedule,
+        }
+    }
+
+    async fn enqueue(&mut self, shred: ShredInfo) {
+        let Some(shred_id) = shred::layout::get_index(&shred) else {
+            return;
+        };
+        let Some(slot) = shred::layout::get_slot(&shred) else {
+            return;
+        };
+        let Some(leader) = self
+            .leader_schedule
+            .get_leader_for_slot_ensure_synced(slot)
+            .await
+        else {
+            return;
+        };
+        _ = self.senders[shred_id as usize % self.senders.len()]
+            .send((shred, leader))
+            .await;
+    }
+}
+
+pub async fn packet_filter_loop(
+    exit: CancelRx,
+    rx: kanal::AsyncReceiver<ShredInfo>,
+    store_tx: kanal::Sender<ShredInfo>,
+    meta_tx: kanal::Sender<ShredInfo>,
+) {
+    let leader_schedule = LeaderScheduleSync::new_synced()
+        .await
+        .expect("failed to initialize leader schedule");
+    let task = spawn_local(async move {
+        let mut pool =
+            PacketProcessorPool::new(PACKET_PROCESSOR_THREADS, store_tx, meta_tx, leader_schedule);
+        while let Ok(packet) = rx.recv().await {
+            pool.enqueue(packet).await;
+        }
+    });
+    exit.await;
+    task.cancel().await;
+}
