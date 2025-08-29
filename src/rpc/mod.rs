@@ -72,6 +72,9 @@ pub fn process_shreds_with_recovery(
     .collect::<Result<Vec<_>, _>>()
     .map_err(RpcError::ShredRecovery)?;
 
+    let recovered_indices = recovery.iter().map(|s| s.index()).collect::<Vec<_>>();
+    log::info!("recovered the following indices: {recovered_indices:?}");
+
     // Combine original and recovered shreds
     let all_shreds: Vec<Shred> = [shreds, recovery].concat();
 
@@ -111,8 +114,13 @@ async fn get_slot(
             Shred::ShredCode(c) => Some(c.coding_header()),
             Shred::ShredData(_) => None,
         });
+        let existing_indexes = shred_list
+            .iter()
+            .filter(|s| s.shred_type() == ShredType::Data)
+            .map(|s| s.index())
+            .collect::<Vec<_>>();
         log::info!(
-            "decoding {batch_index}, slot: {slot}, shreds_cnt {}, header: {coding:?}",
+            "decoding {batch_index}, slot: {slot}, shreds_cnt {}, header: {coding:?}, existing data indices: {existing_indexes:?}",
             shred_list.len()
         );
         let (data_shreds, _coding_shreds) = process_shreds_with_recovery(shred_list)?;
@@ -120,7 +128,10 @@ async fn get_slot(
             "deshreding {batch_index}, slot: {slot}, shreds {:?}",
             data_shreds
         );
-        let mut new_entries = deshred_to_entries(&data_shreds)?;
+        let mut new_entries = deshred_to_entries(&data_shreds).map_err(|e| {
+            log::info!("deshredding {batch_index}, slot: {slot} failed, {e}");
+            e
+        })?;
         entries.append(&mut new_entries);
     }
 
