@@ -26,7 +26,7 @@ fjall = "2.9.0"
 rkyv = { version = "0.8.10", features = ["arrayvec-0_7"] }
 scc = "2.3.4"
 lru = "0.14.0"
-ohkami = { version = "0.24", features = ["rt_glommio"] }
+ohkami = { version = "0.24.1", features = ["rt_glommio"] }
 thiserror = "2.0.16"
 bincode = "1.3.3"
 base64 = "0.22.1"

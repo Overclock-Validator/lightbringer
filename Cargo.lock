@@ -3945,9 +3945,9 @@ dependencies = [
 
 [[package]]
 name = "ohkami"
-version = "0.24.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0add7049b1d90d9dde09d96fe603e2713a309193d1053089aa0a0f152d17d407"
+checksum = "82a18bebc444bf9ed43b2ae864b111da831d584fa46e88aa9fa26b72d3afaf4a"
 dependencies = [
  "anysc-rustls",
  "base64 0.22.1",
@@ -3969,9 +3969,9 @@ dependencies = [
 
 [[package]]
 name = "ohkami_lib"
-version = "0.24.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0234d477841f73f7e6b3e2dfde310bf9708622d1d80b0b660e87720ee691a1a"
+checksum = "057e4f200cc0d0cc66a28d55fe371acc5a7c02f66ef13c0b41a84c8ff88d1025"
 dependencies = [
  "byte_reader",
  "percent-encoding",
@@ -3980,9 +3980,9 @@ dependencies = [
 
 [[package]]
 name = "ohkami_macros"
-version = "0.24.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe2a907121fdf89d925a77f7df07fc1f599ef72c24fed96133dedcfeea8aa0bb"
+checksum = "15df818179dd272de9c427c08b3d5eaf7511cfdf41e63b232ce99723d603be0c"
 dependencies = [
  "proc-macro2",
  "quote",
