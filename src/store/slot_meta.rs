@@ -16,7 +16,7 @@ use solana_ledger::shred::Shred;
 
 use crate::{thread_manager::CancelRx, types::ShredInfo};
 
-pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_secs(200);
+pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(20);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
 pub struct FecMetadata {
