@@ -24,10 +24,12 @@ pub struct GossipManager {
     pub version: u16,
 }
 
-impl GossipManager {
-    pub fn new(gossip_entry: SocketAddr) -> anyhow::Result<Self> {
-        let keypair = Arc::new(Keypair::new());
+pub struct Sockets {
+    pub repair_socket: std::net::UdpSocket,
+}
 
+impl GossipManager {
+    pub fn new(gossip_entry: SocketAddr, keypair: Arc<Keypair>) -> anyhow::Result<(Self, Sockets)> {
         let cluster_entrypoints = vec![ContactInfo::new_gossip_entry_point(&gossip_entry)];
 
         let my_ip = get_public_ip_addr(&gossip_entry)
@@ -66,12 +68,17 @@ impl GossipManager {
             exit.clone(),
         );
 
-        Ok(GossipManager {
-            exit,
-            gossip_service,
-            cluster_info,
-            version: ep_shred_version,
-        })
+        Ok((
+            GossipManager {
+                exit,
+                gossip_service,
+                cluster_info,
+                version: ep_shred_version,
+            },
+            Sockets {
+                repair_socket: node.sockets.repair,
+            },
+        ))
     }
 
     pub fn lookup_my_info(&self) -> ContactInfo {

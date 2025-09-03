@@ -11,20 +11,25 @@ mod store;
 mod thread_manager;
 mod turbine_manager;
 mod types;
+mod util;
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::Parser;
 use fjall::{Config, Keyspace, PersistMode};
 use glommio::{enclose, spawn_local};
 use gossip_manager::GossipManager;
-use repair::peer_manager::start_repair_peer_manager;
+use repair::request::RepairRequestManager;
 use simple_logger::SimpleLogger;
+use solana_sdk::signature::Keypair;
 use store::{shred::ShredStore, slot_meta::SlotMetadataStore};
 use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
-use crate::{packet_filter::packet_filter_loop, rpc::DebugRpcInit, thread_manager::CancelRx};
+use crate::{
+    packet_filter::packet_filter_loop, repair::socket::start_repair_socket_runner,
+    rpc::DebugRpcInit, thread_manager::CancelRx, util::std_to_glommio_socket,
+};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -93,18 +98,36 @@ fn main() {
     let lsm_ks = init_fjall(args.storage).unwrap();
     let persist_ks = lsm_ks.clone();
 
-    let gossip = GossipManager::new(args.entrypoint).unwrap();
+    let keypair = Arc::new(Keypair::new());
+
+    let (gossip, sockets) = GossipManager::new(args.entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<6>::new();
+    let mut threadpool = ThreadManager::<7>::new();
 
     // fjall persist thread
     threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
 
-    let cluster_info = gossip.get_cluster_info();
-    threadpool.spawn(move |exit| start_repair_peer_manager(exit, cluster_info));
-
     let my_contact_info = gossip.lookup_my_info();
+
+    let cluster_info = gossip.get_cluster_info();
+
+    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
+    // allow upto 20 slots to be queued for repairing at a time
+    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
+    threadpool.spawn(move |exit| async {
+        let repair_manager =
+            RepairRequestManager::new(cluster_info, repair_rx, keypair, repair_socket_tx);
+        repair_manager.start_repair_manager_loop(exit).await
+    });
+    threadpool.spawn(move |exit| {
+        start_repair_socket_runner(
+            exit,
+            std_to_glommio_socket(sockets.repair_socket),
+            repair_socket_rx,
+        )
+    });
+
     let my_tvu_addr = my_contact_info
         .tvu(solana_gossip::contact_info::Protocol::UDP)
         .unwrap();
@@ -136,7 +159,8 @@ fn main() {
     );
 
     let slot_meta_store = SlotMetadataStore::new(version);
-    threadpool.spawn(move |exit| slot_meta_store.packet_listener_loop(exit, slot_meta_rx));
+    threadpool
+        .spawn(move |exit| slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx));
 
     threadpool.spawn_rpc_with_cancel_handler(
         DebugRpcInit {

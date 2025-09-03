@@ -25,6 +25,7 @@
           buildInputs = with pkgs; [
             curl
             udev
+            rust-jemalloc-sys
           ];
        };
      }

@@ -3,18 +3,19 @@
 // FOR later: investigate queues
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     rc::Rc,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use arrayvec::ArrayVec;
 use glommio::{channels::local_channel, spawn_local, timer::TimerActionOnce};
-use kanal::AsyncReceiver;
+use kanal::{AsyncReceiver, AsyncSender};
 use lru::LruCache;
 use solana_ledger::shred::Shred;
 
-use crate::{thread_manager::CancelRx, types::ShredInfo};
+use crate::{repair::request::RepairReq, thread_manager::CancelRx, types::ShredInfo};
 
 pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
@@ -34,13 +35,44 @@ pub struct SlotMetadata {
     pub fec_coding_map: FecMap,
     pub fec_meta: FecInfoMap,
     pub timestamp_ms: u64,
-    pub completed_batches: HashSet<u32>,
+    pub completed_batches: BTreeSet<u32>,
     pub required_batches: Option<usize>,
+    // highest shred index not seen yet
+    pub max_exclusive_shred: u32,
 }
 
 impl SlotMetadata {
     pub fn is_complete(&self) -> bool {
         Some(self.completed_batches.len()) == self.required_batches
+    }
+
+    /// find required shreds to complete the slot
+    /// returning None if the last shred hasn't been seen yet
+    pub fn calculate_missing_shreds(&self) -> Option<Vec<u32>> {
+        let required_batches = self.required_batches?;
+        let required_shreds = (0..required_batches as u32).flat_map(|batch| {
+            if self.completed_batches.contains(&batch) {
+                return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
+            }
+
+            let mut mask = [true; DATA_SHREDS_PER_FEC_SET];
+            let Some(shreds) = self.fec_data_map.get(&batch) else {
+                return (0..DATA_SHREDS_PER_FEC_SET)
+                    .map(|i| batch * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
+                    .collect();
+            };
+            shreds
+                .iter()
+                .copied()
+                .for_each(|i| mask[i as usize] = false);
+            mask.iter()
+                .enumerate()
+                .filter_map(|(i, missing)| {
+                    missing.then_some(batch * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
+                })
+                .collect()
+        });
+        Some(required_shreds.collect())
     }
 }
 
@@ -73,11 +105,18 @@ impl SlotMetadataStore {
             version,
         }
     }
-    pub async fn packet_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<ShredInfo>) {
+
+    pub async fn packet_listener_loop(
+        self,
+        exit: CancelRx,
+        rx: AsyncReceiver<ShredInfo>,
+        repair_tx: AsyncSender<RepairReq>,
+    ) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();
         let timer_tx = Rc::new(timer_tx);
 
         let shred_version = self.version;
+        let this = self.clone();
         let meta_timer_tx = timer_tx.clone();
         let metadata_handler_task = spawn_local(async move {
             let timer_tx = meta_timer_tx.clone();
@@ -90,7 +129,7 @@ impl SlotMetadataStore {
                 }
 
                 let slot = deser_shred.slot();
-                let store_res = self.store_shred(deser_shred).await;
+                let store_res = this.store_shred(deser_shred).await;
                 let timer_msg = match store_res {
                     SlotMetaStoreRes::Ignored => continue,
                     SlotMetaStoreRes::Complete => SlotTimerMsg::ShredCompletion { slot },
@@ -126,10 +165,25 @@ impl SlotMetadataStore {
                     }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
-                        log::info!(
-                            "[UNIMPLIMENTED] slot {slot} has timed out, need to send to repair!"
-                        );
-                        // TODO: send to repair manager
+                        log::info!("slot {slot} has timed out, sending to repair!");
+                        let Some(slot_meta) = self.inner.get(&slot) else {
+                            continue;
+                        };
+                        if let Some(missing_shreds) = slot_meta.calculate_missing_shreds() {
+                            _ = repair_tx
+                                .send(RepairReq::MissingBoundedShreds {
+                                    slot,
+                                    shreds: missing_shreds,
+                                })
+                                .await;
+                        } else {
+                            _ = repair_tx
+                                .send(RepairReq::MissingUnboundedShreds {
+                                    slot,
+                                    max_exclusive_shred: slot_meta.max_exclusive_shred,
+                                })
+                                .await;
+                        }
                     }
                 }
             }
@@ -162,8 +216,9 @@ impl SlotMetadataStore {
                     fec_coding_map: HashMap::new(),
                     fec_meta: HashMap::new(),
                     timestamp_ms,
-                    completed_batches: HashSet::new(),
+                    completed_batches: BTreeSet::new(),
                     required_batches: None,
+                    max_exclusive_shred: 0,
                 });
         let shred_meta = shred_entry.get_mut();
         if shred_meta.is_complete() {
@@ -198,6 +253,7 @@ impl SlotMetadataStore {
             .or_insert_with(Vec::new)
             .push(shred_index);
         shred_meta.timestamp_ms = timestamp_ms;
+        shred_meta.max_exclusive_shred = shred_meta.max_exclusive_shred.max(shred_index + 1);
 
         let completed_batch = shred_meta
             .fec_coding_map
