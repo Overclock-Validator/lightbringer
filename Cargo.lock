@@ -66,11 +66,10 @@ dependencies = [
 [[package]]
 name = "agave-banking-stage-ingress-types"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fb8506a1d6144d73476017b38b86894499ac6e62bfa074bef4944b1c0d4385d"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "crossbeam-channel",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -90,47 +89,33 @@ dependencies = [
 [[package]]
 name = "agave-feature-set"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "ahash 0.8.12",
  "solana-epoch-schedule",
  "solana-hash",
  "solana-pubkey",
  "solana-sha256-hasher",
- "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
 name = "agave-geyser-plugin-interface"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1d86d04e054b285bbcba500237ed31fe2e12d97678814cb91647d0e1b810e0c"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "log",
  "solana-clock",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status",
  "thiserror 2.0.16",
 ]
 
 [[package]]
 name = "agave-io-uring"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9baa3925045a36b33bc9372857ac30706e3578f4e6258e811c51b897fd18f44f"
-dependencies = [
- "io-uring",
- "libc",
- "log",
- "slab",
- "smallvec",
-]
-
-[[package]]
-name = "agave-io-uring"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "io-uring",
  "libc",
@@ -142,31 +127,9 @@ dependencies = [
 [[package]]
 name = "agave-precompiles"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3ed7e34efadfb4c7c18c12e8594ce01d8ea85a09cbad0c180e316f41e83e064"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "bincode",
- "digest 0.10.7",
- "ed25519-dalek",
- "libsecp256k1",
- "openssl",
- "sha3",
- "solana-ed25519-program",
- "solana-message",
- "solana-precompile-error",
- "solana-pubkey",
- "solana-sdk-ids",
- "solana-secp256k1-program",
- "solana-secp256r1-program",
-]
-
-[[package]]
-name = "agave-precompiles"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "bincode",
  "digest 0.10.7",
  "ed25519-dalek",
@@ -185,20 +148,9 @@ dependencies = [
 [[package]]
 name = "agave-reserved-account-keys"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "685cb445fe51b7b8a914d1b7dd5a0ea0b106fb8ea9454e84c4cd726a5d87c571"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-pubkey",
- "solana-sdk-ids",
-]
-
-[[package]]
-name = "agave-reserved-account-keys"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-sdk-ids",
 ]
@@ -222,7 +174,7 @@ dependencies = [
 [[package]]
 name = "agave-transaction-view"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -231,14 +183,13 @@ dependencies = [
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-signature",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
 name = "agave-xdp"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b580f01d9493f381ad7dc28a57717359152fd0e61428df5a635dbcaa7c6c69a6"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "aya",
  "caps",
@@ -4511,11 +4462,11 @@ dependencies = [
  "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-epoch-info",
  "solana-gossip",
- "solana-ledger 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-ledger",
  "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-rpc-client-types",
+ "solana-rpc-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-sdk",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
  "thiserror 2.0.16",
 ]
 
@@ -6172,8 +6123,7 @@ dependencies = [
 [[package]]
 name = "solana-account-decoder"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5963fbe3e1099613c270fd5ebc0ff5c6e88a2bea2505b6e348daa0466282cd6"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "Inflector",
  "base64 0.22.1",
@@ -6184,49 +6134,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-address-lookup-table-interface",
- "solana-clock",
- "solana-config-program-client",
- "solana-epoch-schedule",
- "solana-fee-calculator",
- "solana-instruction",
- "solana-loader-v3-interface",
- "solana-nonce",
- "solana-program-option",
- "solana-program-pack",
- "solana-pubkey",
- "solana-rent",
- "solana-sdk-ids",
- "solana-slot-hashes",
- "solana-slot-history",
- "solana-stake-interface",
- "solana-sysvar",
- "solana-vote-interface",
- "spl-generic-token",
- "spl-token",
- "spl-token-2022",
- "spl-token-group-interface",
- "spl-token-metadata-interface",
- "thiserror 2.0.16",
- "zstd",
-]
-
-[[package]]
-name = "solana-account-decoder"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "Inflector",
- "base64 0.22.1",
- "bincode",
- "bs58",
- "bv",
- "serde",
- "serde_derive",
- "serde_json",
- "solana-account",
- "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-address-lookup-table-interface",
  "solana-clock",
  "solana-config-program-client",
@@ -6267,13 +6175,12 @@ dependencies = [
  "serde_json",
  "solana-account",
  "solana-pubkey",
- "zstd",
 ]
 
 [[package]]
 name = "solana-account-decoder-client-types"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -6301,10 +6208,9 @@ dependencies = [
 [[package]]
 name = "solana-accounts-db"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c1896bbe7e8d2cba017f4b44bbb535b8ed55a4645c5b97a7d2ded9564e8e9ac"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-io-uring 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-io-uring",
  "ahash 0.8.12",
  "bincode",
  "blake3",
@@ -6332,93 +6238,29 @@ dependencies = [
  "smallvec",
  "solana-account",
  "solana-address-lookup-table-interface",
- "solana-bucket-map 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-bucket-map",
  "solana-clock",
  "solana-epoch-schedule",
  "solana-fee-calculator",
  "solana-genesis-config",
  "solana-hash",
- "solana-lattice-hash 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-lattice-hash",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-nohash-hasher",
  "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-rent-collector",
  "solana-reward-info",
  "solana-sha256-hasher",
  "solana-slot-hashes",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-sysvar",
  "solana-time-utils",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-transaction-error",
- "spl-generic-token",
- "static_assertions",
- "tar",
- "tempfile",
- "thiserror 2.0.16",
-]
-
-[[package]]
-name = "solana-accounts-db"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-io-uring 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "ahash 0.8.12",
- "bincode",
- "blake3",
- "bv",
- "bytemuck",
- "bytemuck_derive",
- "bzip2",
- "crossbeam-channel",
- "dashmap 5.5.3",
- "indexmap 2.11.0",
- "io-uring",
- "itertools 0.12.1",
- "log",
- "lz4",
- "memmap2 0.9.8",
- "modular-bitfield",
- "num_cpus",
- "num_enum",
- "rand 0.8.5",
- "rayon",
- "seqlock",
- "serde",
- "serde_derive",
- "slab",
- "smallvec",
- "solana-account",
- "solana-address-lookup-table-interface",
- "solana-bucket-map 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-clock",
- "solana-epoch-schedule",
- "solana-fee-calculator",
- "solana-genesis-config",
- "solana-hash",
- "solana-lattice-hash 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-message",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-nohash-hasher",
- "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-rent-collector",
- "solana-reward-info",
- "solana-sha256-hasher",
- "solana-slot-hashes",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-system-interface",
- "solana-sysvar",
- "solana-time-utils",
- "solana-transaction",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
  "spl-generic-token",
  "static_assertions",
@@ -6490,8 +6332,7 @@ dependencies = [
 [[package]]
 name = "solana-bloom"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4c3cb0f81bb8f57e59ed2375efe05e1922fd246831dbc677973180d1b744fe9"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bv",
  "fnv",
@@ -6577,7 +6418,7 @@ dependencies = [
 [[package]]
 name = "solana-bpf-loader-program"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "libsecp256k1",
@@ -6592,39 +6433,38 @@ dependencies = [
  "solana-bn254",
  "solana-clock",
  "solana-cpi",
- "solana-curve25519 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-curve25519 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-hash",
  "solana-instruction",
  "solana-keccak-hasher",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
- "solana-poseidon 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-poseidon 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-program-entrypoint",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-sbpf",
  "solana-sdk-ids",
  "solana-secp256k1-recover",
  "solana-sha256-hasher",
  "solana-stable-layout",
- "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
- "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "thiserror 2.0.16",
 ]
 
 [[package]]
 name = "solana-bucket-map"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3e741372956b0c16e7afc6e9417c1780240f6f9a3651c8ebea87c85095e393f"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bv",
  "bytemuck",
@@ -6634,25 +6474,7 @@ dependencies = [
  "num_enum",
  "rand 0.8.5",
  "solana-clock",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-pubkey",
- "tempfile",
-]
-
-[[package]]
-name = "solana-bucket-map"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "bv",
- "bytemuck",
- "bytemuck_derive",
- "memmap2 0.9.8",
- "modular-bitfield",
- "num_enum",
- "rand 0.8.5",
- "solana-clock",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "tempfile",
 ]
@@ -6660,42 +6482,21 @@ dependencies = [
 [[package]]
 name = "solana-builtins"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16594c9f661decb9e562ab459f7ddf587654159dd757bb17a08814534809c42d"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-bpf-loader-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-compute-budget-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-hash",
- "solana-loader-v4-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-program-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-loader-v4-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-sdk-ids",
- "solana-stake-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-system-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-zk-elgamal-proof-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-zk-token-proof-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "solana-builtins"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-hash",
- "solana-loader-v4-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-pubkey",
- "solana-sdk-ids",
- "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-system-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-zk-elgamal-proof-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-zk-token-proof-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-system-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-zk-elgamal-proof-program",
+ "solana-zk-token-proof-program",
 ]
 
 [[package]]
@@ -6720,26 +6521,25 @@ dependencies = [
 [[package]]
 name = "solana-builtins-default-costs"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "ahash 0.8.12",
  "log",
- "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-loader-v4-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-loader-v4-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-sdk-ids",
- "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-system-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-system-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
 name = "solana-clap-utils"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5292601cbb663699717d89171cc70d49c4305f8b9c8b0ab1928eac1037f39496"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "chrono",
  "clap 2.34.0",
@@ -6767,8 +6567,7 @@ dependencies = [
 [[package]]
 name = "solana-cli-config"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d926afc6b19af6f662d4a235ff63fd2836406d29a7c731fc91b6226bb5c82ba"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "dirs-next",
  "serde",
@@ -6782,8 +6581,7 @@ dependencies = [
 [[package]]
 name = "solana-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c4a1e134e7f683fca78ff3912f1590858b51f6a64aad417d30baca8926ed2fd"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "bincode",
@@ -6803,7 +6601,7 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
  "solana-pubkey",
  "solana-pubsub-client",
@@ -6814,7 +6612,7 @@ dependencies = [
  "solana-rpc-client-nonce-utils",
  "solana-signature",
  "solana-signer",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
  "solana-thin-client",
  "solana-time-utils",
  "solana-tpu-client",
@@ -6893,10 +6691,10 @@ dependencies = [
 [[package]]
 name = "solana-compute-budget"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "solana-fee-structure",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -6923,19 +6721,19 @@ dependencies = [
 [[package]]
 name = "solana-compute-budget-instruction"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "log",
  "solana-borsh",
- "solana-builtins-default-costs 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-builtins-default-costs 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-compute-budget-interface",
  "solana-instruction",
  "solana-packet",
  "solana-pubkey",
  "solana-sdk-ids",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
  "thiserror 2.0.16",
 ]
@@ -6965,9 +6763,9 @@ dependencies = [
 [[package]]
 name = "solana-compute-budget-program"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -6986,8 +6784,7 @@ dependencies = [
 [[package]]
 name = "solana-connection-cache"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be7fcabde8fdaa5a0e6fbbd0ed4cd07e5754e7d187b69be663811c236b891961"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "bincode",
@@ -6998,8 +6795,8 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-time-utils",
  "solana-transaction-error",
  "thiserror 2.0.16",
@@ -7009,12 +6806,11 @@ dependencies = [
 [[package]]
 name = "solana-core"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e788da7969811e5b1fd2a53432a84d53e5238ffe62e0b44949feae1b18a7566b"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "agave-banking-stage-ingress-types",
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "agave-transaction-view 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "agave-transaction-view 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "ahash 0.8.12",
  "anyhow",
  "arrayvec",
@@ -7050,21 +6846,21 @@ dependencies = [
  "serde_derive",
  "slab",
  "solana-account",
- "solana-accounts-db 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-accounts-db",
  "solana-address-lookup-table-interface",
  "solana-bincode",
  "solana-bloom",
- "solana-builtins-default-costs 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-builtins-default-costs 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-client",
  "solana-clock",
- "solana-compute-budget 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-compute-budget-instruction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-compute-budget-interface",
  "solana-connection-cache",
- "solana-cost-model 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-cost-model",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-epoch-schedule",
- "solana-fee 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-fee",
  "solana-fee-calculator",
  "solana-fee-structure",
  "solana-genesis-config",
@@ -7074,28 +6870,28 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-ledger",
  "solana-loader-v3-interface",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-nonce",
  "solana-nonce-account",
  "solana-packet",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-poh",
  "solana-poh-config",
  "solana-pubkey",
  "solana-quic-client",
  "solana-quic-definitions",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-rent",
  "solana-rpc",
  "solana-rpc-client-api",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sanitize",
  "solana-sdk-ids",
  "solana-send-transaction-service",
@@ -7106,26 +6902,26 @@ dependencies = [
  "solana-signer",
  "solana-slot-hashes",
  "solana-slot-history",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
+ "solana-svm",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-system-transaction",
  "solana-sysvar",
  "solana-time-utils",
- "solana-timings 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-tls-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-tls-utils",
  "solana-tpu-client",
  "solana-tpu-client-next",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status",
  "solana-turbine",
  "solana-unified-scheduler-pool",
  "solana-validator-exit",
- "solana-version 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-wen-restart",
  "static_assertions",
  "strum",
@@ -7143,56 +6939,28 @@ dependencies = [
 [[package]]
 name = "solana-cost-model"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4eedb024203ce2ef73bf90f10cc6249402b41a1d9421f01a1d8272defe60b33d"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "ahash 0.8.12",
  "log",
  "solana-bincode",
  "solana-borsh",
- "solana-builtins-default-costs 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-builtins-default-costs 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-clock",
- "solana-compute-budget 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-compute-budget-instruction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-compute-budget-interface",
  "solana-fee-structure",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
  "solana-pubkey",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sdk-ids",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-transaction-error",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "solana-cost-model"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "ahash 0.8.12",
- "log",
- "solana-bincode",
- "solana-borsh",
- "solana-builtins-default-costs 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-clock",
- "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget-interface",
- "solana-fee-structure",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-packet",
- "solana-pubkey",
- "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-sdk-ids",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-system-interface",
- "solana-transaction-error",
- "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -7226,7 +6994,7 @@ dependencies = [
 [[package]]
 name = "solana-curve25519"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
@@ -7306,7 +7074,7 @@ dependencies = [
 [[package]]
 name = "solana-entry"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "crossbeam-channel",
@@ -7316,13 +7084,13 @@ dependencies = [
  "rayon",
  "serde",
  "solana-hash",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-merkle-tree 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-merkle-tree 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
- "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sha256-hasher",
  "solana-transaction",
  "solana-transaction-error",
@@ -7400,8 +7168,7 @@ dependencies = [
 [[package]]
 name = "solana-faucet"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14296b9212f824425cccd30eadcdd5aaa28a5fe99ef7d1cf10f0a3218376e09c"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "clap 2.34.0",
@@ -7416,7 +7183,7 @@ dependencies = [
  "solana-keypair",
  "solana-logger",
  "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
  "solana-packet",
  "solana-pubkey",
@@ -7424,7 +7191,7 @@ dependencies = [
  "solana-system-interface",
  "solana-system-transaction",
  "solana-transaction",
- "solana-version 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "spl-memo",
  "thiserror 2.0.16",
  "tokio",
@@ -7466,22 +7233,11 @@ dependencies = [
 [[package]]
 name = "solana-fee"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84f835d9020fc0129593cb5e76daa8f8a4edaf916fc2ae0148a23fe56c220337"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-fee-structure",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "solana-fee"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-fee-structure",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -7540,8 +7296,7 @@ dependencies = [
 [[package]]
 name = "solana-geyser-plugin-manager"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a02a5c514606d0b5683472695f77049ef240f41979a6e0e2976abfe3d240bec6"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "agave-geyser-plugin-interface",
  "bs58",
@@ -7552,18 +7307,18 @@ dependencies = [
  "log",
  "serde_json",
  "solana-account",
- "solana-accounts-db 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-accounts-db",
  "solana-clock",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-ledger",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-rpc",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status",
  "thiserror 2.0.16",
  "tokio",
 ]
@@ -7571,10 +7326,9 @@ dependencies = [
 [[package]]
 name = "solana-gossip"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4207b0b7fcc8d9654fe18fae756facba440574055776aae6df6e0f51dc1586c"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "arrayvec",
  "assert_matches",
  "bincode",
@@ -7600,36 +7354,36 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-connection-cache",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-epoch-schedule",
  "solana-hash",
  "solana-keypair",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-ledger",
  "solana-logger",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-quic-definitions",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-rpc-client",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
  "solana-sanitize",
  "solana-serde-varint",
  "solana-sha256-hasher",
  "solana-short-vec",
  "solana-signature",
  "solana-signer",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
  "solana-time-utils",
  "solana-tpu-client",
  "solana-transaction",
- "solana-version 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "static_assertions",
  "thiserror 2.0.16",
 ]
@@ -7754,19 +7508,7 @@ dependencies = [
 [[package]]
 name = "solana-lattice-hash"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8f3b668f433cd8716b2db7f58682abc8f7cc876dbe86f27620abb91fa13e4e5"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "bs58",
- "bytemuck",
-]
-
-[[package]]
-name = "solana-lattice-hash"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -7777,11 +7519,10 @@ dependencies = [
 [[package]]
 name = "solana-ledger"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b489ff3e611c19ed2f527dcdb7e87643df158d74062ab093158dcb3ecffa0a9"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "agave-reserved-account-keys 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "agave-reserved-account-keys",
  "anyhow",
  "assert_matches",
  "bincode",
@@ -7814,148 +7555,52 @@ dependencies = [
  "serde_bytes",
  "sha2 0.10.9",
  "solana-account",
- "solana-account-decoder 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-accounts-db 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder",
+ "solana-accounts-db",
  "solana-address-lookup-table-interface",
- "solana-bpf-loader-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-clock",
- "solana-cost-model 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-cost-model",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-epoch-schedule",
  "solana-genesis-config",
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-program-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-runtime",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-seed-derivable",
  "solana-sha256-hasher",
  "solana-shred-version",
  "solana-signature",
  "solana-signer",
  "solana-stake-interface",
- "solana-stake-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-storage-bigtable 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-storage-proto 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-storage-bigtable",
+ "solana-storage-proto",
+ "solana-streamer",
+ "solana-svm",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-system-transaction",
  "solana-time-utils",
- "solana-timings 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "static_assertions",
- "strum",
- "strum_macros",
- "tar",
- "tempfile",
- "thiserror 2.0.16",
- "tokio",
- "tokio-stream",
- "trees",
-]
-
-[[package]]
-name = "solana-ledger"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "agave-reserved-account-keys 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "anyhow",
- "assert_matches",
- "bincode",
- "bitflags 2.9.4",
- "bzip2",
- "chrono",
- "chrono-humanize",
- "crossbeam-channel",
- "dashmap 5.5.3",
- "eager",
- "fs_extra",
- "futures 0.3.31",
- "itertools 0.12.1",
- "lazy-lru",
- "libc",
- "log",
- "lru 0.7.8",
- "mockall",
- "num_cpus",
- "num_enum",
- "prost",
- "qualifier_attr",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "rayon",
- "reed-solomon-erasure",
- "rocksdb",
- "scopeguard",
- "serde",
- "serde_bytes",
- "sha2 0.10.9",
- "solana-account",
- "solana-account-decoder 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-accounts-db 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-address-lookup-table-interface",
- "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-clock",
- "solana-cost-model 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-epoch-schedule",
- "solana-genesis-config",
- "solana-hash",
- "solana-instruction",
- "solana-keypair",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-message",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-native-token",
- "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-packet",
- "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-seed-derivable",
- "solana-sha256-hasher",
- "solana-shred-version",
- "solana-signature",
- "solana-signer",
- "solana-stake-interface",
- "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-storage-bigtable 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-storage-proto 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-streamer 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-system-interface",
- "solana-system-transaction",
- "solana-time-utils",
- "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-error",
- "solana-transaction-status 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-vote 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-status",
+ "solana-vote",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "static_assertions",
  "strum",
  "strum_macros",
@@ -8039,25 +7684,25 @@ dependencies = [
 [[package]]
 name = "solana-loader-v4-program"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "log",
  "qualifier_attr",
  "solana-account",
  "solana-bincode",
- "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-instruction",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-sbpf",
  "solana-sdk-ids",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -8072,7 +7717,7 @@ dependencies = [
 [[package]]
 name = "solana-log-collector"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "log",
 ]
@@ -8099,7 +7744,7 @@ checksum = "4e0e02388fa871b8b42c59ff5f7123370c47a5f389f8e773b4c5402c20ec7e04"
 [[package]]
 name = "solana-measure"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 
 [[package]]
 name = "solana-merkle-tree"
@@ -8115,7 +7760,7 @@ dependencies = [
 [[package]]
 name = "solana-merkle-tree"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "fast-math",
  "solana-hash",
@@ -8164,7 +7809,7 @@ dependencies = [
 [[package]]
 name = "solana-metrics"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "crossbeam-channel",
  "gethostname",
@@ -8215,7 +7860,7 @@ dependencies = [
 [[package]]
 name = "solana-net-utils"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "anyhow",
  "bincode",
@@ -8329,7 +7974,7 @@ dependencies = [
 [[package]]
 name = "solana-perf"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "ahash 0.8.12",
  "bincode",
@@ -8347,10 +7992,10 @@ dependencies = [
  "serde",
  "solana-hash",
  "solana-message",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
  "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-signature",
@@ -8360,22 +8005,21 @@ dependencies = [
 [[package]]
 name = "solana-poh"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4f714f581837f194802c99e344ffe206a7fd9c5d9288534395da27db014c688"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "core_affinity",
  "crossbeam-channel",
  "log",
  "qualifier_attr",
  "solana-clock",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-hash",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-ledger",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-poh-config",
  "solana-pubkey",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
  "solana-time-utils",
  "solana-transaction",
  "thiserror 2.0.16",
@@ -8406,7 +8050,7 @@ dependencies = [
 [[package]]
 name = "solana-poseidon"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "ark-bn254",
  "light-poseidon",
@@ -8630,7 +8274,7 @@ dependencies = [
 [[package]]
 name = "solana-program-runtime"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -8648,9 +8292,9 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-last-restart-slot",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-program-entrypoint",
  "solana-pubkey",
  "solana-rent",
@@ -8658,14 +8302,14 @@ dependencies = [
  "solana-sdk-ids",
  "solana-slot-hashes",
  "solana-stable-layout",
- "solana-svm-callback 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-callback 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
- "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "thiserror 2.0.16",
 ]
 
@@ -8699,8 +8343,7 @@ dependencies = [
 [[package]]
 name = "solana-pubsub-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2b90bcec41efc8ed9e6b765e043e9fb5984b5c3fbf16f4d2c1dc827fd4b35e2"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "crossbeam-channel",
  "futures-util",
@@ -8710,10 +8353,10 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-clock",
  "solana-pubkey",
- "solana-rpc-client-types",
+ "solana-rpc-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-signature",
  "thiserror 2.0.16",
  "tokio",
@@ -8726,8 +8369,7 @@ dependencies = [
 [[package]]
 name = "solana-quic-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50f5c70a7b38bf0b672f51a718c4b377adf0ae218d8d576024e7c3ed00e7ee86"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -8739,15 +8381,15 @@ dependencies = [
  "rustls 0.23.31",
  "solana-connection-cache",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-quic-definitions",
  "solana-rpc-client-api",
  "solana-signer",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-tls-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
+ "solana-tls-utils",
  "solana-transaction-error",
  "thiserror 2.0.16",
  "tokio",
@@ -8774,7 +8416,7 @@ dependencies = [
 [[package]]
 name = "solana-rayon-threadlimit"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "num_cpus",
 ]
@@ -8782,8 +8424,7 @@ dependencies = [
 [[package]]
 name = "solana-remote-wallet"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fe4453541415b21c79fae84980d82854f1d6a19c13a09f6eba75aa273a7c1c0"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "console",
  "dialoguer",
@@ -8868,10 +8509,9 @@ dependencies = [
 [[package]]
 name = "solana-rpc"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d052c864bb0c93dd2294c01a01f1f51de53f7087c0c8a973791c1da6c97c5cc9"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "base64 0.22.1",
  "bincode",
  "bs58",
@@ -8892,12 +8532,12 @@ dependencies = [
  "serde_json",
  "soketto",
  "solana-account",
- "solana-account-decoder 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-accounts-db 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder",
+ "solana-accounts-db",
  "solana-client",
  "solana-clock",
  "solana-commitment-config",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-epoch-info",
  "solana-epoch-rewards-hasher",
  "solana-epoch-schedule",
@@ -8906,42 +8546,42 @@ dependencies = [
  "solana-gossip",
  "solana-hash",
  "solana-keypair",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-ledger",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-poh",
  "solana-poh-config",
  "solana-program-pack",
  "solana-pubkey",
  "solana-quic-definitions",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-rpc-client-api",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-send-transaction-service",
  "solana-signature",
  "solana-signer",
  "solana-slot-history",
- "solana-stake-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-storage-bigtable 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-storage-bigtable",
+ "solana-streamer",
+ "solana-svm",
  "solana-system-interface",
  "solana-system-transaction",
  "solana-sysvar",
  "solana-time-utils",
  "solana-tpu-client",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status",
  "solana-validator-exit",
- "solana-version 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "spl-generic-token",
  "spl-token",
  "spl-token-2022",
@@ -8954,8 +8594,7 @@ dependencies = [
 [[package]]
 name = "solana-rpc-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40231712d6f1e5833ff1e101954786cbd0b5301098ea42384f7bb3e553085852"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8971,7 +8610,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account",
- "solana-account-decoder-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-clock",
  "solana-commitment-config",
  "solana-epoch-info",
@@ -8985,8 +8624,8 @@ dependencies = [
  "solana-signature",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-version 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-vote-interface",
  "tokio",
 ]
@@ -8994,8 +8633,7 @@ dependencies = [
 [[package]]
 name = "solana-rpc-client-api"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a1be31922f97505007ccf969828b34e8dc43ce434a17f970b0edea8f0e66777"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "anyhow",
  "jsonrpc-core",
@@ -9004,20 +8642,19 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-clock",
- "solana-rpc-client-types",
+ "solana-rpc-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-signer",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "thiserror 2.0.16",
 ]
 
 [[package]]
 name = "solana-rpc-client-nonce-utils"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2bd5b1ccc7fc945a9b0adad091836ee18b7688afd6979889849d5404254a14f"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "solana-account",
  "solana-commitment-config",
@@ -9057,150 +8694,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-runtime"
+name = "solana-rpc-client-types"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6c416cf6f9a1bff7dca25234406b4c776ea97de18cb89ba4bf987578cd32918"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "agave-precompiles 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "agave-reserved-account-keys 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "ahash 0.8.12",
- "aquamarine",
- "arrayref",
- "assert_matches",
  "base64 0.22.1",
- "bincode",
- "blake3",
- "bv",
- "bytemuck",
- "bzip2",
- "crossbeam-channel",
- "dashmap 5.5.3",
- "dir-diff",
- "flate2",
- "fnv",
- "im",
- "itertools 0.12.1",
- "libc",
- "log",
- "lz4",
- "memmap2 0.9.8",
- "mockall",
- "modular-bitfield",
- "num-derive",
- "num-traits",
- "num_cpus",
- "num_enum",
- "percentage",
- "qualifier_attr",
- "rand 0.8.5",
- "rayon",
- "regex",
+ "bs58",
+ "semver",
  "serde",
  "serde_derive",
  "serde_json",
- "serde_with",
  "solana-account",
- "solana-account-info",
- "solana-accounts-db 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-address-lookup-table-interface",
- "solana-bpf-loader-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-bucket-map 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-builtins 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-client-traits",
+ "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-clock",
  "solana-commitment-config",
- "solana-compute-budget 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-compute-budget-instruction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-compute-budget-interface",
- "solana-cost-model 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-cpi",
- "solana-ed25519-program",
- "solana-epoch-info",
- "solana-epoch-rewards-hasher",
- "solana-epoch-schedule",
- "solana-feature-gate-interface",
- "solana-fee 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-fee-calculator",
- "solana-fee-structure",
- "solana-genesis-config",
- "solana-hard-forks",
- "solana-hash",
  "solana-inflation",
- "solana-instruction",
- "solana-keypair",
- "solana-lattice-hash 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-loader-v3-interface",
- "solana-loader-v4-interface",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-native-token",
- "solana-nohash-hasher",
- "solana-nonce",
- "solana-nonce-account",
- "solana-packet",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-poh-config",
- "solana-precompile-error",
- "solana-program-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-rent",
- "solana-rent-collector",
- "solana-rent-debits",
- "solana-reward-info",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-sdk-ids",
- "solana-secp256k1-program",
- "solana-seed-derivable",
- "solana-serde",
- "solana-sha256-hasher",
- "solana-signature",
- "solana-signer",
- "solana-slot-hashes",
- "solana-slot-history",
- "solana-stake-interface",
- "solana-stake-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-callback 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-rent-collector 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-system-interface",
- "solana-system-transaction",
- "solana-sysvar",
- "solana-sysvar-id",
- "solana-time-utils",
- "solana-timings 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-transaction",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-unified-scheduler-logic 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-version 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-interface",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "spl-generic-token",
- "static_assertions",
- "strum",
- "strum_macros",
- "symlink",
- "tar",
- "tempfile",
  "thiserror 2.0.16",
- "zstd",
 ]
 
 [[package]]
 name = "solana-runtime"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "agave-precompiles 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "agave-reserved-account-keys 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "agave-precompiles",
+ "agave-reserved-account-keys",
  "ahash 0.8.12",
  "aquamarine",
  "arrayref",
@@ -9239,25 +8764,25 @@ dependencies = [
  "serde_with",
  "solana-account",
  "solana-account-info",
- "solana-accounts-db 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-accounts-db",
  "solana-address-lookup-table-interface",
- "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-bucket-map 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-builtins 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-bpf-loader-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-bucket-map",
+ "solana-builtins",
  "solana-client-traits",
  "solana-clock",
  "solana-commitment-config",
- "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-compute-budget-interface",
- "solana-cost-model 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-cost-model",
  "solana-cpi",
  "solana-ed25519-program",
  "solana-epoch-info",
  "solana-epoch-rewards-hasher",
  "solana-epoch-schedule",
  "solana-feature-gate-interface",
- "solana-fee 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-fee",
  "solana-fee-calculator",
  "solana-fee-structure",
  "solana-genesis-config",
@@ -9266,28 +8791,28 @@ dependencies = [
  "solana-inflation",
  "solana-instruction",
  "solana-keypair",
- "solana-lattice-hash 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-lattice-hash",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
  "solana-nohash-hasher",
  "solana-nonce",
  "solana-nonce-account",
  "solana-packet",
- "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-poh-config",
  "solana-precompile-error",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
- "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-rent",
  "solana-rent-collector",
  "solana-rent-debits",
  "solana-reward-info",
- "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sdk-ids",
  "solana-secp256k1-program",
  "solana-seed-derivable",
@@ -9298,26 +8823,26 @@ dependencies = [
  "solana-slot-hashes",
  "solana-slot-history",
  "solana-stake-interface",
- "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-callback 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-rent-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-stake-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-svm",
+ "solana-svm-callback 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-svm-rent-collector",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-system-transaction",
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-time-utils",
- "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-unified-scheduler-logic 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-vote 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-unified-scheduler-logic",
+ "solana-version 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote",
  "solana-vote-interface",
- "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "spl-generic-token",
  "static_assertions",
  "strum",
@@ -9353,18 +8878,18 @@ dependencies = [
 [[package]]
 name = "solana-runtime-transaction"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-transaction-view 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-transaction-view 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "log",
- "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-compute-budget 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-compute-budget-instruction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-hash",
  "solana-message",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-signature",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction",
  "solana-transaction-error",
  "thiserror 2.0.16",
@@ -9559,8 +9084,7 @@ dependencies = [
 [[package]]
 name = "solana-send-transaction-service"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d79e8636637fc77c79e0bf615ee238fbc7f20a8be2b7cfbf78e548a12f3685d"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
@@ -9571,12 +9095,12 @@ dependencies = [
  "solana-connection-cache",
  "solana-hash",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-nonce-account",
  "solana-pubkey",
  "solana-quic-definitions",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
  "solana-signature",
  "solana-time-utils",
  "solana-tpu-client-next",
@@ -9759,9 +9283,9 @@ dependencies = [
 [[package]]
 name = "solana-stake-program"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "bincode",
  "log",
  "solana-account",
@@ -9770,27 +9294,26 @@ dependencies = [
  "solana-config-program-client",
  "solana-genesis-config",
  "solana-instruction",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
  "solana-packet",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-rent",
  "solana-sdk-ids",
  "solana-stake-interface",
  "solana-sysvar",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-vote-interface",
 ]
 
 [[package]]
 name = "solana-storage-bigtable"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8f55cf5d011841a8061c2a83be6f4757b3d51b045ac9e45a33a78a9e24ba043"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-reserved-account-keys 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-reserved-account-keys",
  "backoff",
  "bincode",
  "bytes",
@@ -9811,56 +9334,15 @@ dependencies = [
  "smpl_jwt",
  "solana-clock",
  "solana-message",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-serde",
  "solana-signature",
- "solana-storage-proto 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-storage-proto",
  "solana-time-utils",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "thiserror 2.0.16",
- "tokio",
- "tonic",
- "zstd",
-]
-
-[[package]]
-name = "solana-storage-bigtable"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-reserved-account-keys 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "backoff",
- "bincode",
- "bytes",
- "bzip2",
- "enum-iterator",
- "flate2",
- "futures 0.3.31",
- "goauth",
- "http 0.2.12",
- "hyper 0.14.32",
- "hyper-proxy",
- "log",
- "openssl",
- "prost",
- "prost-types",
- "serde",
- "serde_derive",
- "smpl_jwt",
- "solana-clock",
- "solana-message",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-pubkey",
- "solana-serde",
- "solana-signature",
- "solana-storage-proto 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-time-utils",
- "solana-transaction",
- "solana-transaction-error",
- "solana-transaction-status 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-status",
  "thiserror 2.0.16",
  "tokio",
  "tonic",
@@ -9870,15 +9352,14 @@ dependencies = [
 [[package]]
 name = "solana-storage-proto"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "590eaf69c41d0bb63809daff5947abadffae68194ef5a6e10c3154b141cab3b5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "bs58",
  "prost",
  "protobuf-src",
  "serde",
- "solana-account-decoder 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder",
  "solana-hash",
  "solana-instruction",
  "solana-message",
@@ -9886,41 +9367,16 @@ dependencies = [
  "solana-serde",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
- "solana-transaction-status 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "tonic-build",
-]
-
-[[package]]
-name = "solana-storage-proto"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "bincode",
- "bs58",
- "prost",
- "protobuf-src",
- "serde",
- "solana-account-decoder 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-hash",
- "solana-instruction",
- "solana-message",
- "solana-pubkey",
- "solana-serde",
- "solana-signature",
- "solana-transaction",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-error",
- "solana-transaction-status 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-status",
  "tonic-build",
 ]
 
 [[package]]
 name = "solana-streamer"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f55673d787ef1478fa2939801e8bde7cb4ed38a99ff3d5541c2d159a06904f3"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-channel",
  "bytes",
@@ -9944,65 +9400,19 @@ dependencies = [
  "smallvec",
  "socket2 0.5.10",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-packet",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-quic-definitions",
  "solana-signature",
  "solana-signer",
  "solana-time-utils",
- "solana-tls-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-tls-utils",
  "solana-transaction-error",
- "solana-transaction-metrics-tracker 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "thiserror 2.0.16",
- "tokio",
- "tokio-util 0.7.16",
- "x509-parser",
-]
-
-[[package]]
-name = "solana-streamer"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "async-channel",
- "bytes",
- "crossbeam-channel",
- "dashmap 5.5.3",
- "futures 0.3.31",
- "futures-util",
- "governor",
- "histogram",
- "indexmap 2.11.0",
- "itertools 0.12.1",
- "libc",
- "log",
- "nix 0.30.1",
- "pem",
- "percentage",
- "quinn",
- "quinn-proto",
- "rand 0.8.5",
- "rustls 0.23.31",
- "smallvec",
- "socket2 0.5.10",
- "solana-keypair",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-packet",
- "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-pubkey",
- "solana-quic-definitions",
- "solana-signature",
- "solana-signer",
- "solana-time-utils",
- "solana-tls-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-error",
- "solana-transaction-metrics-tracker 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-metrics-tracker",
  "thiserror 2.0.16",
  "tokio",
  "tokio-util 0.7.16",
@@ -10012,8 +9422,7 @@ dependencies = [
 [[package]]
 name = "solana-svm"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80abd376f5f4bdcfd690accb447a3b8b1cf5b24c0cc345993a2759b234d11a6e"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "ahash 0.8.12",
  "itertools 0.12.1",
@@ -10029,79 +9438,31 @@ dependencies = [
  "solana-instructions-sysvar",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
- "solana-loader-v4-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-log-collector 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-loader-v4-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
  "solana-nonce",
  "solana-nonce-account",
  "solana-program-entrypoint",
  "solana-program-pack",
- "solana-program-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-rent",
  "solana-rent-collector",
  "solana-rent-debits",
  "solana-sdk-ids",
  "solana-slot-hashes",
- "solana-svm-callback 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-rent-collector 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-svm-callback 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-svm-rent-collector",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-system-interface",
  "solana-sysvar-id",
- "solana-timings 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
- "solana-type-overrides 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "spl-generic-token",
- "thiserror 2.0.16",
-]
-
-[[package]]
-name = "solana-svm"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "ahash 0.8.12",
- "itertools 0.12.1",
- "log",
- "percentage",
- "serde",
- "serde_derive",
- "solana-account",
- "solana-clock",
- "solana-fee-structure",
- "solana-hash",
- "solana-instruction",
- "solana-instructions-sysvar",
- "solana-loader-v3-interface",
- "solana-loader-v4-interface",
- "solana-loader-v4-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-message",
- "solana-nonce",
- "solana-nonce-account",
- "solana-program-entrypoint",
- "solana-program-pack",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-pubkey",
- "solana-rent",
- "solana-rent-collector",
- "solana-rent-debits",
- "solana-sdk-ids",
- "solana-slot-hashes",
- "solana-svm-callback 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-rent-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-system-interface",
- "solana-sysvar-id",
- "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-transaction-error",
- "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "spl-generic-token",
  "thiserror 2.0.16",
 ]
@@ -10120,7 +9481,7 @@ dependencies = [
 [[package]]
 name = "solana-svm-callback"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "solana-account",
  "solana-precompile-error",
@@ -10136,13 +9497,12 @@ checksum = "e65361fa1fb2a123319df6d9694c1c5ca20e555cda18eb1f953babf32e4cddd4"
 [[package]]
 name = "solana-svm-feature-set"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 
 [[package]]
 name = "solana-svm-rent-collector"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20f1d3196d0c586fa43ab7f80143a248ccc262b9175be2ea5ab637caf2d02ca4"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "solana-account",
  "solana-clock",
@@ -10150,22 +9510,7 @@ dependencies = [
  "solana-rent",
  "solana-rent-collector",
  "solana-sdk-ids",
- "solana-transaction-context 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-transaction-error",
-]
-
-[[package]]
-name = "solana-svm-rent-collector"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "solana-account",
- "solana-clock",
- "solana-pubkey",
- "solana-rent",
- "solana-rent-collector",
- "solana-sdk-ids",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
 ]
 
@@ -10186,7 +9531,7 @@ dependencies = [
 [[package]]
 name = "solana-svm-transaction"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "solana-hash",
  "solana-message",
@@ -10242,7 +9587,7 @@ dependencies = [
 [[package]]
 name = "solana-system-program"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "log",
@@ -10252,17 +9597,17 @@ dependencies = [
  "solana-bincode",
  "solana-fee-calculator",
  "solana-instruction",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-nonce",
  "solana-nonce-account",
  "solana-packet",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-system-interface",
  "solana-sysvar",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-type-overrides 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -10330,8 +9675,7 @@ dependencies = [
 [[package]]
 name = "solana-thin-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25571fe8261c632206373ccbf35edf12a476405264a0d0829adf65202c0e1c17"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "log",
@@ -10376,7 +9720,7 @@ dependencies = [
 [[package]]
 name = "solana-timings"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "eager",
  "enum-iterator",
@@ -10386,20 +9730,7 @@ dependencies = [
 [[package]]
 name = "solana-tls-utils"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbab408af08c4b0dc103b608f053e8bf7aec9f18a20da79fb98ccf35950ee468"
-dependencies = [
- "rustls 0.23.31",
- "solana-keypair",
- "solana-pubkey",
- "solana-signer",
- "x509-parser",
-]
-
-[[package]]
-name = "solana-tls-utils"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "rustls 0.23.31",
  "solana-keypair",
@@ -10411,8 +9742,7 @@ dependencies = [
 [[package]]
 name = "solana-tpu-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc8ccdb1b26950de965860e02285361c48563d3b5eef64166fe45b5b9245e1b"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "bincode",
@@ -10426,9 +9756,9 @@ dependencies = [
  "solana-commitment-config",
  "solana-connection-cache",
  "solana-epoch-schedule",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-message",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-pubsub-client",
  "solana-quic-definitions",
@@ -10445,8 +9775,7 @@ dependencies = [
 [[package]]
 name = "solana-tpu-client-next"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "192fff4e29eaf02d34f8518a82c0e564a5c555b6dd4c251c1080f2ca02bc761f"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "log",
@@ -10456,13 +9785,13 @@ dependencies = [
  "solana-clock",
  "solana-connection-cache",
  "solana-keypair",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-quic-definitions",
  "solana-rpc-client",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
  "solana-time-utils",
- "solana-tls-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-tls-utils",
  "solana-tpu-client",
  "thiserror 2.0.16",
  "tokio",
@@ -10516,7 +9845,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-context"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "bincode",
  "serde",
@@ -10544,30 +9873,14 @@ dependencies = [
 [[package]]
 name = "solana-transaction-metrics-tracker"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5ffbcb223e76a4e8389f32d447f9d5d68ce0947ba0a3b7db83141085d68c8f3"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "base64 0.22.1",
  "bincode",
  "log",
  "rand 0.8.5",
  "solana-packet",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-short-vec",
- "solana-signature",
-]
-
-[[package]]
-name = "solana-transaction-metrics-tracker"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "base64 0.22.1",
- "bincode",
- "log",
- "rand 0.8.5",
- "solana-packet",
- "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-short-vec",
  "solana-signature",
 ]
@@ -10575,11 +9888,10 @@ dependencies = [
 [[package]]
 name = "solana-transaction-status"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "287a86e28777cdc8c0745ff5700a2c3741a2a7a72a347a93815e832adfe39dc5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "Inflector",
- "agave-reserved-account-keys 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-reserved-account-keys",
  "base64 0.22.1",
  "bincode",
  "borsh 1.5.7",
@@ -10588,7 +9900,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-account-decoder",
  "solana-address-lookup-table-interface",
  "solana-clock",
  "solana-hash",
@@ -10605,50 +9917,7 @@ dependencies = [
  "solana-system-interface",
  "solana-transaction",
  "solana-transaction-error",
- "solana-transaction-status-client-types 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote-interface",
- "spl-associated-token-account",
- "spl-memo",
- "spl-token",
- "spl-token-2022",
- "spl-token-group-interface",
- "spl-token-metadata-interface",
- "thiserror 2.0.16",
-]
-
-[[package]]
-name = "solana-transaction-status"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "Inflector",
- "agave-reserved-account-keys 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "base64 0.22.1",
- "bincode",
- "borsh 1.5.7",
- "bs58",
- "log",
- "serde",
- "serde_derive",
- "serde_json",
- "solana-account-decoder 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-address-lookup-table-interface",
- "solana-clock",
- "solana-hash",
- "solana-instruction",
- "solana-loader-v2-interface",
- "solana-loader-v3-interface",
- "solana-message",
- "solana-program-option",
- "solana-pubkey",
- "solana-reward-info",
- "solana-sdk-ids",
- "solana-signature",
- "solana-stake-interface",
- "solana-system-interface",
- "solana-transaction",
- "solana-transaction-error",
- "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-status-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-vote-interface",
  "spl-associated-token-account",
  "spl-memo",
@@ -10685,7 +9954,7 @@ dependencies = [
 [[package]]
 name = "solana-transaction-status-client-types"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -10693,13 +9962,13 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-account-decoder-client-types 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-commitment-config",
  "solana-message",
  "solana-reward-info",
  "solana-signature",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction-error",
  "thiserror 2.0.16",
 ]
@@ -10707,10 +9976,9 @@ dependencies = [
 [[package]]
 name = "solana-turbine"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ddaae7d21c8c62d3945c30d7e5cce09ba15b6f4f50dc37e7dfb6949b99156c6"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "agave-xdp",
  "bincode",
  "bytes",
@@ -10728,29 +9996,29 @@ dependencies = [
  "rustls 0.23.31",
  "solana-clock",
  "solana-cluster-type",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-gossip",
  "solana-hash",
  "solana-keypair",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-measure 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-metrics 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-ledger",
+ "solana-measure 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-metrics 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-native-token",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-perf 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-perf 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-poh",
  "solana-pubkey",
  "solana-quic-client",
- "solana-rayon-threadlimit 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-rayon-threadlimit 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-rpc",
  "solana-rpc-client-api",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
  "solana-signature",
  "solana-signer",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-streamer",
  "solana-system-transaction",
  "solana-time-utils",
- "solana-tls-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-tls-utils",
  "solana-transaction-error",
  "static_assertions",
  "thiserror 2.0.16",
@@ -10769,7 +10037,7 @@ dependencies = [
 [[package]]
 name = "solana-type-overrides"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "rand 0.8.5",
 ]
@@ -10777,14 +10045,13 @@ dependencies = [
 [[package]]
 name = "solana-udp-client"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e42f000524bb38b5af2e0fba649bc3d10b0e8e0dd833dc11389a91e955cb6c54"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "async-trait",
  "solana-connection-cache",
  "solana-keypair",
- "solana-net-utils 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-streamer 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-net-utils 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-streamer",
  "solana-transaction-error",
  "thiserror 2.0.16",
  "tokio",
@@ -10793,25 +10060,11 @@ dependencies = [
 [[package]]
 name = "solana-unified-scheduler-logic"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7919d719f697d6a8cae7c2d4372777f9c717cd08fac5f9023c61d3a6e2a7eb9"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "assert_matches",
  "solana-pubkey",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-transaction",
- "static_assertions",
- "unwrap_none",
-]
-
-[[package]]
-name = "solana-unified-scheduler-logic"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "assert_matches",
- "solana-pubkey",
- "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction",
  "static_assertions",
  "unwrap_none",
@@ -10820,8 +10073,7 @@ dependencies = [
 [[package]]
 name = "solana-unified-scheduler-pool"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36ae9e6e21b3bf585d313f8483192bcf1ffcd55c9e442bebbbd9bccd265f1547"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "agave-banking-stage-ingress-types",
  "aquamarine",
@@ -10835,17 +10087,17 @@ dependencies = [
  "qualifier_attr",
  "scopeguard",
  "solana-clock",
- "solana-cost-model 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-cost-model",
+ "solana-ledger",
  "solana-poh",
  "solana-pubkey",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-runtime-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-svm 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-timings 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
+ "solana-runtime-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-svm",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction",
  "solana-transaction-error",
- "solana-unified-scheduler-logic 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-unified-scheduler-logic",
  "static_assertions",
  "trait-set",
  "unwrap_none",
@@ -10876,9 +10128,9 @@ dependencies = [
 [[package]]
 name = "solana-version"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "rand 0.8.5",
  "semver",
  "serde",
@@ -10890,8 +10142,7 @@ dependencies = [
 [[package]]
 name = "solana-vote"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73033bbc54597353f4acd74fb4e14a529f93331089a7d12c21bf9122c6db3957"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "itertools 0.12.1",
  "log",
@@ -10909,34 +10160,7 @@ dependencies = [
  "solana-serialize-utils",
  "solana-signature",
  "solana-signer",
- "solana-svm-transaction 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-transaction",
- "solana-vote-interface",
- "thiserror 2.0.16",
-]
-
-[[package]]
-name = "solana-vote"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "itertools 0.12.1",
- "log",
- "serde",
- "serde_derive",
- "solana-account",
- "solana-bincode",
- "solana-clock",
- "solana-hash",
- "solana-instruction",
- "solana-keypair",
- "solana-packet",
- "solana-pubkey",
- "solana-sdk-ids",
- "solana-serialize-utils",
- "solana-signature",
- "solana-signer",
- "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-svm-transaction 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-transaction",
  "solana-vote-interface",
  "thiserror 2.0.16",
@@ -11002,9 +10226,9 @@ dependencies = [
 [[package]]
 name = "solana-vote-program"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "bincode",
  "log",
  "num-derive",
@@ -11019,14 +10243,14 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-packet",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-pubkey",
  "solana-rent",
  "solana-sdk-ids",
  "solana-signer",
  "solana-slot-hashes",
  "solana-transaction",
- "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-transaction-context 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-vote-interface",
  "thiserror 2.0.16",
 ]
@@ -11034,8 +10258,7 @@ dependencies = [
 [[package]]
 name = "solana-wen-restart"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe67d9b07c1387148e1eb85ba9836cb6e477be18e6b8ff079c3645c013fe447d"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "anyhow",
  "log",
@@ -11045,51 +10268,34 @@ dependencies = [
  "protobuf-src",
  "rayon",
  "solana-clock",
- "solana-entry 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-entry 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-gossip",
  "solana-hash",
- "solana-ledger 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-ledger",
  "solana-pubkey",
- "solana-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-runtime",
  "solana-shred-version",
  "solana-time-utils",
- "solana-timings 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-vote 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-timings 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-vote",
  "solana-vote-interface",
- "solana-vote-program 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-vote-program 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
 name = "solana-zk-elgamal-proof-program"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9b084cb82e20660b079150ae079cdf1ae71c85f3c95f56daee9a5e73fbfb510"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "bytemuck",
  "num-derive",
  "num-traits",
  "solana-instruction",
- "solana-log-collector 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-program-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sdk-ids",
- "solana-zk-sdk 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "solana-zk-elgamal-proof-program"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "bytemuck",
- "num-derive",
- "num-traits",
- "solana-instruction",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-sdk-ids",
- "solana-zk-sdk 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-zk-sdk 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
 ]
 
 [[package]]
@@ -11131,7 +10337,7 @@ dependencies = [
 [[package]]
 name = "solana-zk-sdk"
 version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "aes-gcm-siv",
  "base64 0.22.1",
@@ -11166,41 +10372,23 @@ dependencies = [
 [[package]]
 name = "solana-zk-token-proof-program"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc711a3c144df1699239f2c411c9efdccbbd6da27a46723b4ba76de86f278246"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
- "agave-feature-set 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "bytemuck",
  "num-derive",
  "num-traits",
  "solana-instruction",
- "solana-log-collector 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-program-runtime 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
+ "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-sdk-ids",
- "solana-zk-token-sdk 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "solana-zk-token-proof-program"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "agave-feature-set 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "bytemuck",
- "num-derive",
- "num-traits",
- "solana-instruction",
- "solana-log-collector 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-program-runtime 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
- "solana-sdk-ids",
- "solana-zk-token-sdk 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-zk-token-sdk",
 ]
 
 [[package]]
 name = "solana-zk-token-sdk"
 version = "2.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0131dcac71c6d63f781354a2aa6a46c89a56a04b438b725ca811a465b90ad506"
+source = "git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7#8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7"
 dependencies = [
  "aes-gcm-siv",
  "base64 0.22.1",
@@ -11217,41 +10405,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "sha3",
- "solana-curve25519 2.3.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "solana-derivation-path",
- "solana-instruction",
- "solana-pubkey",
- "solana-sdk-ids",
- "solana-seed-derivable",
- "solana-seed-phrase",
- "solana-signature",
- "solana-signer",
- "subtle",
- "thiserror 2.0.16",
- "zeroize",
-]
-
-[[package]]
-name = "solana-zk-token-sdk"
-version = "2.3.7"
-source = "git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5#27f8e18f4f06f0537fa3ab12c884eb692a21c9a5"
-dependencies = [
- "aes-gcm-siv",
- "base64 0.22.1",
- "bincode",
- "bytemuck",
- "bytemuck_derive",
- "curve25519-dalek 4.1.3",
- "itertools 0.12.1",
- "merlin",
- "num-derive",
- "num-traits",
- "rand 0.8.5",
- "serde",
- "serde_derive",
- "serde_json",
- "sha3",
- "solana-curve25519 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=27f8e18f4f06f0537fa3ab12c884eb692a21c9a5)",
+ "solana-curve25519 2.3.7 (git+https://github.com/Overclock-Validator/agave.git?rev=8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7)",
  "solana-derivation-path",
  "solana-instruction",
  "solana-pubkey",

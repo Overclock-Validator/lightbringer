@@ -143,14 +143,15 @@ fn main() {
     let (repair_tx, repair_rx) = kanal::bounded_async(10000);
     // allow upto 20 slots to be queued for repairing at a time
     let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
-    threadpool.spawn(move |exit| async {
+    threadpool.spawn(enclose!((keypair) move |exit| async {
         let repair_manager =
             RepairRequestManager::new(cluster_info, repair_rx, keypair, repair_socket_tx);
         repair_manager.start_repair_manager_loop(exit).await
-    });
+    }));
     threadpool.spawn(move |exit| async move {
         start_repair_socket_runner(
             exit,
+            keypair,
             std_to_glommio_socket(sockets.repair_socket),
             repair_socket_rx,
             filter_tx,
