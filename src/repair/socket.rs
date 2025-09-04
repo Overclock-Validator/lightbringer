@@ -33,7 +33,7 @@ pub async fn start_repair_socket_runner(
 
     let tx_task = spawn_local(async move {
         // TODO: add stronger filters for repair shreds
-        shred_processor_loop(&socket, req_filter_tx).await
+        shred_processor_loop(&socket, req_filter_tx, true).await
     });
 
     exit.await;
