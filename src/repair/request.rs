@@ -152,16 +152,24 @@ impl RepairRequestManager {
             repair_peers_insert,
             self.cluster_info,
         ));
+        let request_processor_task = spawn_local(Self::request_processor_loop(
+            self.peers,
+            self.req_rx,
+            me,
+            self.keypair,
+            self.send_socket,
+        ));
 
         exit.await;
         peer_manager_task.cancel().await;
+        request_processor_task.cancel().await;
     }
 
     async fn request_processor_loop(
         peers: Rc<RefCell<RepairPeers>>,
         req_rx: AsyncReceiver<RepairReq>,
         id: Pubkey,
-        keypair: Keypair,
+        keypair: Arc<Keypair>,
         send_socket: AsyncSender<RepairSocketRequestBatch>,
     ) {
         let mut rng = SmallRng::from_rng(&mut rand::rng());

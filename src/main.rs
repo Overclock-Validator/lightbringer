@@ -112,22 +112,6 @@ fn main() {
 
     let cluster_info = gossip.get_cluster_info();
 
-    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
-    // allow upto 20 slots to be queued for repairing at a time
-    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
-    threadpool.spawn(move |exit| async {
-        let repair_manager =
-            RepairRequestManager::new(cluster_info, repair_rx, keypair, repair_socket_tx);
-        repair_manager.start_repair_manager_loop(exit).await
-    });
-    threadpool.spawn(move |exit| {
-        start_repair_socket_runner(
-            exit,
-            std_to_glommio_socket(sockets.repair_socket),
-            repair_socket_rx,
-        )
-    });
-
     let my_tvu_addr = my_contact_info
         .tvu(solana_gossip::contact_info::Protocol::UDP)
         .unwrap();
@@ -137,13 +121,15 @@ fn main() {
     let (slot_store_tx, slot_store_rx) = kanal::unbounded_async();
     let (slot_meta_tx, slot_meta_rx) = kanal::unbounded_async();
 
-    threadpool.spawn(move |exit| async move {
+    // Turbine shred receiver
+    threadpool.spawn(enclose!((filter_tx) move |exit| async move {
         let res = start_turbine_manager(exit, my_tvu_addr, filter_tx).await;
         if let Err(e) = res {
             log::error!("failed to start turbine manager: {e}");
         }
-    });
+    }));
 
+    // Shred Filter
     threadpool.spawn(move |exit| {
         packet_filter_loop(
             exit,
@@ -153,11 +139,32 @@ fn main() {
         )
     });
 
+    // Slot Repair
+    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
+    // allow upto 20 slots to be queued for repairing at a time
+    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
+    threadpool.spawn(move |exit| async {
+        let repair_manager =
+            RepairRequestManager::new(cluster_info, repair_rx, keypair, repair_socket_tx);
+        repair_manager.start_repair_manager_loop(exit).await
+    });
+    threadpool.spawn(move |exit| async move {
+        start_repair_socket_runner(
+            exit,
+            std_to_glommio_socket(sockets.repair_socket),
+            repair_socket_rx,
+            filter_tx,
+        )
+        .await
+    });
+
+    // Shred Storage
     let shred_store = ShredStore::new(&lsm_ks, version).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.packet_listener_loop(exit, slot_store_rx)),
     );
 
+    // Shred Metadata Storage (timeout etc)
     let slot_meta_store = SlotMetadataStore::new(version);
     threadpool
         .spawn(move |exit| slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx));
