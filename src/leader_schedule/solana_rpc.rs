@@ -35,9 +35,15 @@ impl SolanaRpcClient {
         }
     }
 
-    pub async fn get_leader_schedule(&self) -> anyhow::Result<Option<RpcLeaderSchedule>> {
-        self.send(RpcRequest::GetLeaderSchedule, Params::Array(vec![]))
-            .await
+    pub async fn get_leader_schedule(
+        &self,
+        slot: Option<u64>,
+    ) -> anyhow::Result<Option<RpcLeaderSchedule>> {
+        self.send(
+            RpcRequest::GetLeaderSchedule,
+            Params::Array(vec![slot.into()]),
+        )
+        .await
     }
 
     pub async fn get_epoch_info(&self) -> anyhow::Result<Option<EpochInfo>> {

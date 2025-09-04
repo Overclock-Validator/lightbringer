@@ -55,7 +55,7 @@ impl LeaderScheduleSync {
         let mut store = LeaderScheduleStore::default();
         let rpc = SolanaRpcClient::default();
         let schedule = rpc
-            .get_leader_schedule()
+            .get_leader_schedule(None)
             .await?
             .ok_or_else(|| anyhow!("leader schedule was None?!"))?;
         let epoch_info = rpc
@@ -91,7 +91,7 @@ impl LeaderScheduleSync {
             return None;
         }
 
-        let schedule = match self.rpc.get_leader_schedule().await {
+        let schedule = match self.rpc.get_leader_schedule(Some(slot)).await {
             Ok(Some(schedule)) => schedule,
             Ok(None) => {
                 log::warn!("leader schedule was None for slot: {slot}, ignoring shred");
