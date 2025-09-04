@@ -3,7 +3,12 @@ use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use jsonrpc_types::{MethodCall, Params};
 use serde::de::DeserializeOwned;
 use solana_epoch_info::EpochInfo;
-use solana_rpc_client_types::{request::RpcRequest, response::RpcLeaderSchedule};
+use solana_rpc_client_types::{
+    config::{RpcContextConfig, RpcLeaderScheduleConfig},
+    request::RpcRequest,
+    response::RpcLeaderSchedule,
+};
+use solana_sdk::commitment_config::CommitmentConfig;
 
 const MAINNET_RPC_NODE: &str = "https://api.mainnet-beta.solana.com";
 
@@ -39,15 +44,28 @@ impl SolanaRpcClient {
         &self,
         slot: Option<u64>,
     ) -> anyhow::Result<Option<RpcLeaderSchedule>> {
+        let commitment_config = RpcLeaderScheduleConfig {
+            commitment: Some(CommitmentConfig::processed()),
+            ..Default::default()
+        };
+        let commitment_config_val = serde_json::to_value(commitment_config).unwrap();
         self.send(
             RpcRequest::GetLeaderSchedule,
-            Params::Array(vec![slot.into()]),
+            Params::Array(vec![slot.into(), commitment_config_val]),
         )
         .await
     }
 
-    pub async fn get_epoch_info(&self) -> anyhow::Result<Option<EpochInfo>> {
-        self.send(RpcRequest::GetEpochInfo, Params::Array(vec![]))
-            .await
+    pub async fn get_epoch_info(&self, slot: Option<u64>) -> anyhow::Result<Option<EpochInfo>> {
+        let commitment_config = RpcContextConfig {
+            commitment: Some(CommitmentConfig::processed()),
+            min_context_slot: slot,
+        };
+        let commitment_config_val = serde_json::to_value(commitment_config).unwrap();
+        self.send(
+            RpcRequest::GetEpochInfo,
+            Params::Array(vec![commitment_config_val]),
+        )
+        .await
     }
 }

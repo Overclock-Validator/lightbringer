@@ -59,7 +59,7 @@ impl LeaderScheduleSync {
             .await?
             .ok_or_else(|| anyhow!("leader schedule was None?!"))?;
         let epoch_info = rpc
-            .get_epoch_info()
+            .get_epoch_info(None)
             .await?
             .ok_or_else(|| anyhow!("epoch info was None?!"))?;
         store.store_leaders(schedule, epoch_info.absolute_slot - epoch_info.slot_index);
@@ -76,7 +76,7 @@ impl LeaderScheduleSync {
         if diff == 0 || diff > SLOTS_PER_EPOCH as u64 {
             return None;
         }
-        let epoch_info = match self.rpc.get_epoch_info().await {
+        let epoch_info = match self.rpc.get_epoch_info(Some(slot)).await {
             Ok(Some(schedule)) => schedule,
             Ok(None) => {
                 log::warn!("leader schedule was None for slot: {slot}, ignoring shred");
