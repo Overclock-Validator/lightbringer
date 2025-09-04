@@ -4,7 +4,7 @@ use solana_ledger::shred::{Shred, ShredType};
 
 use crate::{
     thread_manager::CancelRx,
-    types::{ShredInfo, ShredInfoView},
+    types::{PacketInfo, ShredInfoView},
 };
 
 pub struct ShredRes {
@@ -30,7 +30,7 @@ impl ShredStore {
         })
     }
 
-    pub async fn packet_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<ShredInfo>) {
+    pub async fn packet_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<PacketInfo>) {
         let task = spawn_local(async move {
             let executor = executor();
             while let Ok(shred) = rx.recv().await {
@@ -63,7 +63,7 @@ impl ShredStore {
         &self,
         slot: u64,
         shred_index: u32,
-        shred: ShredInfo,
+        shred: PacketInfo,
         shred_type: ShredType,
     ) -> anyhow::Result<()> {
         // slot_number::le_bytes | shred_index::le_bytes | shred_type

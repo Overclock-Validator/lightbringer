@@ -15,7 +15,7 @@ use kanal::{AsyncReceiver, AsyncSender};
 use lru::LruCache;
 use solana_ledger::shred::Shred;
 
-use crate::{repair::request::RepairReq, thread_manager::CancelRx, types::ShredInfo};
+use crate::{repair::request::RepairReq, thread_manager::CancelRx, types::PacketInfo};
 
 pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
@@ -109,7 +109,7 @@ impl SlotMetadataStore {
     pub async fn packet_listener_loop(
         self,
         exit: CancelRx,
-        rx: AsyncReceiver<ShredInfo>,
+        rx: AsyncReceiver<PacketInfo>,
         repair_tx: AsyncSender<RepairReq>,
     ) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();

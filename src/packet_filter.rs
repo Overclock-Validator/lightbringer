@@ -4,7 +4,7 @@ use glommio::spawn_local;
 use solana_ledger::shred::{self};
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 
-use crate::{leader_schedule::LeaderScheduleSync, thread_manager::CancelRx, types::ShredInfo};
+use crate::{leader_schedule::LeaderScheduleSync, thread_manager::CancelRx, types::PacketInfo};
 
 type SigCacheKey = (Signature, Pubkey, [u8; 32]);
 
@@ -13,12 +13,12 @@ const PACKET_PROCESSOR_THREADS: usize = 4;
 #[derive(Clone)]
 struct PacketProcessor {
     sig_cache: Arc<scc::HashCache<SigCacheKey, ()>>,
-    store_tx: kanal::Sender<ShredInfo>,
-    meta_tx: kanal::Sender<ShredInfo>,
+    store_tx: kanal::Sender<PacketInfo>,
+    meta_tx: kanal::Sender<PacketInfo>,
 }
 
 impl PacketProcessor {
-    fn new(store_tx: kanal::Sender<ShredInfo>, meta_tx: kanal::Sender<ShredInfo>) -> Self {
+    fn new(store_tx: kanal::Sender<PacketInfo>, meta_tx: kanal::Sender<PacketInfo>) -> Self {
         let sig_cache = scc::HashCache::with_capacity(0, 262144);
         Self {
             sig_cache: Arc::new(sig_cache),
@@ -27,7 +27,7 @@ impl PacketProcessor {
         }
     }
 
-    fn validate_packet(&self, packet: &ShredInfo, leader: Pubkey) -> bool {
+    fn validate_packet(&self, packet: &PacketInfo, leader: Pubkey) -> bool {
         let Some(sig) = shred::layout::get_signature(packet) else {
             return false;
         };
@@ -48,7 +48,7 @@ impl PacketProcessor {
         }
     }
 
-    fn filter_packet(&self, packet: ShredInfo, leader: Pubkey) {
+    fn filter_packet(&self, packet: PacketInfo, leader: Pubkey) {
         if self.validate_packet(&packet, leader) {
             if let Err(e) = self.store_tx.send(packet.clone()) {
                 log::warn!("failed to send packet to slot store: {e}");
@@ -61,15 +61,15 @@ impl PacketProcessor {
 }
 struct PacketProcessorPool {
     jobs: Vec<JoinHandle<()>>,
-    senders: Vec<kanal::AsyncSender<(ShredInfo, Pubkey)>>,
+    senders: Vec<kanal::AsyncSender<(PacketInfo, Pubkey)>>,
     leader_schedule: LeaderScheduleSync,
 }
 
 impl PacketProcessorPool {
     fn new(
         threads: usize,
-        store_tx: kanal::Sender<ShredInfo>,
-        meta_tx: kanal::Sender<ShredInfo>,
+        store_tx: kanal::Sender<PacketInfo>,
+        meta_tx: kanal::Sender<PacketInfo>,
         leader_schedule: LeaderScheduleSync,
     ) -> Self {
         let mut jobs = vec![];
@@ -96,7 +96,7 @@ impl PacketProcessorPool {
         }
     }
 
-    async fn enqueue(&mut self, shred: ShredInfo) {
+    async fn enqueue(&mut self, shred: PacketInfo) {
         let Some(shred_id) = shred::layout::get_index(&shred) else {
             return;
         };
@@ -118,9 +118,9 @@ impl PacketProcessorPool {
 
 pub async fn packet_filter_loop(
     exit: CancelRx,
-    rx: kanal::AsyncReceiver<ShredInfo>,
-    store_tx: kanal::Sender<ShredInfo>,
-    meta_tx: kanal::Sender<ShredInfo>,
+    rx: kanal::AsyncReceiver<PacketInfo>,
+    store_tx: kanal::Sender<PacketInfo>,
+    meta_tx: kanal::Sender<PacketInfo>,
 ) {
     let leader_schedule = LeaderScheduleSync::new_synced()
         .await

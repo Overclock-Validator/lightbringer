@@ -11,7 +11,7 @@ use solana_sdk::signature::{Keypair, Signable};
 use crate::{
     thread_manager::CancelRx,
     turbine_manager::recv_shred,
-    types::{ShredInfo, ShredRaw},
+    types::{PacketInfo, PacketView},
 };
 
 pub type RepairSocketRequestBatch = Vec<(SocketAddr, Vec<u8>)>;
@@ -21,7 +21,7 @@ pub type RepairSocketRequestBatch = Vec<(SocketAddr, Vec<u8>)>;
 async fn handle_ping(
     kp: &Keypair,
     socket: &UdpSocket,
-    packet: &ShredRaw,
+    packet: &PacketView,
     send_addr: SocketAddr,
 ) -> bool {
     if packet.len() != REPAIR_RESPONSE_SERIALIZED_PING_BYTES {
@@ -49,7 +49,7 @@ pub async fn start_repair_socket_runner(
     kp: Arc<Keypair>,
     socket: UdpSocket,
     req_rx: kanal::AsyncReceiver<RepairSocketRequestBatch>,
-    shred_filter_tx: kanal::AsyncSender<ShredInfo>,
+    repair_manager_tx: kanal::AsyncSender<(SocketAddr, PacketInfo)>,
 ) {
     let socket = Rc::new(socket);
 
@@ -79,9 +79,9 @@ pub async fn start_repair_socket_runner(
                 continue;
             }
 
-            let packet = ShredInfo::new(packet);
-            if let Err(e) = shred_filter_tx.send(packet.clone()).await {
-                log::warn!("failed to send packet to filter: {e}");
+            let packet = PacketInfo::new(packet);
+            if let Err(e) = repair_manager_tx.send((send_addr, packet)).await {
+                log::warn!("failed to send packet to repair manager: {e}");
             }
         }
     });
