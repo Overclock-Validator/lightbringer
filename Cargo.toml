@@ -51,6 +51,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.14"
 prost = "0.14"
 tonic-prost = "0.14"
+tokio-util = { version = "0.7.16", features = ["time"] }
 
 
 [build-dependencies]

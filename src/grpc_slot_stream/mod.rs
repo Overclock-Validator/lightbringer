@@ -10,10 +10,11 @@ use tokio::{
     task::{spawn, spawn_blocking},
 };
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use tokio_util::time::DelayQueue;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{store::shred::ShredStore, util::shred::get_slot_entries_from_store};
-use std::{net::SocketAddr, pin::Pin};
+use std::{net::SocketAddr, pin::Pin, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct SlotStreamService {
@@ -26,17 +27,41 @@ impl SlotStreamService {
 
         let broadcast_tx_master = broadcast_tx.clone();
         spawn(async move {
-            while let Ok(slot) = slot_notif.recv().await {
-                let shred_store = store.clone();
-                let msg =
-                    match spawn_blocking(move || get_slot_entries_from_store(&shred_store, slot))
-                        .await
-                        .unwrap()
-                    {
-                        Ok(e) => bincode::serialize(&e).unwrap(),
-                        Err(e) => bincode::serialize(&e.to_string()).unwrap(),
-                    };
-                _ = broadcast_tx_master.send((msg, slot));
+            let mut dq = DelayQueue::new();
+            let mut fut = Box::pin(slot_notif.recv());
+
+            loop {
+                tokio::select! {
+                    res = &mut fut => {
+                        let Ok(slot) = res else {
+                            break;
+                        };
+                        dq.insert(slot, Duration::from_millis(100));
+                        fut = Box::pin(slot_notif.recv());
+                    },
+                    slot = dq.next() => {
+                        let Some(slot) = slot else {
+                            let Ok(slot) = fut.await else {
+                                break;
+                            };
+                            dq.insert(slot, Duration::from_millis(100));
+                            fut = Box::pin(slot_notif.recv());
+                            continue;
+                        };
+
+                        let shred_store = store.clone();
+                        let slot = slot.into_inner();
+                        let msg =
+                            match spawn_blocking(move || get_slot_entries_from_store(&shred_store, slot))
+                                .await
+                                .unwrap()
+                            {
+                                Ok(e) => bincode::serialize(&e).unwrap(),
+                                Err(e) => bincode::serialize(&e.to_string()).unwrap(),
+                            };
+                        _ = broadcast_tx_master.send((msg, slot));
+                    }
+                }
             }
         });
 
