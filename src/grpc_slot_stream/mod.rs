@@ -7,7 +7,7 @@ use pb::{SlotResponse, SlotStreamRequest, slot_stream_server::SlotStream as Slot
 use tokio::{
     runtime,
     sync::broadcast,
-    task::{spawn_blocking, spawn_local},
+    task::{spawn, spawn_blocking},
 };
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tonic::{Request, Response, Status, transport::Server};
@@ -25,7 +25,7 @@ impl SlotStreamService {
         let (broadcast_tx, _) = broadcast::channel(10000);
 
         let broadcast_tx_master = broadcast_tx.clone();
-        spawn_local(async move {
+        spawn(async move {
             while let Ok(slot) = slot_notif.recv().await {
                 let shred_store = store.clone();
                 let msg =
