@@ -22,8 +22,7 @@ async fn async_main() -> anyhow::Result<()> {
         match resp {
             Ok(resp) => {
                 let raw_entries = resp.data;
-                let Ok(entries) = serde_json::from_str::<Vec<Entry>>(&raw_entries) else {
-                    log::warn!("received invalid entries {raw_entries}");
+                let Ok(entries) = bincode::deserialize::<Vec<Entry>>(&raw_entries) else {
                     continue;
                 };
                 let txn_count = entries.iter().fold(0usize, |txn_count, entry| {
