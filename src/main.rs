@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod coding;
 mod gossip_manager;
+mod grpc_slot_stream;
 mod leader_schedule;
 mod packet_filter;
 mod repair;
@@ -38,6 +39,8 @@ struct Args {
     storage: PathBuf,
     #[arg(default_value = "127.0.0.1:3000")]
     rpc_addr: SocketAddr,
+    #[arg(default_value = "127.0.0.1:3001")]
+    grpc_addr: SocketAddr,
 }
 
 fn init_fjall(storage: PathBuf) -> fjall::Result<fjall::Keyspace> {
@@ -174,9 +177,16 @@ fn main() {
     );
 
     // Shred Metadata Storage (timeout etc)
+    let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
     let slot_meta_store = SlotMetadataStore::new(version);
-    threadpool
-        .spawn(move |exit| slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx));
+    threadpool.spawn(move |exit| {
+        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_tx)
+    });
+
+    let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();
+    let grpc_thread = std::thread::spawn(enclose!((shred_store) move || {
+        grpc_slot_stream::start_grpc_server(args.grpc_addr, grpc_rx, shred_store, grpc_cancel_rx);
+    }));
 
     threadpool.spawn_rpc_with_cancel_handler(
         DebugRpcInit {
@@ -186,6 +196,10 @@ fn main() {
         move || {
             if let Err(e) = gossip.stop() {
                 log::warn!("failed to stop gossip service {e}");
+            }
+            _ = grpc_cancel_tx.send(());
+            if let Err(e) = grpc_thread.join() {
+                log::warn!("failed to stop grpc thread {e:?}");
             }
         },
     );

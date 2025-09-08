@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::rpc::{deshred_to_entries, recover_shreds_and_group_by_completion};
+use crate::util::shred::{deshred_to_entries, recover_shreds_and_group_by_completion};
 
 #[test]
 fn try_deshred() {
@@ -27,7 +27,7 @@ fn try_deshred() {
     }
 
     for (batch, shred) in by_batch {
-        use crate::rpc::deshred_to_entries;
+        use crate::util::shred::deshred_to_entries;
 
         match deshred_to_entries(shred.iter()) {
             Ok(entries) => println!("batch entries {entries:?}"),

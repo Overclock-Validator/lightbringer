@@ -69,11 +69,13 @@ impl<const CAP: usize> ThreadManager<CAP> {
         };
 
         on_cancel();
+
         for thread in self.threads {
             if let Err(e) = thread.join() {
                 log::error!("thread panicked: {e:?}");
             }
         }
+
         std::mem::drop(self.cancel_tx);
     }
 }

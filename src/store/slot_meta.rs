@@ -111,6 +111,7 @@ impl SlotMetadataStore {
         exit: CancelRx,
         rx: AsyncReceiver<PacketInfo>,
         repair_tx: AsyncSender<RepairReq>,
+        grpc_tx: AsyncSender<u64>,
     ) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();
         let timer_tx = Rc::new(timer_tx);
@@ -162,6 +163,7 @@ impl SlotMetadataStore {
                             timer.destroy();
                         }
                         log::info!("slot {slot} has all shreds!");
+                        _ = grpc_tx.send(slot).await;
                     }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);

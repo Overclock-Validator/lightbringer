@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package slot_stream;
+
+service SlotStream {
+    rpc StreamSlots(SlotStreamRequest) returns (stream SlotResponse);
+}
+
+message SlotStreamRequest {}
+
+message SlotResponse {
+    string data = 1; // JSON encoded entries 
+}
