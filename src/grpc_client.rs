@@ -10,7 +10,9 @@ mod pb {
 }
 
 async fn async_main() -> anyhow::Result<()> {
-    let channel = Channel::from_static("127.0.0.1:3001").connect().await?;
+    let channel = Channel::from_static("http://127.0.0.1:3001")
+        .connect()
+        .await?;
     let mut client = SlotStreamClient::new(channel);
     let req = Request::new(SlotStreamRequest {});
 
@@ -39,7 +41,9 @@ async fn async_main() -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    simple_logger::init()?;
-    let rt = runtime::Builder::new_current_thread().build()?;
+    simple_logger::init_with_level(log::Level::Info)?;
+    let rt = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async_main())
 }

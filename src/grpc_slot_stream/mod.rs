@@ -36,9 +36,7 @@ impl SlotStreamService {
                         Ok(e) => serde_json::to_string(&e).unwrap(),
                         Err(e) => e.to_string(),
                     };
-                if broadcast_tx_master.send((msg, slot)).is_err() {
-                    return;
-                }
+                _ = broadcast_tx_master.send((msg, slot));
             }
         });
 
