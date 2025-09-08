@@ -71,7 +71,10 @@ pub fn start_grpc_server(
     store: ShredStore,
     cancel: oneshot::Receiver<()>,
 ) {
-    let rt = runtime::Builder::new_current_thread().build().unwrap();
+    let rt = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async move {
         let service = SlotStreamService::new(slot_notif, store);
 
