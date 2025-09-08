@@ -2,6 +2,11 @@
 name = "overcast"
 version = "0.1.0"
 edition = "2024"
+default-run = "overcast"
+
+[[bin]]
+name = "overcast-grpc-client"
+path = "src/grpc_client.rs"
 
 [dependencies]
 solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7" }
@@ -46,6 +51,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.14"
 prost = "0.14"
 tonic-prost = "0.14"
+
 
 [build-dependencies]
 tonic-prost-build = "0.14"

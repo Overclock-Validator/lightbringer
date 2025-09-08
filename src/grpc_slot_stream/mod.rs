@@ -17,7 +17,7 @@ use std::{net::SocketAddr, pin::Pin};
 
 #[derive(Debug, Clone)]
 pub struct SlotStreamService {
-    tx: broadcast::Sender<String>,
+    tx: broadcast::Sender<(String, u64)>,
 }
 
 impl SlotStreamService {
@@ -36,7 +36,7 @@ impl SlotStreamService {
                         Ok(e) => serde_json::to_string(&e).unwrap(),
                         Err(e) => e.to_string(),
                     };
-                if broadcast_tx_master.send(msg).is_err() {
+                if broadcast_tx_master.send((msg, slot)).is_err() {
                     return;
                 }
             }
@@ -57,7 +57,7 @@ impl SlotStreamTrait for SlotStreamService {
         let rx = self.tx.subscribe();
 
         let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-            Ok(json_message) => Some(Ok(SlotResponse { data: json_message })),
+            Ok((data, slot)) => Some(Ok(SlotResponse { data, slot })),
             Err(_) => None,
         });
 
