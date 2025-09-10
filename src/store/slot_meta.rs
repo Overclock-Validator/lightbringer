@@ -47,29 +47,29 @@ impl SlotMetadata {
     }
 
     fn calculate_missing_shreds_bounded(&self) -> Option<Vec<u32>> {
-        let required_batches = self.required_batches?;
-        let required_shreds = (0..required_batches as u32).flat_map(|batch| {
-            if self.completed_batches.contains(&batch) {
-                return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
-            }
+        let max_batch_index = self.required_batches? * DATA_SHREDS_PER_FEC_SET;
+        let required_shreds = (0..max_batch_index as u32)
+            .step_by(DATA_SHREDS_PER_FEC_SET)
+            .flat_map(|batch| {
+                if self.completed_batches.contains(&batch) {
+                    return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
+                }
 
-            let mut mask = [true; DATA_SHREDS_PER_FEC_SET];
-            let Some(shreds) = self.fec_data_map.get(&batch) else {
-                return (0..DATA_SHREDS_PER_FEC_SET)
-                    .map(|i| batch * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
-                    .collect();
-            };
-            shreds
-                .iter()
-                .copied()
-                .for_each(|i| mask[i as usize] = false);
-            mask.iter()
-                .enumerate()
-                .filter_map(|(i, missing)| {
-                    missing.then_some(batch * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
-                })
-                .collect()
-        });
+                let mut mask = [true; DATA_SHREDS_PER_FEC_SET];
+                let Some(shreds) = self.fec_data_map.get(&batch) else {
+                    return (0..DATA_SHREDS_PER_FEC_SET)
+                        .map(|i| batch + i as u32)
+                        .collect();
+                };
+                shreds
+                    .iter()
+                    .copied()
+                    .for_each(|i| mask[i as usize - batch as usize] = false);
+                mask.iter()
+                    .enumerate()
+                    .filter_map(|(i, missing)| missing.then_some(batch + i as u32))
+                    .collect()
+            });
         Some(required_shreds.collect())
     }
 
@@ -87,23 +87,23 @@ impl SlotMetadata {
                 batch_shreds
                     .iter()
                     .copied()
-                    .for_each(|i| mask[i as usize] = false);
+                    .for_each(|i| mask[i as usize - *batch_index as usize] = false);
                 mask.iter()
                     .enumerate()
-                    .filter_map(|(i, missing)| {
-                        missing.then_some(*batch_index * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
-                    })
+                    .filter_map(|(i, missing)| missing.then_some(*batch_index + i as u32))
                     .collect()
             })
             .collect::<Vec<_>>();
-        missing_shreds.extend((0..max_batch).flat_map(|batch_index| {
-            if self.fec_data_map.contains_key(&batch_index) {
-                return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
-            }
-            (0..DATA_SHREDS_PER_FEC_SET)
-                .map(|i| batch_index * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
-                .collect()
-        }));
+        missing_shreds.extend((0..max_batch).step_by(DATA_SHREDS_PER_FEC_SET).flat_map(
+            |batch_index| {
+                if self.fec_data_map.contains_key(&batch_index) {
+                    return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
+                }
+                (0..DATA_SHREDS_PER_FEC_SET)
+                    .map(|i| batch_index + i as u32)
+                    .collect()
+            },
+        ));
 
         missing_shreds
     }
