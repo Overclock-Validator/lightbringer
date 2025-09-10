@@ -46,9 +46,7 @@ impl SlotMetadata {
         Some(self.completed_batches.len()) == self.required_batches
     }
 
-    /// find required shreds to complete the slot
-    /// returning None if the last shred hasn't been seen yet
-    pub fn calculate_missing_shreds(&self) -> Option<Vec<u32>> {
+    fn calculate_missing_shreds_bounded(&self) -> Option<Vec<u32>> {
         let required_batches = self.required_batches?;
         let required_shreds = (0..required_batches as u32).flat_map(|batch| {
             if self.completed_batches.contains(&batch) {
@@ -73,6 +71,60 @@ impl SlotMetadata {
                 .collect()
         });
         Some(required_shreds.collect())
+    }
+
+    fn calculate_missing_shreds_unbounded(&self) -> Vec<u32> {
+        let mut max_batch = 0;
+        let mut missing_shreds = self
+            .fec_data_map
+            .iter()
+            .flat_map(|(batch_index, batch_shreds)| {
+                max_batch = max_batch.max(*batch_index);
+                if self.completed_batches.contains(batch_index) {
+                    return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
+                }
+                let mut mask = [true; DATA_SHREDS_PER_FEC_SET];
+                batch_shreds
+                    .iter()
+                    .copied()
+                    .for_each(|i| mask[i as usize] = false);
+                mask.iter()
+                    .enumerate()
+                    .filter_map(|(i, missing)| {
+                        missing.then_some(*batch_index * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        missing_shreds.extend((0..max_batch).flat_map(|batch_index| {
+            if self.fec_data_map.contains_key(&batch_index) {
+                return ArrayVec::<_, DATA_SHREDS_PER_FEC_SET>::new();
+            }
+            (0..DATA_SHREDS_PER_FEC_SET)
+                .map(|i| batch_index * DATA_SHREDS_PER_FEC_SET as u32 + i as u32)
+                .collect()
+        }));
+
+        missing_shreds
+    }
+
+    /// find required shreds to complete the slot
+    /// returning None if the last shred hasn't been seen yet
+    pub fn calculate_missing_shreds(&self) -> RepairReq {
+        if let Some(shreds) = self.calculate_missing_shreds_bounded() {
+            return RepairReq::MissingBoundedShreds {
+                slot: self.slot_num,
+                shreds,
+            };
+        }
+
+        let holes = self.calculate_missing_shreds_unbounded();
+
+        RepairReq::MissingUnboundedShreds {
+            slot: self.slot_num,
+            shreds: holes,
+            max_exclusive_shred: self.max_exclusive_shred,
+        }
     }
 }
 
@@ -171,21 +223,7 @@ impl SlotMetadataStore {
                         let Some(slot_meta) = self.inner.get(&slot) else {
                             continue;
                         };
-                        if let Some(missing_shreds) = slot_meta.calculate_missing_shreds() {
-                            _ = repair_tx
-                                .send(RepairReq::MissingBoundedShreds {
-                                    slot,
-                                    shreds: missing_shreds,
-                                })
-                                .await;
-                        } else {
-                            _ = repair_tx
-                                .send(RepairReq::MissingUnboundedShreds {
-                                    slot,
-                                    max_exclusive_shred: slot_meta.max_exclusive_shred,
-                                })
-                                .await;
-                        }
+                        _ = repair_tx.send(slot_meta.calculate_missing_shreds()).await;
                     }
                 }
             }

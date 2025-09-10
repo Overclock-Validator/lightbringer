@@ -33,8 +33,15 @@ const STALE_THRESHOLD: Duration = Duration::from_secs(300);
 const REPAIR_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub enum RepairReq {
-    MissingBoundedShreds { slot: u64, shreds: Vec<u32> },
-    MissingUnboundedShreds { slot: u64, max_exclusive_shred: u32 },
+    MissingBoundedShreds {
+        slot: u64,
+        shreds: Vec<u32>,
+    },
+    MissingUnboundedShreds {
+        slot: u64,
+        shreds: Vec<u32>,
+        max_exclusive_shred: u32,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -337,6 +344,25 @@ impl RepairManager {
         Some(())
     }
 
+    fn process_missing_shreds(
+        mapper: &mut RepairRequestMapper,
+        outstanding_tx: &LocalSender<OutstandingRequestMsg>,
+        slot: u64,
+        shreds: Vec<u32>,
+    ) -> impl Iterator<Item = (SocketAddr, Vec<u8>)> {
+        shreds.into_iter().filter_map(move |shred| {
+            let (socket, nonce, packet) = mapper.map_bounded_shred(slot, shred)?;
+            _ = outstanding_tx.try_send(OutstandingRequestMsg::New(OutstandingRequest {
+                kind: OutstandingRequestKind::WindowIndex,
+                nonce,
+                slot,
+                shred,
+                socket,
+            }));
+            Some((socket, packet))
+        })
+    }
+
     async fn request_processor_loop(
         mut mapper: RepairRequestMapper,
         req_rx: AsyncReceiver<RepairReq>,
@@ -346,24 +372,13 @@ impl RepairManager {
         while let Ok(req) = req_rx.recv().await {
             let socket_reqs = {
                 match req {
-                    RepairReq::MissingBoundedShreds { slot, shreds } => shreds
-                        .into_iter()
-                        .filter_map(|shred| {
-                            let (socket, nonce, packet) = mapper.map_bounded_shred(slot, shred)?;
-                            _ = outstanding_tx.try_send(OutstandingRequestMsg::New(
-                                OutstandingRequest {
-                                    kind: OutstandingRequestKind::WindowIndex,
-                                    nonce,
-                                    slot,
-                                    shred,
-                                    socket,
-                                },
-                            ));
-                            Some((socket, packet))
-                        })
-                        .collect::<Vec<_>>(),
+                    RepairReq::MissingBoundedShreds { slot, shreds } => {
+                        Self::process_missing_shreds(&mut mapper, &outstanding_tx, slot, shreds)
+                            .collect::<Vec<_>>()
+                    }
                     RepairReq::MissingUnboundedShreds {
                         slot,
+                        shreds,
                         max_exclusive_shred,
                     } => {
                         let Some((req_socket, nonce, raw)) =
@@ -371,6 +386,16 @@ impl RepairManager {
                         else {
                             continue;
                         };
+
+                        let reqs = Self::process_missing_shreds(
+                            &mut mapper,
+                            &outstanding_tx,
+                            slot,
+                            shreds,
+                        )
+                        .chain(std::iter::once((req_socket, raw)))
+                        .collect::<Vec<_>>();
+
                         _ = outstanding_tx.try_send(OutstandingRequestMsg::New(
                             OutstandingRequest {
                                 kind: OutstandingRequestKind::HighestWindowIndex,
@@ -380,7 +405,8 @@ impl RepairManager {
                                 socket: req_socket,
                             },
                         ));
-                        vec![(req_socket, raw)]
+
+                        reqs
                     }
                 }
             };
