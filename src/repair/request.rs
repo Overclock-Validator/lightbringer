@@ -19,7 +19,7 @@ use kanal::{AsyncReceiver, AsyncSender};
 use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IndexedRandom};
 use solana_core::repair::serve_repair::{RepairProtocol, RepairRequestHeader, ServeRepair};
 use solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol};
-use solana_ledger::shred::Nonce;
+use solana_ledger::shred::{Nonce, ShredFlags, layout};
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, timing::timestamp};
 
 use crate::{
@@ -37,6 +37,7 @@ pub enum RepairReq {
     MissingUnboundedShreds { slot: u64, max_exclusive_shred: u32 },
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum OutstandingRequestKind {
     WindowIndex,
     HighestWindowIndex,
@@ -56,22 +57,28 @@ enum OutstandingRequestMsg {
 }
 
 #[derive(Default)]
-struct OutstandingTimerStore(HashMap<(Nonce, SocketAddr), TimerActionOnce<()>>);
+struct OutstandingTimerStore(
+    HashMap<(Nonce, SocketAddr), (OutstandingRequestKind, u32, TimerActionOnce<()>)>,
+);
 
 impl OutstandingTimerStore {
-    pub fn insert(&mut self, key: (Nonce, SocketAddr), timer: TimerActionOnce<()>) {
-        self.0.insert(key, timer);
+    pub fn insert(
+        &mut self,
+        key: (Nonce, SocketAddr),
+        req_type: OutstandingRequestKind,
+        shred_index: u32,
+        timer: TimerActionOnce<()>,
+    ) {
+        self.0.insert(key, (req_type, shred_index, timer));
     }
 
     /// remove an outstanding timer
-    /// returning true if it was removed
-    pub fn remove(&mut self, key: &(Nonce, SocketAddr)) -> bool {
-        let Some(timer) = self.0.remove(key) else {
-            return false;
-        };
-
+    /// returning the request type
+    pub fn remove(&mut self, key: &(Nonce, SocketAddr)) -> Option<(OutstandingRequestKind, u32)> {
+        let (kind, shred_index, timer) = self.0.remove(key)?;
         timer.destroy();
-        true
+
+        Some((kind, shred_index))
     }
 }
 
@@ -221,7 +228,7 @@ impl RepairManager {
         let outstanding_store = Rc::new(RefCell::new(OutstandingTimerStore::default()));
         let (outstanding_request_tx, outstanding_request_rx) = local_channel::new_unbounded();
         let outstanding_request_tx = Rc::new(outstanding_request_tx);
-        let mapper = RepairRequestMapper::new(self.peers, me, self.keypair);
+        let mut mapper = RepairRequestMapper::new(self.peers, me, self.keypair);
         let outstanding_requests_task = spawn_local(Self::start_outstanding_requests_loop(
             mapper.clone(),
             outstanding_store.clone(),
@@ -231,7 +238,7 @@ impl RepairManager {
         ));
 
         let request_processor_task = spawn_local(Self::request_processor_loop(
-            mapper,
+            mapper.clone(),
             self.req_rx,
             outstanding_request_tx.clone(),
             self.send_socket.clone(),
@@ -243,9 +250,27 @@ impl RepairManager {
                     continue;
                 };
                 // TODO: add more filters e.g shred should sig verify
-                if outstanding_store.borrow_mut().remove(&(nonce, socket_addr)) {
-                    _ = self.filter_shred_tx.send(packet).await;
+                let Some((req_kind, req_shred_index)) =
+                    outstanding_store.borrow_mut().remove(&(nonce, socket_addr))
+                else {
+                    continue;
+                };
+
+                if req_kind == OutstandingRequestKind::HighestWindowIndex {
+                    let res = Self::handle_unbounded_packet_response(
+                        &mut mapper,
+                        &outstanding_request_tx,
+                        &self.send_socket,
+                        &packet,
+                        req_shred_index,
+                    )
+                    .await;
+                    if res.is_none() {
+                        continue;
+                    }
                 }
+
+                _ = self.filter_shred_tx.send(packet).await;
             }
         });
 
@@ -254,6 +279,62 @@ impl RepairManager {
         outstanding_requests_task.cancel().await;
         request_processor_task.cancel().await;
         peer_manager_task.cancel().await;
+    }
+
+    // handle an unbounded packet response
+    // returning None if packet is invalid
+    async fn handle_unbounded_packet_response(
+        mapper: &mut RepairRequestMapper,
+        outstanding_tx: &LocalSender<OutstandingRequestMsg>,
+        socket_tx: &AsyncSender<RepairSocketRequestBatch>,
+        packet: &PacketInfo,
+        req_shred_index: u32,
+    ) -> Option<()> {
+        let flags = layout::get_flags(packet).ok()?;
+        let shred_index = layout::get_index(packet)?;
+        let shred_slot = layout::get_slot(packet)?;
+
+        let mut last_shred_req = (!flags.contains(ShredFlags::LAST_SHRED_IN_SLOT))
+            .then(|| mapper.map_unbounded_shred(shred_slot, shred_index + 1))
+            .flatten();
+
+        let range = if shred_index == req_shred_index {
+            0..0
+        } else {
+            req_shred_index..shred_index
+        };
+        let reqs = range
+            .filter_map(move |shred_index| {
+                let (socket, nonce, shred) = mapper.map_bounded_shred(shred_slot, shred_index)?;
+                _ = outstanding_tx.try_send(OutstandingRequestMsg::New(OutstandingRequest {
+                    kind: OutstandingRequestKind::WindowIndex,
+                    nonce,
+                    slot: shred_slot,
+                    shred: shred_index,
+                    socket,
+                }));
+                Some((socket, shred))
+            })
+            .chain(
+                std::iter::once_with(move || {
+                    let (socket, nonce, shred) = last_shred_req.take()?;
+                    _ = outstanding_tx.try_send(OutstandingRequestMsg::New(OutstandingRequest {
+                        kind: OutstandingRequestKind::HighestWindowIndex,
+                        nonce,
+                        slot: shred_slot,
+                        shred: shred_index,
+                        socket,
+                    }));
+
+                    Some((socket, shred))
+                })
+                .flatten(),
+            )
+            .collect::<Vec<_>>();
+
+        _ = socket_tx.send(reqs).await;
+
+        Some(())
     }
 
     async fn request_processor_loop(
@@ -285,9 +366,6 @@ impl RepairManager {
                         slot,
                         max_exclusive_shred,
                     } => {
-                        log::warn!(
-                            "slot {slot} did not observe the last shred, repairing it uses a slow path"
-                        );
                         let Some((req_socket, nonce, raw)) =
                             mapper.map_unbounded_shred(slot, max_exclusive_shred)
                         else {
@@ -322,6 +400,8 @@ impl RepairManager {
                 OutstandingRequestMsg::New(req) => {
                     outstanding_timers.borrow_mut().insert(
                         (req.nonce, req.socket),
+                        req.kind,
+                        req.shred,
                         TimerActionOnce::do_in(
                             REPAIR_REQUEST_TIMEOUT,
                             enclose!((outstanding_tx) async move {
@@ -352,6 +432,8 @@ impl RepairManager {
 
                     outstanding_timers.borrow_mut().insert(
                         (req.nonce, req.socket),
+                        req.kind,
+                        req.shred,
                         TimerActionOnce::do_in(
                             REPAIR_REQUEST_TIMEOUT,
                             enclose!((outstanding_tx) async move {
