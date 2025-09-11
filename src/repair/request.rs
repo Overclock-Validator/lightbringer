@@ -30,7 +30,7 @@ use crate::{
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const STALE_THRESHOLD: Duration = Duration::from_secs(300);
-const REPAIR_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+const REPAIR_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub enum RepairReq {
     MissingBoundedShreds {
@@ -273,6 +273,7 @@ impl RepairManager {
                     )
                     .await;
                     if res.is_none() {
+                        log::info!("received invalid unbounded request");
                         continue;
                     }
                 }
@@ -424,7 +425,12 @@ impl RepairManager {
         while let Some(msg) = outstanding_rx.recv().await {
             match msg {
                 OutstandingRequestMsg::New(req) => {
-                    outstanding_timers.borrow_mut().insert(
+                    let mut outstanding_timers = outstanding_timers.borrow_mut();
+                    log::info!(
+                        "added new shred request, req count: {}",
+                        outstanding_timers.0.len() + 1
+                    );
+                    outstanding_timers.insert(
                         (req.nonce, req.socket),
                         req.kind,
                         req.shred,
@@ -437,6 +443,7 @@ impl RepairManager {
                     );
                 }
                 OutstandingRequestMsg::Timeout(mut req) => {
+                    log::info!("repair shred request for slot {} timed out", req.slot);
                     outstanding_timers
                         .borrow_mut()
                         .remove(&(req.nonce, req.socket));
