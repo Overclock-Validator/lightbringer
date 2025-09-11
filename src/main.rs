@@ -133,14 +133,7 @@ fn main() {
     }));
 
     // Shred Filter
-    threadpool.spawn(move |exit| {
-        packet_filter_loop(
-            exit,
-            filter_rx,
-            slot_store_tx.to_sync(),
-            slot_meta_tx.to_sync(),
-        )
-    });
+    threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
 
     // Slot Repair
     let (repair_tx, repair_rx) = kanal::bounded_async(10000);
@@ -173,14 +166,14 @@ fn main() {
     // Shred Storage
     let shred_store = ShredStore::new(&lsm_ks, version).unwrap();
     threadpool.spawn(
-        enclose!((shred_store) move |exit| shred_store.packet_listener_loop(exit, slot_store_rx)),
+        enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
     );
 
     // Shred Metadata Storage (timeout etc)
     let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
     let slot_meta_store = SlotMetadataStore::new(version);
     threadpool.spawn(move |exit| {
-        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_tx)
+        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_tx, slot_store_tx)
     });
 
     let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();

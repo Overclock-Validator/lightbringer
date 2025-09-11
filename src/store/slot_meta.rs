@@ -13,32 +13,28 @@ use arrayvec::ArrayVec;
 use glommio::{channels::local_channel, spawn_local, timer::TimerActionOnce};
 use kanal::{AsyncReceiver, AsyncSender};
 use lru::LruCache;
-use solana_ledger::shred::Shred;
+use solana_ledger::shred::{self, Shred, ShredCommonHeader, ShredFlags, ShredType};
 
-use crate::{repair::request::RepairReq, thread_manager::CancelRx, types::PacketInfo};
+use crate::{
+    repair::request::RepairReq, store::shred::SlotRaw, thread_manager::CancelRx, types::PacketInfo,
+};
 
 pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
-pub struct FecMetadata {
-    pub num_data_shreds: u16,
-    pub num_coding_shreds: u16,
-}
-
 type FecMap = HashMap<u32, Vec<u32>>;
-type FecInfoMap = HashMap<u32, FecMetadata>;
 type SlotMetaStore = LruCache<u64, SlotMetadata>;
 
 pub struct SlotMetadata {
     pub slot_num: u64,
     pub fec_data_map: FecMap,
     pub fec_coding_map: FecMap,
-    pub fec_meta: FecInfoMap,
     pub timestamp_ms: u64,
     pub completed_batches: BTreeSet<u32>,
     pub required_batches: Option<usize>,
     // highest shred index not seen yet
     pub max_exclusive_shred: u32,
+    pub shreds: Option<Vec<PacketInfo>>,
 }
 
 impl SlotMetadata {
@@ -131,7 +127,7 @@ impl SlotMetadata {
 fn store_slot_metadata(cache: &mut SlotMetaStore, shred: Shred) {}
 
 enum SlotMetaStoreRes {
-    Complete,
+    Complete(SlotRaw),
     Incomplete,
     Ignored,
 }
@@ -164,6 +160,7 @@ impl SlotMetadataStore {
         rx: AsyncReceiver<PacketInfo>,
         repair_tx: AsyncSender<RepairReq>,
         grpc_tx: AsyncSender<u64>,
+        store_tx: AsyncSender<SlotRaw>,
     ) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();
         let timer_tx = Rc::new(timer_tx);
@@ -174,18 +171,25 @@ impl SlotMetadataStore {
         let metadata_handler_task = spawn_local(async move {
             let timer_tx = meta_timer_tx.clone();
             while let Ok(shred) = rx.recv().await {
-                let Ok(deser_shred) = Shred::new_from_serialized_shred(shred.to_vec()) else {
+                let Some(common_header) = shred::layout::get_common_header_bytes(&shred)
+                    .and_then(|raw_header| {
+                        bincode::deserialize::<ShredCommonHeader>(raw_header).ok()
+                    })
+                    .filter(|hdr| hdr.version == shred_version)
+                else {
                     continue;
                 };
-                if deser_shred.version() != shred_version {
-                    continue;
-                }
 
-                let slot = deser_shred.slot();
-                let store_res = this.store_shred(deser_shred).await;
+                let Some(slot) = shred::layout::get_slot(&shred) else {
+                    continue;
+                };
+                let store_res = this.store_shred(common_header, shred).await;
                 let timer_msg = match store_res {
                     SlotMetaStoreRes::Ignored => continue,
-                    SlotMetaStoreRes::Complete => SlotTimerMsg::ShredCompletion { slot },
+                    SlotMetaStoreRes::Complete(raw_slot) => {
+                        _ = store_tx.send(raw_slot).await;
+                        SlotTimerMsg::ShredCompletion { slot }
+                    }
                     SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
                 };
                 _ = timer_tx.try_send(timer_msg);
@@ -236,10 +240,10 @@ impl SlotMetadataStore {
     }
 
     // stores the shred, returning whether slots are complete or not
-    async fn store_shred(&self, shred: Shred) -> SlotMetaStoreRes {
-        let slot = shred.slot();
-        let fec_index = shred.fec_set_index();
-        let shred_index = shred.index();
+    async fn store_shred(&self, hdr: ShredCommonHeader, shred: PacketInfo) -> SlotMetaStoreRes {
+        let slot = hdr.slot;
+        let fec_index = hdr.fec_set_index;
+        let shred_index = hdr.index;
 
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -254,42 +258,33 @@ impl SlotMetadataStore {
                     slot_num: slot,
                     fec_data_map: HashMap::new(),
                     fec_coding_map: HashMap::new(),
-                    fec_meta: HashMap::new(),
                     timestamp_ms,
                     completed_batches: BTreeSet::new(),
                     required_batches: None,
                     max_exclusive_shred: 0,
+                    shreds: Some(Default::default()),
                 });
         let shred_meta = shred_entry.get_mut();
         if shred_meta.is_complete() {
             return SlotMetaStoreRes::Ignored;
         }
 
-        let fec_map = match &shred {
-            Shred::ShredData(_) => {
-                if shred.last_in_slot() {
+        let fec_map = match ShredType::from(hdr.shred_variant) {
+            ShredType::Data => {
+                let Ok(flags) = shred::layout::get_flags(&shred) else {
+                    return SlotMetaStoreRes::Ignored;
+                };
+                if flags.contains(ShredFlags::LAST_SHRED_IN_SLOT) {
                     shred_meta.required_batches = Some(
                         (fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET,
                     );
                 }
                 &mut shred_meta.fec_data_map
             }
-            Shred::ShredCode(code_shred) => {
-                if !shred_meta.fec_meta.contains_key(&shred.fec_set_index()) {
-                    let header = code_shred.coding_header();
-                    shred_meta.fec_meta.insert(
-                        fec_index,
-                        FecMetadata {
-                            num_coding_shreds: header.num_coding_shreds,
-                            num_data_shreds: header.num_data_shreds,
-                        },
-                    );
-                }
-                &mut shred_meta.fec_coding_map
-            }
+            ShredType::Code => &mut shred_meta.fec_coding_map,
         };
         fec_map
-            .entry(shred.fec_set_index())
+            .entry(fec_index)
             .or_insert_with(Vec::new)
             .push(shred_index);
         shred_meta.timestamp_ms = timestamp_ms;
@@ -309,9 +304,16 @@ impl SlotMetadataStore {
         if completed_batch {
             shred_meta.completed_batches.insert(fec_index);
         }
+        if let Some(s) = shred_meta.shreds.as_mut() {
+            s.push(shred)
+        }
 
         if shred_meta.is_complete() {
-            SlotMetaStoreRes::Complete
+            let shreds = shred_entry
+                .shreds
+                .take()
+                .expect("shred entry is none for complete slot?!");
+            SlotMetaStoreRes::Complete(SlotRaw { shreds, slot })
         } else {
             SlotMetaStoreRes::Incomplete
         }

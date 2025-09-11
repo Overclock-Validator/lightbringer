@@ -1,6 +1,6 @@
 use glommio::{executor, spawn_local};
 use kanal::AsyncReceiver;
-use solana_ledger::shred::{Shred, ShredType};
+use solana_ledger::shred::{self, Shred, ShredType};
 
 use crate::{
     thread_manager::CancelRx,
@@ -10,6 +10,11 @@ use crate::{
 pub struct ShredRes {
     data: Option<ShredInfoView>,
     code: Option<ShredInfoView>,
+}
+
+pub struct SlotRaw {
+    pub slot: u64,
+    pub shreds: Vec<PacketInfo>,
 }
 
 // TODO: store last 500k slots only
@@ -28,6 +33,24 @@ impl ShredStore {
             shred_partition: partition,
             version,
         })
+    }
+
+    pub async fn slot_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<SlotRaw>) {
+        let task = spawn_local(async move {
+            let executor = executor();
+            while let Ok(slot) = rx.recv().await {
+                let this = self.clone();
+                spawn_local(executor.spawn_blocking(move || {
+                    if let Err(e) = this.store_slot(slot.slot, slot.shreds) {
+                        log::warn!("failed to store slot {e}");
+                    }
+                }))
+                .detach();
+            }
+            log::warn!("shred store thread died?!")
+        });
+        exit.await;
+        task.cancel().await;
     }
 
     pub async fn packet_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<PacketInfo>) {
@@ -57,6 +80,25 @@ impl ShredStore {
         });
         exit.await;
         task.cancel().await;
+    }
+
+    fn store_slot(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {
+        self.shred_partition
+            .ingest(shreds.iter().map(|raw_shred| {
+                let shred_info = shred::layout::get_shred_id(raw_shred)
+                    .expect("received invalid shred from slot meta?!");
+                let mut key = [0; 13];
+                key[0..8].copy_from_slice(&slot.to_le_bytes());
+
+                key[8..12].copy_from_slice(&shred_info.index().to_le_bytes());
+                key[12] = match shred_info.shred_type() {
+                    shred::ShredType::Data => ShredType::Data,
+                    shred::ShredType::Code => ShredType::Code,
+                } as u8;
+
+                (key, raw_shred.as_slice())
+            }))
+            .map_err(Into::into)
     }
 
     fn store_shred(

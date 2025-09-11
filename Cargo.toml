@@ -9,15 +9,15 @@ name = "overcast-grpc-client"
 path = "src/grpc_client.rs"
 
 [dependencies]
-solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7" }
+solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "a290c1e4a31cd3a46e8e29acbead9fa0dd42825e" }
 solana-sdk = "2.3.1"
-solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", rev = "8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7" }
-solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7" }
+solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", rev = "a290c1e4a31cd3a46e8e29acbead9fa0dd42825e" }
+solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "a290c1e4a31cd3a46e8e29acbead9fa0dd42825e" }
 solana-entry = "2.3.7"
 solana-net-utils = "2.3.7"
 solana-rpc-client-types = "2.3.7"
 solana-epoch-info = "2.2.1"
-solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "8d43a21b8a29eed5e3128a32c4eadfdedf26d1b7" }
+solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "a290c1e4a31cd3a46e8e29acbead9fa0dd42825e" }
 
 glommio = "0.9.0"
 kanal = "0.1.1"

@@ -443,7 +443,6 @@ impl RepairManager {
                     );
                 }
                 OutstandingRequestMsg::Timeout(mut req) => {
-                    log::info!("repair shred request for slot {} timed out", req.slot);
                     outstanding_timers
                         .borrow_mut()
                         .remove(&(req.nonce, req.socket));

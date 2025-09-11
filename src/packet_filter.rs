@@ -13,16 +13,14 @@ const PACKET_PROCESSOR_THREADS: usize = 4;
 #[derive(Clone)]
 struct PacketProcessor {
     sig_cache: Arc<scc::HashCache<SigCacheKey, ()>>,
-    store_tx: kanal::Sender<PacketInfo>,
     meta_tx: kanal::Sender<PacketInfo>,
 }
 
 impl PacketProcessor {
-    fn new(store_tx: kanal::Sender<PacketInfo>, meta_tx: kanal::Sender<PacketInfo>) -> Self {
+    fn new(meta_tx: kanal::Sender<PacketInfo>) -> Self {
         let sig_cache = scc::HashCache::with_capacity(0, 262144);
         Self {
             sig_cache: Arc::new(sig_cache),
-            store_tx,
             meta_tx,
         }
     }
@@ -49,13 +47,10 @@ impl PacketProcessor {
     }
 
     fn filter_packet(&self, packet: PacketInfo, leader: Pubkey) {
-        if self.validate_packet(&packet, leader) {
-            if let Err(e) = self.store_tx.send(packet.clone()) {
-                log::warn!("failed to send packet to slot store: {e}");
-            }
-            if let Err(e) = self.meta_tx.send(packet) {
-                log::warn!("failed to send packet to slot meta: {e}");
-            }
+        if self.validate_packet(&packet, leader)
+            && let Err(e) = self.meta_tx.send(packet)
+        {
+            log::warn!("failed to send packet to slot meta: {e}");
         }
     }
 }
@@ -68,7 +63,6 @@ struct PacketProcessorPool {
 impl PacketProcessorPool {
     fn new(
         threads: usize,
-        store_tx: kanal::Sender<PacketInfo>,
         meta_tx: kanal::Sender<PacketInfo>,
         leader_schedule: LeaderScheduleSync,
     ) -> Self {
@@ -77,11 +71,10 @@ impl PacketProcessorPool {
         for _ in 0..threads {
             let (tx, rx) = kanal::bounded_async(4096);
             senders.push(tx);
-            let store_tx = store_tx.clone();
             let meta_tx = meta_tx.clone();
             let handle = std::thread::spawn(move || {
                 let rx = rx.to_sync();
-                let processor = PacketProcessor::new(store_tx, meta_tx);
+                let processor = PacketProcessor::new(meta_tx);
                 while let Ok((shred, pubkey)) = rx.recv() {
                     processor.filter_packet(shred, pubkey);
                 }
@@ -119,15 +112,13 @@ impl PacketProcessorPool {
 pub async fn packet_filter_loop(
     exit: CancelRx,
     rx: kanal::AsyncReceiver<PacketInfo>,
-    store_tx: kanal::Sender<PacketInfo>,
     meta_tx: kanal::Sender<PacketInfo>,
 ) {
     let leader_schedule = LeaderScheduleSync::new_synced()
         .await
         .expect("failed to initialize leader schedule");
     let task = spawn_local(async move {
-        let mut pool =
-            PacketProcessorPool::new(PACKET_PROCESSOR_THREADS, store_tx, meta_tx, leader_schedule);
+        let mut pool = PacketProcessorPool::new(PACKET_PROCESSOR_THREADS, meta_tx, leader_schedule);
         while let Ok(packet) = rx.recv().await {
             pool.enqueue(packet).await;
         }
