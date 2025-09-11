@@ -10,8 +10,9 @@ use std::{
 
 use futures::StreamExt;
 use glommio::{
+    Latency, Shares,
     channels::local_channel::{self, LocalReceiver, LocalSender},
-    enclose, spawn_local,
+    enclose, executor, spawn_local_into,
     timer::TimerActionOnce,
 };
 use indexmap::IndexMap;
@@ -30,7 +31,7 @@ use crate::{
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const STALE_THRESHOLD: Duration = Duration::from_secs(300);
-const REPAIR_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
+const REPAIR_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub enum RepairReq {
     MissingBoundedShreds {
@@ -226,61 +227,91 @@ impl RepairManager {
     pub async fn start_repair_manager_loop(self, exit: CancelRx) {
         let me = self.cluster_info.id();
 
+        let executor = executor();
+        let main_task_tq = executor.create_task_queue(
+            Shares::Static(70),
+            Latency::NotImportant,
+            "repair_manager_main",
+        );
+        let outstanding_task_tq = executor.create_task_queue(
+            Shares::Static(30),
+            Latency::NotImportant,
+            "repair_manager_outstanding",
+        );
+        let peer_manager_task_tq = executor.create_task_queue(
+            Shares::Static(10),
+            Latency::NotImportant,
+            "repair_manager_peers",
+        );
+
         let repair_peers_insert = self.peers.clone();
-        let peer_manager_task = spawn_local(Self::start_peer_manager_loop(
-            repair_peers_insert,
-            self.cluster_info,
-        ));
+        let peer_manager_task = spawn_local_into(
+            Self::start_peer_manager_loop(repair_peers_insert, self.cluster_info),
+            peer_manager_task_tq,
+        )
+        .unwrap();
 
         let outstanding_store = Rc::new(RefCell::new(OutstandingTimerStore::default()));
         let (outstanding_request_tx, outstanding_request_rx) = local_channel::new_unbounded();
         let outstanding_request_tx = Rc::new(outstanding_request_tx);
         let mut mapper = RepairRequestMapper::new(self.peers, me, self.keypair);
-        let outstanding_requests_task = spawn_local(Self::start_outstanding_requests_loop(
-            mapper.clone(),
-            outstanding_store.clone(),
-            outstanding_request_tx.clone(),
-            outstanding_request_rx,
-            self.send_socket.clone(),
-        ));
+        let outstanding_requests_task = spawn_local_into(
+            Self::start_outstanding_requests_loop(
+                mapper.clone(),
+                outstanding_store.clone(),
+                outstanding_request_tx.clone(),
+                outstanding_request_rx,
+                self.send_socket.clone(),
+            ),
+            outstanding_task_tq,
+        )
+        .unwrap();
 
-        let request_processor_task = spawn_local(Self::request_processor_loop(
-            mapper.clone(),
-            self.req_rx,
-            outstanding_request_tx.clone(),
-            self.send_socket.clone(),
-        ));
+        let request_processor_task = spawn_local_into(
+            Self::request_processor_loop(
+                mapper.clone(),
+                self.req_rx,
+                outstanding_request_tx.clone(),
+                self.send_socket.clone(),
+            ),
+            main_task_tq,
+        )
+        .unwrap();
 
-        let repair_recv_task = spawn_local(async move {
-            while let Ok((socket_addr, packet)) = self.recv_socket.recv().await {
-                let Some(nonce) = Self::repair_nonce(&packet) else {
-                    continue;
-                };
-                // TODO: add more filters e.g shred should sig verify
-                let Some((req_kind, req_shred_index)) =
-                    outstanding_store.borrow_mut().remove(&(nonce, socket_addr))
-                else {
-                    continue;
-                };
-
-                if req_kind == OutstandingRequestKind::HighestWindowIndex {
-                    let res = Self::handle_unbounded_packet_response(
-                        &mut mapper,
-                        &outstanding_request_tx,
-                        &self.send_socket,
-                        &packet,
-                        req_shred_index,
-                    )
-                    .await;
-                    if res.is_none() {
-                        log::info!("received invalid unbounded request");
+        let repair_recv_task = spawn_local_into(
+            async move {
+                while let Ok((socket_addr, packet)) = self.recv_socket.recv().await {
+                    let Some(nonce) = Self::repair_nonce(&packet) else {
                         continue;
-                    }
-                }
+                    };
+                    // TODO: add more filters e.g shred should sig verify
+                    let Some((req_kind, req_shred_index)) =
+                        outstanding_store.borrow_mut().remove(&(nonce, socket_addr))
+                    else {
+                        continue;
+                    };
 
-                _ = self.filter_shred_tx.send(packet).await;
-            }
-        });
+                    if req_kind == OutstandingRequestKind::HighestWindowIndex {
+                        let res = Self::handle_unbounded_packet_response(
+                            &mut mapper,
+                            &outstanding_request_tx,
+                            &self.send_socket,
+                            &packet,
+                            req_shred_index,
+                        )
+                        .await;
+                        if res.is_none() {
+                            log::info!("received invalid unbounded request");
+                            continue;
+                        }
+                    }
+
+                    _ = self.filter_shred_tx.send(packet).await;
+                }
+            },
+            main_task_tq,
+        )
+        .unwrap();
 
         exit.await;
         repair_recv_task.cancel().await;
