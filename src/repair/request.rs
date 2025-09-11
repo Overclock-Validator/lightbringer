@@ -5,7 +5,7 @@ use std::{
     ops::Index,
     rc::Rc,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures::StreamExt;
@@ -24,9 +24,9 @@ use solana_ledger::shred::{self, Nonce, ShredFlags, layout};
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, timing::timestamp};
 
 use crate::{
-    repair::socket::RepairSocketRequestBatch,
+    repair::{repair_nonce, socket::RepairSocketRequestBatch},
     thread_manager::CancelRx,
-    types::{PacketInfo, PacketView},
+    types::PacketInfo,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -54,6 +54,44 @@ enum OutstandingRequestKind {
 type SlotRequestMap = BTreeMap<(Nonce, SocketAddr), (OutstandingRequestKind, u32)>;
 
 struct OutstandingRequestTimeout(u64);
+
+#[derive(Clone)]
+struct OutstandingTimerStoreV2 {
+    inner: Rc<RefCell<HashMap<u64, (SlotRequestMap, Instant)>>>
+}
+
+impl OutstandingTimerStoreV2 {
+    pub fn new(_tx: Rc<LocalSender<OutstandingRequestTimeout>>, _tq: TaskQueueHandle) -> Self {
+        Self {
+            inner: Default::default(),
+        }
+    }
+
+    pub fn remove(
+        &self,
+        slot: u64,
+        nonce: Nonce,
+        socket: SocketAddr,
+    ) -> Option<(OutstandingRequestKind, u32)> {
+        let mut inner = self.inner.borrow_mut();
+        let (reqs, _) = inner.get_mut(&slot)?;
+        let res = reqs.remove(&(nonce, socket))?;
+        if reqs.is_empty() {
+            inner.remove(&slot);
+        }
+        Some(res)
+    }
+
+    pub fn insert(&self, slot: u64, reqs: SlotRequestMap) {
+        self.inner.borrow_mut().insert(
+            slot,
+            (
+                reqs,
+                Instant::now() + REPAIR_SLOT_TIMEOUT,
+            ),
+        );
+    }
+}
 
 #[derive(Clone)]
 struct OutstandingTimerStore {
@@ -235,23 +273,17 @@ impl RepairManager {
         }
     }
 
-    fn repair_nonce(packet: &PacketView) -> Option<Nonce> {
-        let nonce_offset = packet.len().checked_sub(4)?;
-        let nonce_raw_le = <[u8; 4]>::try_from(packet.get(nonce_offset..)?).ok()?;
-        Some(Nonce::from_le_bytes(nonce_raw_le))
-    }
-
     pub async fn start_repair_manager_loop(self, exit: CancelRx) {
         let me = self.cluster_info.id();
 
         let executor = executor();
         let main_task_tq = executor.create_task_queue(
-            Shares::Static(70),
+            Shares::Static(50),
             Latency::NotImportant,
             "repair_manager_main",
         );
         let outstanding_task_tq = executor.create_task_queue(
-            Shares::Static(30),
+            Shares::Static(50),
             Latency::NotImportant,
             "repair_manager_outstanding",
         );
@@ -271,7 +303,7 @@ impl RepairManager {
         let (outstanding_timeout_tx, outstanding_timeout_rx) = local_channel::new_unbounded();
         let outstanding_request_tx = Rc::new(outstanding_timeout_tx);
         let outstanding_store =
-            OutstandingTimerStore::new(outstanding_request_tx.clone(), outstanding_task_tq);
+            OutstandingTimerStoreV2::new(outstanding_request_tx.clone(), outstanding_task_tq);
 
         let mut mapper = RepairRequestMapper::new(self.peers, me, self.keypair);
         let outstanding_requests_task = spawn_local_into(
@@ -299,7 +331,7 @@ impl RepairManager {
         let repair_recv_task = spawn_local_into(
             async move {
                 while let Ok((socket_addr, packet)) = self.recv_socket.recv().await {
-                    let Some(nonce) = Self::repair_nonce(&packet) else {
+                    let Some(nonce) = repair_nonce(&packet) else {
                         continue;
                     };
                     let Some(slot) = shred::layout::get_slot(&packet) else {
@@ -346,7 +378,7 @@ impl RepairManager {
     // returning None if packet is invalid
     async fn handle_unbounded_packet_response(
         mapper: &mut RepairRequestMapper,
-        outstanding_timers: &OutstandingTimerStore,
+        outstanding_timers: &OutstandingTimerStoreV2,
         socket_tx: &AsyncSender<RepairSocketRequestBatch>,
         packet: &PacketInfo,
         slot: u64,
@@ -413,7 +445,7 @@ impl RepairManager {
     async fn request_processor_loop(
         mut mapper: RepairRequestMapper,
         req_rx: AsyncReceiver<RepairReq>,
-        outstanding_timers: OutstandingTimerStore,
+        outstanding_timers: OutstandingTimerStoreV2,
         send_socket: AsyncSender<RepairSocketRequestBatch>,
     ) {
         while let Ok(req) = req_rx.recv().await {
@@ -421,6 +453,9 @@ impl RepairManager {
             let (slot, socket_reqs) = {
                 match req {
                     RepairReq::MissingBoundedShreds { slot, shreds } => {
+                        if outstanding_timers.inner.borrow().contains_key(&slot) {
+                            continue;
+                        }
                         let reqs = Self::process_missing_shreds(
                             &mut mapper,
                             &mut outstanding_reqs,
@@ -435,6 +470,9 @@ impl RepairManager {
                         shreds,
                         max_exclusive_shred,
                     } => {
+                        if outstanding_timers.inner.borrow().contains_key(&slot) {
+                            continue;
+                        }
                         let Some((req_socket, nonce, raw)) =
                             mapper.map_unbounded_shred(slot, max_exclusive_shred)
                         else {
@@ -468,43 +506,74 @@ impl RepairManager {
 
     async fn start_outstanding_requests_loop(
         mut mapper: RepairRequestMapper,
-        outstanding_timers: OutstandingTimerStore,
-        outstanding_rx: LocalReceiver<OutstandingRequestTimeout>,
+        outstanding_timers: OutstandingTimerStoreV2,
+        _outstanding_rx: LocalReceiver<OutstandingRequestTimeout>,
         send_socket: AsyncSender<RepairSocketRequestBatch>,
     ) {
-        while let Some(OutstandingRequestTimeout(slot)) = outstanding_rx.recv().await {
-            let mut store = outstanding_timers.inner.borrow_mut();
-            let Some((reqs, timer)) = store.get_mut(&slot) else {
-                log::error!("timed out for complete slot?! {slot}");
-                continue;
-            };
-            log::info!("slot {slot} timed out for repair");
-            let mut new_reqs = SlotRequestMap::default();
-            let socket_reqs = reqs
-                .values()
-                .filter_map(|&(kind, shred)| {
+        loop {
+            glommio::timer::sleep(Duration::from_millis(500)).await;
+            let mut socket_reqs = Vec::new();
+            for (slot, (reqs, deadline)) in outstanding_timers.inner.borrow_mut().iter_mut() {
+                if *deadline > Instant::now() {
+                    continue;
+                }
+                log::info!("slot {slot}, repair time out");
+
+                let mut new_reqs = SlotRequestMap::default();
+                socket_reqs.extend(reqs.values().filter_map(|&(kind, shred)| {
                     let (socket, nonce, repair_raw) = match kind {
                         OutstandingRequestKind::WindowIndex => {
-                            mapper.map_bounded_shred(slot, shred)
+                            mapper.map_bounded_shred(*slot, shred)
                         }
                         OutstandingRequestKind::HighestWindowIndex => {
-                            mapper.map_unbounded_shred(slot, shred)
+                            mapper.map_unbounded_shred(*slot, shred)
                         }
                     }?;
                     new_reqs.insert((nonce, socket), (kind, shred));
 
                     Some((socket, repair_raw))
-                })
-                .collect();
+                }));
 
-            *reqs = new_reqs;
-            timer.rearm_in(REPAIR_SLOT_TIMEOUT);
-            std::mem::drop(store);
-
-            if send_socket.send(socket_reqs).await.is_err() {
-                continue;
+                *reqs = new_reqs;
+                *deadline = Instant::now() + REPAIR_SLOT_TIMEOUT;
+            }
+            if let Err(e) = send_socket.send(socket_reqs).await {
+                log::warn!("repair socket rx died?! {e}");
             }
         }
+        // let mut rx = outstanding_rx.stream().ready_chunks(500);
+        // while let Some(slots) = rx.next().await {
+        //     let mut socket_reqs = Vec::new();
+        //     for OutstandingRequestTimeout(slot) in slots {
+        //         let mut store = outstanding_timers.inner.borrow_mut();
+        //         let Some((reqs, timer)) = store.get_mut(&slot) else {
+        //             log::error!("timed out for complete slot?! {slot}");
+        //             continue;
+        //         };
+        //         log::info!("slot {slot} timed out for repair");
+        //         let mut new_reqs = SlotRequestMap::default();
+        //         socket_reqs.extend(reqs.values().filter_map(|&(kind, shred)| {
+        //             let (socket, nonce, repair_raw) = match kind {
+        //                 OutstandingRequestKind::WindowIndex => {
+        //                     mapper.map_bounded_shred(slot, shred)
+        //                 }
+        //                 OutstandingRequestKind::HighestWindowIndex => {
+        //                     mapper.map_unbounded_shred(slot, shred)
+        //                 }
+        //             }?;
+        //             new_reqs.insert((nonce, socket), (kind, shred));
+
+        //             Some((socket, repair_raw))
+        //         }));
+
+        //         *reqs = new_reqs;
+        //         timer.rearm_in(REPAIR_SLOT_TIMEOUT);
+        //         std::mem::drop(store);
+        //     }
+        //     if send_socket.send(socket_reqs).await.is_err() {
+        //         continue;
+        //     }
+        // }
     }
 
     async fn start_peer_manager_loop(

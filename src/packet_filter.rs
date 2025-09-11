@@ -4,7 +4,10 @@ use glommio::spawn_local;
 use solana_ledger::shred::{self};
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 
-use crate::{leader_schedule::LeaderScheduleSync, thread_manager::CancelRx, types::PacketInfo};
+use crate::{
+    leader_schedule::LeaderScheduleSync, repair::repair_nonce, thread_manager::CancelRx,
+    types::PacketInfo,
+};
 
 type SigCacheKey = (Signature, Pubkey, [u8; 32]);
 
@@ -47,9 +50,11 @@ impl PacketProcessor {
     }
 
     fn filter_packet(&self, packet: PacketInfo, leader: Pubkey) {
-        if self.validate_packet(&packet, leader)
-            && let Err(e) = self.meta_tx.send(packet)
-        {
+        let valid = self.validate_packet(&packet, leader);
+        if !valid && repair_nonce(&packet).is_some() {
+            log::warn!("filtered out repair packet as it didn't verify");
+        }
+        if valid && let Err(e) = self.meta_tx.send(packet) {
             log::warn!("failed to send packet to slot meta: {e}");
         }
     }
