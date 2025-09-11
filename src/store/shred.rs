@@ -83,22 +83,21 @@ impl ShredStore {
     }
 
     fn store_slot(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {
-        self.shred_partition
-            .ingest(shreds.iter().map(|raw_shred| {
-                let shred_info = shred::layout::get_shred_id(raw_shred)
-                    .expect("received invalid shred from slot meta?!");
-                let mut key = [0; 13];
-                key[0..8].copy_from_slice(&slot.to_le_bytes());
+        for shred in shreds {
+            let shred_info = shred::layout::get_shred_id(&shred)
+                .expect("received invalid shred from slot meta?!");
+            let mut key = [0; 13];
+            key[0..8].copy_from_slice(&slot.to_le_bytes());
 
-                key[8..12].copy_from_slice(&shred_info.index().to_le_bytes());
-                key[12] = match shred_info.shred_type() {
-                    shred::ShredType::Data => ShredType::Data,
-                    shred::ShredType::Code => ShredType::Code,
-                } as u8;
+            key[8..12].copy_from_slice(&shred_info.index().to_le_bytes());
+            key[12] = match shred_info.shred_type() {
+                shred::ShredType::Data => ShredType::Data,
+                shred::ShredType::Code => ShredType::Code,
+            } as u8;
+            self.shred_partition.insert(key, shred.as_slice())?;
+        }
 
-                (key, raw_shred.as_slice())
-            }))
-            .map_err(Into::into)
+        Ok(())
     }
 
     fn store_shred(
