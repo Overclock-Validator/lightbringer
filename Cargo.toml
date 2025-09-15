@@ -30,7 +30,7 @@ anyhow = "1.0.98"
 futures = "0.3.31"
 fjall = "2.9.0"
 rkyv = { version = "0.8.10", features = ["arrayvec-0_7"] }
-scc = "2.3.4"
+scc = "3.0.7"
 lru = "0.14.0"
 ohkami = { version = "0.24.1", features = ["rt_glommio"] }
 thiserror = "2.0.16"

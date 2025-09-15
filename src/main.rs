@@ -28,8 +28,15 @@ use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
 use crate::{
-    packet_filter::packet_filter_loop, repair::socket::start_repair_socket_runner,
-    rpc::DebugRpcInit, thread_manager::CancelRx, util::std_to_glommio_socket,
+    packet_filter::packet_filter_loop,
+    repair::{
+        outstanding_timers::OutstandingTimerStore,
+        peer_manager::{RepairPeers, RepairRequestMapper},
+        socket::start_repair_socket_runner,
+    },
+    rpc::DebugRpcInit,
+    thread_manager::CancelRx,
+    util::std_to_glommio_socket,
 };
 
 #[derive(Parser, Debug)]
@@ -106,7 +113,7 @@ fn main() {
     let (gossip, sockets) = GossipManager::new(args.entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<7>::new();
+    let mut threadpool = ThreadManager::<8>::new();
 
     // fjall persist thread
     threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
@@ -140,15 +147,21 @@ fn main() {
     // allow upto 20 slots to be queued for repairing at a time
     let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
     let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
-    threadpool.spawn(enclose!((keypair, filter_tx) move |exit| async {
+
+    let repair_timeout = OutstandingTimerStore::default();
+    let repair_peers = RepairPeers::default();
+    let repair_request_mapper = RepairRequestMapper::new(repair_peers.clone(), keypair.clone());
+
+    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx) move |exit| async {
         let repair_manager =
             RepairManager::new(
                 cluster_info,
                 repair_rx,
-                keypair,
                 repair_socket_tx,
                 repair_manager_rx,
-                filter_tx
+                filter_tx,
+                repair_timeout,
+                repair_request_mapper,
             );
         repair_manager.start_repair_manager_loop(exit).await
     }));
@@ -161,6 +174,11 @@ fn main() {
             repair_manager_tx,
         )
         .await
+    });
+    threadpool.spawn(move |exit| async move {
+        repair_timeout
+            .timeout_watcher_loop(exit, repair_socket_tx, repair_request_mapper)
+            .await
     });
 
     // Shred Storage

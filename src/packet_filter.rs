@@ -37,12 +37,12 @@ impl PacketProcessor {
         };
         let key: SigCacheKey = (sig, leader, data.as_ref().try_into().unwrap());
 
-        if self.sig_cache.contains(&key) {
+        if self.sig_cache.contains_sync(&key) {
             return true;
         }
 
         if key.0.verify(key.1.as_array(), &key.2) {
-            _ = self.sig_cache.put(key, ());
+            _ = self.sig_cache.put_sync(key, ());
             true
         } else {
             false

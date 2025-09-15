@@ -224,7 +224,7 @@ impl SlotMetadataStore {
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
                         log::info!("slot {slot} has timed out, sending to repair!");
-                        let Some(slot_meta) = self.inner.get(&slot) else {
+                        let Some(slot_meta) = self.inner.get_sync(&slot) else {
                             continue;
                         };
                         _ = repair_tx.send(slot_meta.calculate_missing_shreds()).await;

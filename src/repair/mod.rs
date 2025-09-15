@@ -2,6 +2,8 @@ use solana_ledger::shred::Nonce;
 
 use crate::types::PacketView;
 
+pub mod outstanding_timers;
+pub mod peer_manager;
 pub mod request;
 pub mod socket;
 
