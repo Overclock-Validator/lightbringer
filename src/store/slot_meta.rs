@@ -19,7 +19,7 @@ use crate::{
     repair::request::RepairReq, store::shred::SlotRaw, thread_manager::CancelRx, types::PacketInfo,
 };
 
-pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(600);
+pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
 type FecMap = HashMap<u32, Vec<u32>>;
@@ -32,8 +32,8 @@ pub struct SlotMetadata {
     pub timestamp_ms: u64,
     pub completed_batches: BTreeSet<u32>,
     pub required_batches: Option<usize>,
-    // highest shred index not seen yet
-    pub max_exclusive_shred: u32,
+    // highest shred index seen
+    pub max_inclusive_shred: u32,
     pub shreds: Option<Vec<PacketInfo>>,
     pub timed_out: bool,
 }
@@ -120,7 +120,7 @@ impl SlotMetadata {
         RepairReq::MissingUnboundedShreds {
             slot: self.slot_num,
             shreds: holes,
-            max_exclusive_shred: self.max_exclusive_shred,
+            max_inclusive_shred: self.max_inclusive_shred,
         }
     }
 }
@@ -271,7 +271,7 @@ impl SlotMetadataStore {
             timestamp_ms,
             completed_batches: BTreeSet::new(),
             required_batches: None,
-            max_exclusive_shred: 0,
+            max_inclusive_shred: 0,
             shreds: Some(Default::default()),
             timed_out: false,
         });
@@ -299,7 +299,7 @@ impl SlotMetadataStore {
             .or_insert_with(Vec::new)
             .push(shred_index);
         shred_meta.timestamp_ms = timestamp_ms;
-        shred_meta.max_exclusive_shred = shred_meta.max_exclusive_shred.max(shred_index + 1);
+        shred_meta.max_inclusive_shred = shred_meta.max_inclusive_shred.max(shred_index);
 
         let completed_batch = shred_meta
             .fec_coding_map

@@ -23,7 +23,7 @@ pub enum RepairReq {
     MissingUnboundedShreds {
         slot: u64,
         shreds: Vec<u32>,
-        max_exclusive_shred: u32,
+        max_inclusive_shred: u32,
     },
     CancelRepair {
         slot: u64,
@@ -127,11 +127,10 @@ impl RepairManager {
         let mut outstanding_reqs = SlotRequestMap::default();
         let mut last_shred_req = (!flags.contains(ShredFlags::LAST_SHRED_IN_SLOT))
             .then(|| {
-                let (socket, nonce, shred) =
-                    mapper.map_unbounded_shred(shred_slot, shred_index + 1)?;
+                let (socket, nonce, shred) = mapper.map_unbounded_shred(shred_slot, shred_index)?;
                 outstanding_reqs.insert(
                     (nonce, socket),
-                    (OutstandingRequestKind::HighestWindowIndex, shred_index + 1),
+                    (OutstandingRequestKind::HighestWindowIndex, shred_index),
                 );
 
                 Some((socket, shred))
@@ -213,14 +212,14 @@ impl RepairManager {
                     RepairReq::MissingUnboundedShreds {
                         slot,
                         shreds,
-                        max_exclusive_shred,
+                        max_inclusive_shred,
                     } => {
                         if outstanding_timers.contains(slot).await {
                             continue;
                         }
 
                         let Some((req_socket, nonce, raw)) =
-                            mapper.map_unbounded_shred(slot, max_exclusive_shred)
+                            mapper.map_unbounded_shred(slot, max_inclusive_shred)
                         else {
                             continue;
                         };
@@ -237,7 +236,7 @@ impl RepairManager {
                             (nonce, req_socket),
                             (
                                 OutstandingRequestKind::HighestWindowIndex,
-                                max_exclusive_shred,
+                                max_inclusive_shred,
                             ),
                         );
 
