@@ -1,40 +1,50 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    ops::Index,
-    sync::{Arc, RwLock},
-    time::SystemTime,
-};
+use std::{net::SocketAddr, sync::Arc};
 
-use indexmap::IndexMap;
+use lru::LruCache;
 use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IndexedRandom};
 use solana_core::repair::serve_repair::{RepairProtocol, RepairRequestHeader, ServeRepair};
+use solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol};
 use solana_ledger::shred::Nonce;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, timing::timestamp};
+use solana_sdk::{
+    clock::Slot, pubkey::Pubkey, signature::Keypair, signer::Signer, timing::timestamp,
+};
 
 #[derive(Default)]
-pub struct RepairPeersStore(pub IndexMap<IpAddr, RepairPeerInfo>);
+pub struct RepairPeersStore(pub scc::HashCache<Slot, Vec<(SocketAddr, Pubkey)>>);
 
-#[derive(Clone, Default)]
-pub struct RepairPeers(pub Arc<RwLock<RepairPeersStore>>);
-
-impl Index<usize> for RepairPeersStore {
-    type Output = RepairPeerInfo;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        self.0.index(index)
-    }
+#[derive(Clone)]
+pub struct RepairPeers {
+    cache: LruCache<Slot, Vec<(SocketAddr, Pubkey)>>,
+    cluster_info: Arc<ClusterInfo>,
 }
 
-impl IndexedRandom for RepairPeersStore {
-    fn len(&self) -> usize {
-        self.0.len()
+impl RepairPeers {
+    pub fn new(cluster_info: Arc<ClusterInfo>) -> Self {
+        Self {
+            cache: LruCache::new(200.try_into().unwrap()),
+            cluster_info,
+        }
     }
-}
 
-pub struct RepairPeerInfo {
-    pub socket_addr: SocketAddr,
-    pub pubkey: Pubkey,
-    pub last_seen: SystemTime,
+    fn random_peer(&mut self, rng: &mut impl Rng, slot: Slot) -> Option<(SocketAddr, Pubkey)> {
+        let cached = self.cache.get(&slot);
+        if let Some(cached) = cached {
+            return cached.choose(rng).cloned();
+        }
+        let peers = self
+            .cluster_info
+            .repair_peers(slot)
+            .into_iter()
+            .filter_map(|ci| {
+                let socket = ci.serve_repair(Protocol::UDP)?;
+                Some((socket, *ci.pubkey()))
+            })
+            .collect::<Vec<_>>();
+        let peer = peers.choose(rng).cloned()?;
+        self.cache.put(slot, peers);
+
+        Some(peer)
+    }
 }
 
 #[derive(Clone)]
@@ -53,9 +63,9 @@ impl RepairRequestMapper {
         }
     }
 
-    fn random_peer(&mut self) -> Option<(Pubkey, SocketAddr)> {
-        if let Some(req_node) = self.peers.0.read().unwrap().choose(&mut self.rng) {
-            Some((req_node.pubkey, req_node.socket_addr))
+    fn random_peer(&mut self, slot: u64) -> Option<(SocketAddr, Pubkey)> {
+        if let Some(req_node) = self.peers.random_peer(&mut self.rng, slot) {
+            Some(req_node)
         } else {
             log::error!("no repair peers available, unable to send repair request");
             None
@@ -80,7 +90,7 @@ impl RepairRequestMapper {
         slot: u64,
         shred: u32,
     ) -> Option<(SocketAddr, Nonce, Vec<u8>)> {
-        let (req_pk, req_socket) = self.random_peer()?;
+        let (req_socket, req_pk) = self.random_peer(slot)?;
         let (nonce, header) = self.create_header(req_pk);
         let req = RepairProtocol::WindowIndex {
             header,
@@ -97,7 +107,7 @@ impl RepairRequestMapper {
         slot: u64,
         max_exclusive_shred: u32,
     ) -> Option<(SocketAddr, Nonce, Vec<u8>)> {
-        let (req_pk, req_socket) = self.random_peer()?;
+        let (req_socket, req_pk) = self.random_peer(slot)?;
         let (nonce, header) = self.create_header(req_pk);
         let req = RepairProtocol::HighestWindowIndex {
             header,

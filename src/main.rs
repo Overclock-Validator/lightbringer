@@ -149,13 +149,12 @@ fn main() {
     let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
 
     let repair_timeout = OutstandingTimerStore::default();
-    let repair_peers = RepairPeers::default();
-    let repair_request_mapper = RepairRequestMapper::new(repair_peers.clone(), keypair.clone());
+    let repair_peers = RepairPeers::new(cluster_info);
+    let repair_request_mapper = RepairRequestMapper::new(repair_peers, keypair.clone());
 
-    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx, repair_peers) move |exit| async {
+    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx) move |exit| async {
         let repair_manager =
             RepairManager::new(
-                cluster_info,
                 repair_rx,
                 repair_socket_tx,
                 repair_manager_rx,
@@ -163,7 +162,7 @@ fn main() {
                 repair_timeout,
                 repair_request_mapper,
             );
-        repair_manager.start_repair_manager_loop(exit, repair_peers).await
+        repair_manager.start_repair_manager_loop(exit).await
     }));
     threadpool.spawn(move |exit| async move {
         start_repair_socket_runner(
