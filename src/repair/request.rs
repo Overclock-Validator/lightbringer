@@ -1,5 +1,7 @@
 use std::{
+    cell::RefCell,
     net::SocketAddr,
+    rc::Rc,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -78,7 +80,7 @@ impl RepairManager {
 
         let outstanding_store = self.outstanding_timers;
 
-        let mut mapper = self.request_mapper;
+        let mapper = Rc::new(RefCell::new(self.request_mapper));
 
         let request_processor_task = spawn_local(Self::request_processor_loop(
             mapper.clone(),
@@ -88,38 +90,41 @@ impl RepairManager {
         ));
 
         let repair_recv_task = spawn_local(async move {
-            while let Ok((socket_addr, packet)) = self.recv_socket.recv().await {
-                let Some(nonce) = repair_nonce(&packet) else {
-                    continue;
-                };
-                let Some(slot) = shred::layout::get_slot(&packet) else {
-                    continue;
-                };
-                // TODO: add more filters e.g shred should sig verify
-                let Some((req_kind, req_shred_index)) =
-                    outstanding_store.remove(slot, nonce, socket_addr).await
-                else {
-                    continue;
-                };
+            let socket_stream = self.recv_socket.stream();
+            socket_stream
+                .for_each_concurrent(Some(100), async |(socket_addr, packet)| {
+                    let Some(nonce) = repair_nonce(&packet) else {
+                        return;
+                    };
+                    let Some(slot) = shred::layout::get_slot(&packet) else {
+                        return;
+                    };
+                    // TODO: add more filters e.g shred should sig verify
+                    let Some((req_kind, req_shred_index)) =
+                        outstanding_store.remove(slot, nonce, socket_addr).await
+                    else {
+                        return;
+                    };
 
-                if req_kind == OutstandingRequestKind::HighestWindowIndex {
-                    let res = Self::handle_unbounded_packet_response(
-                        &mut mapper,
-                        &outstanding_store,
-                        &self.send_socket,
-                        &packet,
-                        slot,
-                        req_shred_index,
-                    )
-                    .await;
-                    if res.is_none() {
-                        log::info!("received invalid unbounded request");
-                        continue;
+                    if req_kind == OutstandingRequestKind::HighestWindowIndex {
+                        let res = Self::handle_unbounded_packet_response(
+                            &mapper,
+                            &outstanding_store,
+                            &self.send_socket,
+                            &packet,
+                            slot,
+                            req_shred_index,
+                        )
+                        .await;
+                        if res.is_none() {
+                            log::info!("received invalid unbounded request");
+                            return;
+                        }
                     }
-                }
 
-                _ = self.filter_shred_tx.send(packet).await;
-            }
+                    _ = self.filter_shred_tx.send(packet).await;
+                })
+                .await;
         });
 
         exit.await;
@@ -131,7 +136,7 @@ impl RepairManager {
     // handle an unbounded packet response
     // returning None if packet is invalid
     async fn handle_unbounded_packet_response(
-        mapper: &mut RepairRequestMapper,
+        mapper: &RefCell<RepairRequestMapper>,
         outstanding_timers: &OutstandingTimerStore,
         socket_tx: &AsyncSender<RepairSocketRequestBatch>,
         packet: &PacketInfo,
@@ -145,8 +150,9 @@ impl RepairManager {
         let mut outstanding_reqs = SlotRequestMap::default();
         let mut last_shred_req = (!flags.contains(ShredFlags::LAST_SHRED_IN_SLOT))
             .then(|| {
-                let (socket, nonce, shred) =
-                    mapper.map_unbounded_shred(shred_slot, shred_index + 1)?;
+                let (socket, nonce, shred) = mapper
+                    .borrow_mut()
+                    .map_unbounded_shred(shred_slot, shred_index + 1)?;
                 outstanding_reqs.insert(
                     (nonce, socket),
                     (OutstandingRequestKind::HighestWindowIndex, shred_index + 1),
@@ -164,7 +170,9 @@ impl RepairManager {
 
         let reqs = range
             .filter_map(|shred_index| {
-                let (socket, nonce, shred) = mapper.map_bounded_shred(shred_slot, shred_index)?;
+                let (socket, nonce, shred) = mapper
+                    .borrow_mut()
+                    .map_bounded_shred(shred_slot, shred_index)?;
                 outstanding_reqs.insert(
                     (nonce, socket),
                     (OutstandingRequestKind::WindowIndex, shred_index),
@@ -199,7 +207,7 @@ impl RepairManager {
     }
 
     async fn request_processor_loop(
-        mut mapper: RepairRequestMapper,
+        mapper: Rc<RefCell<RepairRequestMapper>>,
         req_rx: AsyncReceiver<RepairReq>,
         outstanding_timers: OutstandingTimerStore,
         send_socket: AsyncSender<RepairSocketRequestBatch>,
@@ -220,7 +228,7 @@ impl RepairManager {
                         }
 
                         let reqs = Self::process_missing_shreds(
-                            &mut mapper,
+                            &mut mapper.borrow_mut(),
                             &mut outstanding_reqs,
                             slot,
                             shreds,
@@ -237,14 +245,15 @@ impl RepairManager {
                             continue;
                         }
 
-                        let Some((req_socket, nonce, raw)) =
-                            mapper.map_unbounded_shred(slot, max_exclusive_shred)
+                        let Some((req_socket, nonce, raw)) = mapper
+                            .borrow_mut()
+                            .map_unbounded_shred(slot, max_exclusive_shred)
                         else {
                             continue;
                         };
 
                         let mut reqs = Self::process_missing_shreds(
-                            &mut mapper,
+                            &mut mapper.borrow_mut(),
                             &mut outstanding_reqs,
                             slot,
                             shreds,
