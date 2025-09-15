@@ -80,7 +80,7 @@ impl OutstandingTimerStore {
     ) {
         let task = spawn_local(async move {
             loop {
-                glommio::timer::sleep(Duration::from_millis(500)).await;
+                glommio::timer::sleep(Duration::from_secs(5)).await;
                 let mut socket_reqs = Vec::new();
                 self.inner
                     .iter_mut_async(|mut entry| {
