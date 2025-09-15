@@ -19,7 +19,7 @@ use crate::{
     repair::request::RepairReq, store::shred::SlotRaw, thread_manager::CancelRx, types::PacketInfo,
 };
 
-pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
+pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(600);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
 type FecMap = HashMap<u32, Vec<u32>>;

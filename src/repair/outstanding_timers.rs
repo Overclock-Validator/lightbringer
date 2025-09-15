@@ -21,7 +21,7 @@ pub enum OutstandingRequestKind {
 }
 
 pub type SlotRequestMap = BTreeMap<(Nonce, SocketAddr), (OutstandingRequestKind, u32)>;
-const REPAIR_SLOT_TIMEOUT: Duration = Duration::from_millis(200);
+const REPAIR_SLOT_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Default)]
 pub struct OutstandingTimerStore {
@@ -60,8 +60,9 @@ impl OutstandingTimerStore {
         self.inner
             .entry_async(slot)
             .await
-            .and_modify(|(existing_reqs, _)| {
+            .and_modify(|(existing_reqs, timeout)| {
                 existing_reqs.append(&mut reqs);
+                *timeout = Instant::now() + REPAIR_SLOT_TIMEOUT;
             })
             .or_insert((reqs, Instant::now() + REPAIR_SLOT_TIMEOUT));
     }
@@ -79,6 +80,10 @@ impl OutstandingTimerStore {
                 self.inner
                     .iter_mut_async(|mut entry| {
                         if entry.1.1 > Instant::now() {
+                            return true;
+                        }
+                        if entry.1.0.is_empty() {
+                            _ = entry.consume();
                             return true;
                         }
                         log::info!("slot {}, repair time out", entry.0);
