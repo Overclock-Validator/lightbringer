@@ -34,6 +34,9 @@ pub enum RepairReq {
         shreds: Vec<u32>,
         max_exclusive_shred: u32,
     },
+    CancelRepair {
+        slot: u64,
+    },
 }
 
 pub struct RepairManager {
@@ -209,6 +212,12 @@ impl RepairManager {
                         if outstanding_timers.contains(slot).await {
                             continue;
                         }
+                        if shreds.is_empty() {
+                            log::warn!(
+                                "received empty bounded repair request for slot {slot}, ignoring"
+                            );
+                            continue;
+                        }
 
                         let reqs = Self::process_missing_shreds(
                             &mut mapper,
@@ -251,6 +260,10 @@ impl RepairManager {
                         );
 
                         (slot, reqs)
+                    }
+                    RepairReq::CancelRepair { slot } => {
+                        outstanding_timers.cancel_repair(slot).await;
+                        continue;
                     }
                 }
             };

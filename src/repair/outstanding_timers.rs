@@ -43,6 +43,10 @@ impl OutstandingTimerStore {
         Some(res)
     }
 
+    pub async fn cancel_repair(&self, slot: u64) {
+        self.inner.remove_async(&slot).await;
+    }
+
     pub async fn contains(&self, slot: u64) -> bool {
         self.inner.contains_async(&slot).await
     }

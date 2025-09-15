@@ -35,6 +35,7 @@ pub struct SlotMetadata {
     // highest shred index not seen yet
     pub max_exclusive_shred: u32,
     pub shreds: Option<Vec<PacketInfo>>,
+    pub timed_out: bool,
 }
 
 impl SlotMetadata {
@@ -183,12 +184,13 @@ impl SlotMetadataStore {
                 let Some(slot) = shred::layout::get_slot(&shred) else {
                     continue;
                 };
-                let store_res = this.store_shred(common_header, shred).await;
+                let store_res = this.store_shred(common_header, shred);
                 let timer_msg = match store_res {
                     SlotMetaStoreRes::Ignored => continue,
                     SlotMetaStoreRes::Complete(raw_slot) => {
+                        _ = timer_tx.try_send(SlotTimerMsg::ShredCompletion { slot });
                         _ = store_tx.send(raw_slot).await;
-                        SlotTimerMsg::ShredCompletion { slot }
+                        continue;
                     }
                     SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
                 };
@@ -219,14 +221,26 @@ impl SlotMetadataStore {
                             timer.destroy();
                         }
                         log::info!("slot {slot} has all shreds!");
+                        let Some(slot_meta) = self.inner.get_sync(&slot) else {
+                            continue;
+                        };
+                        if slot_meta.timed_out {
+                            _ = repair_tx.send(RepairReq::CancelRepair { slot }).await;
+                        }
                         _ = grpc_tx.send(slot).await;
                     }
                     SlotTimerMsg::ShredTimeout { slot } => {
                         timers.remove(&slot);
-                        log::info!("slot {slot} has timed out, sending to repair!");
-                        let Some(slot_meta) = self.inner.get_sync(&slot) else {
+                        let Some(mut slot_meta) = self.inner.get_sync(&slot) else {
                             continue;
                         };
+                        if slot_meta.is_complete() {
+                            log::info!("slot {slot} has all shreds!");
+                            continue;
+                        }
+                        slot_meta.timed_out = true;
+                        log::info!("slot {slot} has timed out, sending to repair!");
+
                         _ = repair_tx.send(slot_meta.calculate_missing_shreds()).await;
                     }
                 }
@@ -240,7 +254,7 @@ impl SlotMetadataStore {
     }
 
     // stores the shred, returning whether slots are complete or not
-    async fn store_shred(&self, hdr: ShredCommonHeader, shred: PacketInfo) -> SlotMetaStoreRes {
+    fn store_shred(&self, hdr: ShredCommonHeader, shred: PacketInfo) -> SlotMetaStoreRes {
         let slot = hdr.slot;
         let fec_index = hdr.fec_set_index;
         let shred_index = hdr.index;
@@ -250,20 +264,17 @@ impl SlotMetadataStore {
             .unwrap()
             .as_millis() as u64;
 
-        let (_, mut shred_entry) =
-            self.inner
-                .entry_async(slot)
-                .await
-                .or_put_with(|| SlotMetadata {
-                    slot_num: slot,
-                    fec_data_map: HashMap::new(),
-                    fec_coding_map: HashMap::new(),
-                    timestamp_ms,
-                    completed_batches: BTreeSet::new(),
-                    required_batches: None,
-                    max_exclusive_shred: 0,
-                    shreds: Some(Default::default()),
-                });
+        let (_, mut shred_entry) = self.inner.entry_sync(slot).or_put_with(|| SlotMetadata {
+            slot_num: slot,
+            fec_data_map: HashMap::new(),
+            fec_coding_map: HashMap::new(),
+            timestamp_ms,
+            completed_batches: BTreeSet::new(),
+            required_batches: None,
+            max_exclusive_shred: 0,
+            shreds: Some(Default::default()),
+            timed_out: false,
+        });
         let shred_meta = shred_entry.get_mut();
         if shred_meta.is_complete() {
             return SlotMetaStoreRes::Ignored;
