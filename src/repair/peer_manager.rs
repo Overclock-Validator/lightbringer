@@ -1,7 +1,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     ops::Index,
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::SystemTime,
 };
 
@@ -11,10 +11,13 @@ use solana_core::repair::serve_repair::{RepairProtocol, RepairRequestHeader, Ser
 use solana_ledger::shred::Nonce;
 use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, timing::timestamp};
 
-#[derive(Clone, Default)]
-pub struct RepairPeers(Arc<IndexMap<IpAddr, RepairPeerInfo>>);
+#[derive(Default)]
+pub struct RepairPeersStore(pub IndexMap<IpAddr, RepairPeerInfo>);
 
-impl Index<usize> for RepairPeers {
+#[derive(Clone, Default)]
+pub struct RepairPeers(pub Arc<RwLock<RepairPeersStore>>);
+
+impl Index<usize> for RepairPeersStore {
     type Output = RepairPeerInfo;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -22,16 +25,16 @@ impl Index<usize> for RepairPeers {
     }
 }
 
-impl IndexedRandom for RepairPeers {
+impl IndexedRandom for RepairPeersStore {
     fn len(&self) -> usize {
         self.0.len()
     }
 }
 
 pub struct RepairPeerInfo {
-    socket_addr: SocketAddr,
-    pubkey: Pubkey,
-    last_seen: SystemTime,
+    pub socket_addr: SocketAddr,
+    pub pubkey: Pubkey,
+    pub last_seen: SystemTime,
 }
 
 #[derive(Clone)]
@@ -51,7 +54,7 @@ impl RepairRequestMapper {
     }
 
     fn random_peer(&mut self) -> Option<(Pubkey, SocketAddr)> {
-        if let Some(req_node) = self.peers.choose(&mut self.rng) {
+        if let Some(req_node) = self.peers.0.read().unwrap().choose(&mut self.rng) {
             Some((req_node.pubkey, req_node.socket_addr))
         } else {
             log::error!("no repair peers available, unable to send repair request");

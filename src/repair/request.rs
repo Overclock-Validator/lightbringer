@@ -1,15 +1,19 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use futures::StreamExt;
 use glommio::spawn_local;
 use kanal::{AsyncReceiver, AsyncSender};
-use solana_gossip::cluster_info::ClusterInfo;
+use solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol};
 use solana_ledger::shred::{self, ShredFlags, layout};
 
 use crate::{
     repair::{
         outstanding_timers::{OutstandingRequestKind, OutstandingTimerStore, SlotRequestMap},
-        peer_manager::RepairRequestMapper,
+        peer_manager::{RepairPeerInfo, RepairPeers, RepairRequestMapper},
         repair_nonce,
         socket::RepairSocketRequestBatch,
     },
@@ -63,12 +67,11 @@ impl RepairManager {
         }
     }
 
-    pub async fn start_repair_manager_loop(self, exit: CancelRx) {
-        // let peer_manager_task = spawn_local_into(
-        //     Self::start_peer_manager_loop(repair_peers_insert, self.cluster_info),
-        //     peer_manager_task_tq,
-        // )
-        // .unwrap();
+    pub async fn start_repair_manager_loop(self, exit: CancelRx, repair_peers: RepairPeers) {
+        let peer_manager_task = spawn_local(Self::start_peer_manager_loop(
+            repair_peers,
+            self.cluster_info,
+        ));
 
         let outstanding_store = self.outstanding_timers;
 
@@ -119,7 +122,7 @@ impl RepairManager {
         exit.await;
         repair_recv_task.cancel().await;
         request_processor_task.cancel().await;
-        // peer_manager_task.cancel().await;
+        peer_manager_task.cancel().await;
     }
 
     // handle an unbounded packet response
@@ -258,62 +261,62 @@ impl RepairManager {
         }
     }
 
-    // async fn start_peer_manager_loop(
-    //     repair_peers: Rc<RefCell<RepairPeers>>,
-    //     cluster_info: Arc<ClusterInfo>,
-    // ) -> ! {
-    //     loop {
-    //         let now = SystemTime::now();
-    //         let peers = cluster_info.all_peers();
+    async fn start_peer_manager_loop(
+        repair_peers: RepairPeers,
+        cluster_info: Arc<ClusterInfo>,
+    ) -> ! {
+        loop {
+            let now = SystemTime::now();
+            let peers = cluster_info.all_peers();
 
-    //         {
-    //             let mut repair_peers = repair_peers.borrow_mut();
+            {
+                let mut repair_peers = repair_peers.0.write().unwrap();
 
-    //             repair_peers.0.retain(|_, info| {
-    //                 if let Ok(duration) = now.duration_since(info.last_seen) {
-    //                     duration < STALE_THRESHOLD
-    //                 } else {
-    //                     true
-    //                 }
-    //             });
+                repair_peers.0.retain(|_, info| {
+                    if let Ok(duration) = now.duration_since(info.last_seen) {
+                        duration < STALE_THRESHOLD
+                    } else {
+                        true
+                    }
+                });
 
-    //             for (peer, _) in peers {
-    //                 let Some(peer_repair_addr) = peer.serve_repair(Protocol::UDP) else {
-    //                     continue;
-    //                 };
-    //                 let ip = peer_repair_addr.ip();
-    //                 repair_peers.0.insert(
-    //                     ip,
-    //                     RepairPeerInfo {
-    //                         socket_addr: peer_repair_addr,
-    //                         pubkey: *peer.pubkey(),
-    //                         last_seen: now,
-    //                     },
-    //                 );
-    //             }
+                for (peer, _) in peers {
+                    let Some(peer_repair_addr) = peer.serve_repair(Protocol::UDP) else {
+                        continue;
+                    };
+                    let ip = peer_repair_addr.ip();
+                    repair_peers.0.insert(
+                        ip,
+                        RepairPeerInfo {
+                            socket_addr: peer_repair_addr,
+                            pubkey: *peer.pubkey(),
+                            last_seen: now,
+                        },
+                    );
+                }
 
-    //             log::info!(
-    //                 "Refreshed repair peers. Current count: {}",
-    //                 repair_peers.0.len()
-    //             );
+                log::info!(
+                    "Refreshed repair peers. Current count: {}",
+                    repair_peers.0.len()
+                );
 
-    //             #[cfg(feature = "debug")]
-    //             {
-    //                 for (ip, info) in repair_peers.0.iter() {
-    //                     let duration = SystemTime::now()
-    //                         .duration_since(info.last_seen)
-    //                         .unwrap_or(Duration::from_secs(0));
-    //                     log::debug!(
-    //                         "Repair Peer, IP: {}, Address: {:?}, Last seen: {} seconds ago",
-    //                         ip,
-    //                         info.socket_addr,
-    //                         duration.as_secs()
-    //                     );
-    //                 }
-    //             }
-    //         }
+                #[cfg(feature = "debug")]
+                {
+                    for (ip, info) in repair_peers.0.iter() {
+                        let duration = SystemTime::now()
+                            .duration_since(info.last_seen)
+                            .unwrap_or(Duration::from_secs(0));
+                        log::debug!(
+                            "Repair Peer, IP: {}, Address: {:?}, Last seen: {} seconds ago",
+                            ip,
+                            info.socket_addr,
+                            duration.as_secs()
+                        );
+                    }
+                }
+            }
 
-    //         glommio::timer::sleep(REFRESH_INTERVAL).await;
-    //     }
-    // }
+            glommio::timer::sleep(REFRESH_INTERVAL).await;
+        }
+    }
 }

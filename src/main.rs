@@ -152,7 +152,7 @@ fn main() {
     let repair_peers = RepairPeers::default();
     let repair_request_mapper = RepairRequestMapper::new(repair_peers.clone(), keypair.clone());
 
-    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx) move |exit| async {
+    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx, repair_peers) move |exit| async {
         let repair_manager =
             RepairManager::new(
                 cluster_info,
@@ -163,7 +163,7 @@ fn main() {
                 repair_timeout,
                 repair_request_mapper,
             );
-        repair_manager.start_repair_manager_loop(exit).await
+        repair_manager.start_repair_manager_loop(exit, repair_peers).await
     }));
     threadpool.spawn(move |exit| async move {
         start_repair_socket_runner(
