@@ -91,7 +91,16 @@ impl OutstandingTimerStore {
                             _ = entry.consume();
                             return true;
                         }
-                        log::info!("slot {}, repair time out", entry.0);
+                        log::info!(
+                            "slot {}, repair time out, reqs: {:?}",
+                            entry.0,
+                            entry
+                                .1
+                                .0
+                                .values()
+                                .map(|(_, shred)| *shred)
+                                .collect::<Vec<_>>()
+                        );
 
                         let mut new_reqs = SlotRequestMap::default();
                         socket_reqs.extend(entry.1.0.values().filter_map(|&(kind, shred)| {
