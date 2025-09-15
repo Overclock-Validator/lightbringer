@@ -37,6 +37,7 @@ impl OutstandingTimerStore {
     ) -> Option<(OutstandingRequestKind, u32)> {
         let mut slot_map = self.inner.get_async(&slot).await?;
         let res = slot_map.0.remove(&(nonce, socket))?;
+        slot_map.1 = Instant::now() + REPAIR_SLOT_TIMEOUT;
         std::mem::drop(slot_map);
 
         self.inner.remove_if_async(&slot, |v| v.0.is_empty()).await;
