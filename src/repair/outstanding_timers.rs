@@ -21,7 +21,7 @@ pub enum OutstandingRequestKind {
 }
 
 pub type SlotRequestMap = BTreeMap<(Nonce, SocketAddr), (OutstandingRequestKind, u32)>;
-const REPAIR_SLOT_TIMEOUT: Duration = Duration::from_millis(500);
+const REPAIR_SLOT_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Default)]
 pub struct OutstandingTimerStore {
