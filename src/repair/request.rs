@@ -5,6 +5,7 @@ use kanal::{AsyncReceiver, AsyncSender};
 use solana_ledger::shred::{self, ShredFlags, layout};
 
 use crate::{
+    metrics::{MetricsSender, points::SlotMeasurement},
     repair::{
         outstanding_timers::{OutstandingRequestKind, OutstandingTimerStore, SlotRequestMap},
         peer_manager::RepairRequestMapper,
@@ -37,6 +38,7 @@ pub struct RepairManager {
     filter_shred_tx: AsyncSender<PacketInfo>,
     outstanding_timers: OutstandingTimerStore,
     request_mapper: RepairRequestMapper,
+    metrics: MetricsSender,
 }
 
 impl RepairManager {
@@ -47,6 +49,7 @@ impl RepairManager {
         filter_shred_tx: AsyncSender<PacketInfo>,
         outstanding_timers: OutstandingTimerStore,
         request_mapper: RepairRequestMapper,
+        metrics: MetricsSender,
     ) -> Self {
         Self {
             req_rx,
@@ -55,6 +58,7 @@ impl RepairManager {
             filter_shred_tx,
             outstanding_timers,
             request_mapper,
+            metrics,
         }
     }
 
@@ -68,6 +72,7 @@ impl RepairManager {
             self.req_rx,
             outstanding_store.clone(),
             self.send_socket.clone(),
+            self.metrics,
         ));
 
         let repair_recv_task = spawn_local(async move {
@@ -184,6 +189,7 @@ impl RepairManager {
         req_rx: AsyncReceiver<RepairReq>,
         outstanding_timers: OutstandingTimerStore,
         send_socket: AsyncSender<RepairSocketRequestBatch>,
+        metrics: MetricsSender,
     ) {
         while let Ok(req) = req_rx.recv().await {
             let mut outstanding_reqs = SlotRequestMap::default();
@@ -199,6 +205,8 @@ impl RepairManager {
                             );
                             continue;
                         }
+
+                        metrics.measure(SlotMeasurement::repair(slot));
 
                         let reqs = Self::process_missing_shreds(
                             &mut mapper,
@@ -223,6 +231,8 @@ impl RepairManager {
                         else {
                             continue;
                         };
+
+                        metrics.measure(SlotMeasurement::repair(slot));
 
                         let mut reqs = Self::process_missing_shreds(
                             &mut mapper,

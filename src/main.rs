@@ -2,9 +2,11 @@
 
 #[cfg(test)]
 mod coding;
+mod config;
 mod gossip_manager;
 mod grpc_slot_stream;
 mod leader_schedule;
+mod metrics;
 mod packet_filter;
 mod repair;
 mod rpc;
@@ -14,10 +16,9 @@ mod turbine_manager;
 mod types;
 mod util;
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use clap::Parser;
-use fjall::{Config, Keyspace, PersistMode};
+use fjall::{Config as FjallConfig, Keyspace, PersistMode};
 use glommio::{enclose, spawn_local};
 use gossip_manager::GossipManager;
 use repair::request::RepairManager;
@@ -28,6 +29,8 @@ use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
 use crate::{
+    config::{Config, InfluxDbConfig},
+    metrics::{MetricsSender, metrics_loop, mock_metrics_loop},
     packet_filter::packet_filter_loop,
     repair::{
         outstanding_timers::OutstandingTimerStore,
@@ -39,19 +42,8 @@ use crate::{
     util::std_to_glommio_socket,
 };
 
-#[derive(Parser, Debug)]
-struct Args {
-    entrypoint: SocketAddr,
-    #[arg(default_value = "./shred-store")]
-    storage: PathBuf,
-    #[arg(default_value = "127.0.0.1:3000")]
-    rpc_addr: SocketAddr,
-    #[arg(default_value = "127.0.0.1:3001")]
-    grpc_addr: SocketAddr,
-}
-
 fn init_fjall(storage: PathBuf) -> fjall::Result<fjall::Keyspace> {
-    let config = Config::new(storage).cache_size(1024 * 1024 * 1024); // 1 GiB cache
+    let config = FjallConfig::new(storage).cache_size(1024 * 1024 * 1024); // 1 GiB cache
 
     config.open()
 }
@@ -100,20 +92,32 @@ async fn fjall_persistence_loop(exit: CancelRx, ks: Keyspace) {
     }
 }
 
+fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
+    influxdb::Client::new(config.host, config.database).with_token(config.token)
+}
+
 fn main() {
-    let args = Args::parse();
+    let conf = Config::parse();
 
     init_logger().unwrap();
 
-    let lsm_ks = init_fjall(args.storage).unwrap();
+    let lsm_ks = init_fjall(conf.storage).unwrap();
     let persist_ks = lsm_ks.clone();
 
     let keypair = Arc::new(Keypair::new());
 
-    let (gossip, sockets) = GossipManager::new(args.entrypoint, keypair.clone()).unwrap();
+    let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<8>::new();
+    let mut threadpool = ThreadManager::<9>::new();
+
+    let (metrics, metrics_rx) = MetricsSender::new();
+    if let Some(influxdb_config) = conf.influxdb {
+        let client = init_influxdb_client(influxdb_config);
+        threadpool.spawn(move |exit| metrics_loop(exit, client, metrics_rx));
+    } else {
+        threadpool.spawn(move |exit| mock_metrics_loop(exit, metrics_rx));
+    }
 
     // fjall persist thread
     threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
@@ -152,7 +156,7 @@ fn main() {
     let repair_peers = RepairPeers::new(cluster_info);
     let repair_request_mapper = RepairRequestMapper::new(repair_peers, keypair.clone());
 
-    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx) move |exit| async {
+    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx, metrics) move |exit| async {
         let repair_manager =
             RepairManager::new(
                 repair_rx,
@@ -161,6 +165,7 @@ fn main() {
                 filter_tx,
                 repair_timeout,
                 repair_request_mapper,
+                metrics,
             );
         repair_manager.start_repair_manager_loop(exit).await
     }));
@@ -189,18 +194,18 @@ fn main() {
     // Shred Metadata Storage (timeout etc)
     let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
     let slot_meta_store = SlotMetadataStore::new(version);
-    threadpool.spawn(move |exit| {
-        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_tx, slot_store_tx)
-    });
+    threadpool.spawn(enclose!((metrics) move |exit| {
+        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_tx, slot_store_tx, metrics)
+    }));
 
     let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();
     let grpc_thread = std::thread::spawn(enclose!((shred_store) move || {
-        grpc_slot_stream::start_grpc_server(args.grpc_addr, grpc_rx, shred_store, grpc_cancel_rx);
+        grpc_slot_stream::start_grpc_server(conf.grpc_addr, grpc_rx, shred_store, grpc_cancel_rx);
     }));
 
     threadpool.spawn_rpc_with_cancel_handler(
         DebugRpcInit {
-            listen_addr: args.rpc_addr,
+            listen_addr: conf.rpc_addr,
             shred_store,
         },
         move || {

@@ -16,7 +16,11 @@ use lru::LruCache;
 use solana_ledger::shred::{self, Shred, ShredCommonHeader, ShredFlags, ShredType};
 
 use crate::{
-    repair::request::RepairReq, store::shred::SlotRaw, thread_manager::CancelRx, types::PacketInfo,
+    metrics::{MetricsSender, points::SlotMeasurement},
+    repair::request::RepairReq,
+    store::shred::SlotRaw,
+    thread_manager::CancelRx,
+    types::PacketInfo,
 };
 
 pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
@@ -162,6 +166,7 @@ impl SlotMetadataStore {
         repair_tx: AsyncSender<RepairReq>,
         grpc_tx: AsyncSender<u64>,
         store_tx: AsyncSender<SlotRaw>,
+        metrics: MetricsSender,
     ) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();
         let timer_tx = Rc::new(timer_tx);
@@ -224,6 +229,9 @@ impl SlotMetadataStore {
                         let Some(slot_meta) = self.inner.get_sync(&slot) else {
                             continue;
                         };
+
+                        metrics.measure(SlotMeasurement::completion(slot));
+
                         if slot_meta.timed_out {
                             _ = repair_tx.send(RepairReq::CancelRepair { slot }).await;
                         }
@@ -235,7 +243,6 @@ impl SlotMetadataStore {
                             continue;
                         };
                         if slot_meta.is_complete() {
-                            log::info!("slot {slot} has all shreds!");
                             continue;
                         }
                         slot_meta.timed_out = true;

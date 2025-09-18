@@ -9,9 +9,6 @@ use solana_sdk::{
     clock::Slot, pubkey::Pubkey, signature::Keypair, signer::Signer, timing::timestamp,
 };
 
-#[derive(Default)]
-pub struct RepairPeersStore(pub scc::HashCache<Slot, Vec<(SocketAddr, Pubkey)>>);
-
 #[derive(Clone)]
 pub struct RepairPeers {
     cache: LruCache<Slot, Vec<(SocketAddr, Pubkey)>>,
