@@ -30,7 +30,7 @@ use turbine_manager::start_turbine_manager;
 
 use crate::{
     config::{Config, InfluxDbConfig},
-    metrics::{MetricsSender, metrics_loop, mock_metrics_loop},
+    metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
     repair::{
         outstanding_timers::OutstandingTimerStore,
@@ -109,15 +109,14 @@ fn main() {
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<9>::new();
+    let mut threadpool = ThreadManager::<8>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
-    if let Some(influxdb_config) = conf.influxdb {
-        let client = init_influxdb_client(influxdb_config);
-        threadpool.spawn(move |exit| metrics_loop(exit, client, metrics_rx));
-    } else {
-        threadpool.spawn(move |exit| mock_metrics_loop(exit, metrics_rx));
-    }
+    let metrics_client = conf.influxdb.map(init_influxdb_client);
+    let (metrics_exit_tx, metrics_exit_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        start_metrics_thread(metrics_client, metrics_rx, metrics_exit_rx);
+    });
 
     // fjall persist thread
     threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
@@ -213,6 +212,7 @@ fn main() {
                 log::warn!("failed to stop gossip service {e}");
             }
             _ = grpc_cancel_tx.send(());
+            _ = metrics_exit_tx.send(());
             if let Err(e) = grpc_thread.join() {
                 log::warn!("failed to stop grpc thread {e:?}");
             }
