@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "pb/slot_entry.proto";
+
 package slot_stream;
 
 service SlotStream {
@@ -9,6 +11,6 @@ service SlotStream {
 message SlotStreamRequest {}
 
 message SlotResponse {
-    bytes data = 1; // JSON encoded entries 
+    repeated slot_entry.Entry entries = 1; // JSON encoded entries 
     uint64 slot = 2;
 }

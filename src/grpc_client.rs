@@ -1,4 +1,3 @@
-use solana_entry::entry::Entry;
 use tokio::runtime;
 use tokio_stream::StreamExt;
 use tonic::{Request, transport::Channel};
@@ -7,6 +6,10 @@ use crate::pb::{SlotStreamRequest, slot_stream_client::SlotStreamClient};
 
 mod pb {
     tonic::include_proto!("slot_stream");
+}
+
+mod slot_entry {
+    tonic::include_proto!("slot_entry");
 }
 
 async fn async_main() -> anyhow::Result<()> {
@@ -21,10 +24,7 @@ async fn async_main() -> anyhow::Result<()> {
     while let Some(resp) = stream.next().await {
         match resp {
             Ok(resp) => {
-                let raw_entries = resp.data;
-                let Ok(entries) = bincode::deserialize::<Vec<Entry>>(&raw_entries) else {
-                    continue;
-                };
+                let entries = resp.entries;
                 let txn_count = entries.iter().fold(0usize, |txn_count, entry| {
                     txn_count + entry.transactions.len()
                 });

@@ -1,9 +1,12 @@
-mod pb {
+mod slot_entry;
+mod slot_stream_pb {
     tonic::include_proto!("slot_stream");
 }
 
 use futures::Stream;
-use pb::{SlotResponse, SlotStreamRequest, slot_stream_server::SlotStream as SlotStreamTrait};
+use slot_stream_pb::{
+    SlotResponse, SlotStreamRequest, slot_stream_server::SlotStream as SlotStreamTrait,
+};
 use tokio::{
     runtime,
     sync::broadcast,
@@ -14,11 +17,12 @@ use tokio_util::time::DelayQueue;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{store::shred::ShredStore, util::shred::get_slot_entries_from_store};
+use slot_entry::Entry;
 use std::{net::SocketAddr, pin::Pin, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct SlotStreamService {
-    tx: broadcast::Sender<(Vec<u8>, u64)>,
+    tx: broadcast::Sender<(Vec<Entry>, u64)>,
 }
 
 impl SlotStreamService {
@@ -56,9 +60,13 @@ impl SlotStreamService {
                                 .await
                                 .unwrap()
                             {
-                                Ok(e) => bincode::serialize(&e).unwrap(),
-                                Err(e) => bincode::serialize(&e.to_string()).unwrap(),
+                                Ok(e) => e.into_iter().map(|e| e.into()).collect(),
+                                Err(e) => {
+                                    log::warn!("failed to get slot entries for slot {slot}: {e}");
+                                    continue
+                                },
                             };
+
                         _ = broadcast_tx_master.send((msg, slot));
                     }
                 }
@@ -80,7 +88,7 @@ impl SlotStreamTrait for SlotStreamService {
         let rx = self.tx.subscribe();
 
         let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-            Ok((data, slot)) => Some(Ok(SlotResponse { data, slot })),
+            Ok((entries, slot)) => Some(Ok(SlotResponse { entries, slot })),
             Err(_) => None,
         });
 
@@ -104,7 +112,9 @@ pub fn start_grpc_server(
         log::info!("SlotStremaService grpc listening on {addr}");
 
         Server::builder()
-            .add_service(pb::slot_stream_server::SlotStreamServer::new(service))
+            .add_service(slot_stream_pb::slot_stream_server::SlotStreamServer::new(
+                service,
+            ))
             .serve_with_shutdown(addr, async move { _ = cancel.await })
             .await
             .unwrap();
