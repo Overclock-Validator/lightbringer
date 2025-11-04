@@ -26,7 +26,7 @@ use crate::{
 pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
-type FecMap = HashMap<u32, Vec<u32>>;
+type FecMap = HashMap<u32, BTreeSet<u32>>;
 type SlotMetaStore = LruCache<u64, SlotMetadata>;
 
 pub struct SlotMetadata {
@@ -301,10 +301,10 @@ impl SlotMetadataStore {
             }
             ShredType::Code => &mut shred_meta.fec_coding_map,
         };
-        fec_map
-            .entry(fec_index)
-            .or_insert_with(Vec::new)
-            .push(shred_index);
+        let inserted = fec_map.entry(fec_index).or_default().insert(shred_index);
+        if !inserted {
+            return SlotMetaStoreRes::Ignored;
+        }
         shred_meta.timestamp_ms = timestamp_ms;
         shred_meta.max_inclusive_shred = shred_meta.max_inclusive_shred.max(shred_index);
 
