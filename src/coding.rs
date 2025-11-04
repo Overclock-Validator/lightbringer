@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-
-use crate::util::shred::{deshred_to_entries, recover_shreds_and_group_by_completion};
+use crate::util::shred::get_slot_entries_from_raw_shreds;
 
 #[test]
 fn try_deshred() {
@@ -40,8 +38,6 @@ fn try_deshred() {
 fn try_decode_and_deshred() {
     use std::fs;
 
-    use solana_ledger::shred::Shred;
-
     simple_logger::init_with_level(log::Level::Info).unwrap();
     let f = fs::read("./stored_shreds.json").unwrap();
     let raw_shreds: Vec<String> = serde_json::from_slice(&f).unwrap();
@@ -49,22 +45,10 @@ fn try_decode_and_deshred() {
         use base64::{Engine, prelude::BASE64_STANDARD};
 
         let d = BASE64_STANDARD.decode(s).unwrap();
-        Shred::new_from_serialized_shred(d).unwrap()
+        d
     });
 
-    let mut by_batch = BTreeMap::<u32, Vec<Shred>>::new();
-    for shred in shreds {
-        by_batch
-            .entry(shred.fec_set_index())
-            .or_default()
-            .push(shred);
-    }
-
-    let mut entries = Vec::new();
-    for data_shreds in recover_shreds_and_group_by_completion(by_batch).unwrap() {
-        let mut deshred_entries = deshred_to_entries(data_shreds.values()).unwrap();
-        entries.append(&mut deshred_entries);
-    }
+    let entries = get_slot_entries_from_raw_shreds(shreds).unwrap();
 
     println!(
         "total transaction count: {}",
