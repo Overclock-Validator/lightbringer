@@ -1,6 +1,6 @@
 use glommio::{executor, spawn_local};
 use kanal::AsyncReceiver;
-use solana_ledger::shred::{self, Shred, ShredType};
+use solana_ledger::shred::{self, ShredType};
 
 use crate::{
     thread_manager::CancelRx,
@@ -12,6 +12,7 @@ pub struct ShredRes {
     code: Option<ShredInfoView>,
 }
 
+#[derive(Clone)]
 pub struct SlotRaw {
     pub slot: u64,
     pub shreds: Vec<PacketInfo>,
@@ -21,17 +22,17 @@ pub struct SlotRaw {
 // TODO: use a more efficient storage format in memory (Storing all coding shreds & data shreds vs Reconstructing from 32 shreds)
 #[derive(Clone)]
 pub struct ShredStore {
+    ks: fjall::Keyspace,
     shred_partition: fjall::Partition,
-    version: u16,
 }
 
 impl ShredStore {
-    pub fn new(keyspace: &fjall::Keyspace, version: u16) -> anyhow::Result<Self> {
+    pub fn new(keyspace: fjall::Keyspace) -> anyhow::Result<Self> {
         let partition = keyspace.open_partition("shred_store", Default::default())?;
 
         Ok(Self {
+            ks: keyspace,
             shred_partition: partition,
-            version,
         })
     }
 
@@ -53,36 +54,8 @@ impl ShredStore {
         task.cancel().await;
     }
 
-    pub async fn packet_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<PacketInfo>) {
-        let task = spawn_local(async move {
-            let executor = executor();
-            while let Ok(shred) = rx.recv().await {
-                let Ok(deser_shred) = Shred::new_from_serialized_shred(shred.to_vec()) else {
-                    log::debug!("received invalid shred on network");
-                    continue;
-                };
-                let slot = deser_shred.slot();
-                let index = deser_shred.index();
-                if deser_shred.version() != self.version {
-                    continue;
-                }
-
-                let this = self.clone();
-                spawn_local(executor.spawn_blocking(move || {
-                    let res = this.store_shred(slot, index, shred, deser_shred.shred_type());
-                    if let Err(e) = res {
-                        log::warn!("failed to store shred {e}");
-                    }
-                }))
-                .detach();
-            }
-            log::warn!("shred store thread died?!")
-        });
-        exit.await;
-        task.cancel().await;
-    }
-
     fn store_slot(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {
+        let mut batch = self.ks.batch();
         for shred in shreds {
             let shred_info = shred::layout::get_shred_id(&shred)
                 .expect("received invalid shred from slot meta?!");
@@ -94,8 +67,10 @@ impl ShredStore {
                 shred::ShredType::Data => ShredType::Data,
                 shred::ShredType::Code => ShredType::Code,
             } as u8;
-            self.shred_partition.insert(key, shred.as_slice())?;
+            batch.insert(&self.shred_partition, key, shred.as_slice());
         }
+        batch.commit()?;
+        self.ks.persist(fjall::PersistMode::SyncAll)?;
 
         Ok(())
     }

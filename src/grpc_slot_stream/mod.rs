@@ -13,12 +13,11 @@ use tokio::{
     task::{spawn, spawn_blocking},
 };
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
-use tokio_util::time::DelayQueue;
 use tonic::{Request, Response, Status, transport::Server};
 
-use crate::{store::shred::ShredStore, util::shred::get_slot_entries_from_store};
+use crate::{store::shred::SlotRaw, util::shred::get_slot_entries_from_raw_shreds};
 use slot_entry::Entry;
-use std::{net::SocketAddr, pin::Pin, time::Duration};
+use std::{net::SocketAddr, pin::Pin};
 
 #[derive(Debug, Clone)]
 pub struct SlotStreamService {
@@ -26,50 +25,23 @@ pub struct SlotStreamService {
 }
 
 impl SlotStreamService {
-    pub fn new(slot_notif: kanal::AsyncReceiver<u64>, store: ShredStore) -> Self {
+    pub fn new(slot_notif: kanal::AsyncReceiver<SlotRaw>) -> Self {
         let (broadcast_tx, _) = broadcast::channel(10000);
 
         let broadcast_tx_master = broadcast_tx.clone();
         spawn(async move {
-            let mut dq = DelayQueue::new();
-            let mut fut = Box::pin(slot_notif.recv());
-
-            loop {
-                tokio::select! {
-                    res = &mut fut => {
-                        let Ok(slot) = res else {
-                            break;
-                        };
-                        dq.insert(slot, Duration::from_millis(100));
-                        fut = Box::pin(slot_notif.recv());
-                    },
-                    slot = dq.next() => {
-                        let Some(slot) = slot else {
-                            let Ok(slot) = fut.await else {
-                                break;
-                            };
-                            dq.insert(slot, Duration::from_millis(100));
-                            fut = Box::pin(slot_notif.recv());
-                            continue;
-                        };
-
-                        let shred_store = store.clone();
-                        let slot = slot.into_inner();
-                        let msg =
-                            match spawn_blocking(move || get_slot_entries_from_store(&shred_store, slot))
-                                .await
-                                .unwrap()
-                            {
-                                Ok(e) => e.into_iter().map(|e| e.into()).collect(),
-                                Err(e) => {
-                                    log::warn!("failed to get slot entries for slot {slot}: {e}");
-                                    continue
-                                },
-                            };
-
-                        _ = broadcast_tx_master.send((msg, slot));
+            while let Ok(slot_raw) = slot_notif.recv().await {
+                let res = spawn_blocking(move || {
+                    get_slot_entries_from_raw_shreds(slot_raw.shreds.iter().map(|s| s.as_slice()))
+                });
+                let msg = match res.await.unwrap() {
+                    Ok(entries) => entries.into_iter().map(|e| e.into()).collect(),
+                    Err(e) => {
+                        log::warn!("failed to get slot entries for slot {}: {e}", slot_raw.slot);
+                        continue;
                     }
-                }
+                };
+                _ = broadcast_tx_master.send((msg, slot_raw.slot));
             }
         });
 
@@ -98,8 +70,7 @@ impl SlotStreamTrait for SlotStreamService {
 
 pub fn start_grpc_server(
     addr: SocketAddr,
-    slot_notif: kanal::AsyncReceiver<u64>,
-    store: ShredStore,
+    slot_notif: kanal::AsyncReceiver<SlotRaw>,
     cancel: oneshot::Receiver<()>,
 ) {
     let rt = runtime::Builder::new_current_thread()
@@ -107,7 +78,7 @@ pub fn start_grpc_server(
         .build()
         .unwrap();
     rt.block_on(async move {
-        let service = SlotStreamService::new(slot_notif, store);
+        let service = SlotStreamService::new(slot_notif);
 
         log::info!("SlotStremaService grpc listening on {addr}");
 

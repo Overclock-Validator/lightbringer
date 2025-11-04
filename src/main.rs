@@ -16,10 +16,10 @@ mod turbine_manager;
 mod types;
 mod util;
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
 
-use fjall::{Config as FjallConfig, Keyspace, PersistMode};
-use glommio::{enclose, spawn_local};
+use fjall::Config as FjallConfig;
+use glommio::enclose;
 use gossip_manager::GossipManager;
 use repair::request::RepairManager;
 use simple_logger::SimpleLogger;
@@ -38,7 +38,6 @@ use crate::{
         socket::start_repair_socket_runner,
     },
     rpc::DebugRpcInit,
-    thread_manager::CancelRx,
     util::std_to_glommio_socket,
 };
 
@@ -65,33 +64,6 @@ fn init_logger() -> Result<(), log::SetLoggerError> {
         .init()
 }
 
-async fn fjall_persistence_loop(exit: CancelRx, ks: Keyspace) {
-    let ks2 = ks.clone();
-    let executor = glommio::executor();
-    let db_persist = spawn_local(async move {
-        loop {
-            // sync every 15 minutes
-            glommio::timer::sleep(Duration::from_secs(15 * 60)).await;
-            if let Err(e) = executor
-                .spawn_blocking(enclose!((ks) move || ks.persist(PersistMode::SyncAll)))
-                .await
-            {
-                log::error!("failed to persist fjall keyspace: {e}");
-            }
-        }
-    });
-    exit.await;
-    db_persist.cancel().await;
-
-    let executor = glommio::executor();
-    if let Err(e) = executor
-        .spawn_blocking(move || ks2.persist(PersistMode::SyncAll))
-        .await
-    {
-        log::error!("failed to persist fjall keyspace: {e}");
-    }
-}
-
 fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
     influxdb::Client::new(config.host, config.database).with_token(config.token)
 }
@@ -102,14 +74,13 @@ fn main() {
     init_logger().unwrap();
 
     let lsm_ks = init_fjall(conf.storage).unwrap();
-    let persist_ks = lsm_ks.clone();
 
     let keypair = Arc::new(Keypair::new());
 
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<8>::new();
+    let mut threadpool = ThreadManager::<7>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -117,9 +88,6 @@ fn main() {
     std::thread::spawn(move || {
         start_metrics_thread(metrics_client, metrics_rx, metrics_exit_rx);
     });
-
-    // fjall persist thread
-    threadpool.spawn(move |exit| fjall_persistence_loop(exit, persist_ks));
 
     let my_contact_info = gossip.lookup_my_info();
 
@@ -185,7 +153,7 @@ fn main() {
     });
 
     // Shred Storage
-    let shred_store = ShredStore::new(&lsm_ks, version).unwrap();
+    let shred_store = ShredStore::new(lsm_ks).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
     );
@@ -198,9 +166,9 @@ fn main() {
     }));
 
     let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();
-    let grpc_thread = std::thread::spawn(enclose!((shred_store) move || {
-        grpc_slot_stream::start_grpc_server(conf.grpc_addr, grpc_rx, shred_store, grpc_cancel_rx);
-    }));
+    let grpc_thread = std::thread::spawn(move || {
+        grpc_slot_stream::start_grpc_server(conf.grpc_addr, grpc_rx, grpc_cancel_rx);
+    });
 
     threadpool.spawn_rpc_with_cancel_handler(
         DebugRpcInit {

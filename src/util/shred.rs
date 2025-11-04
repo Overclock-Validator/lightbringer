@@ -44,6 +44,29 @@ pub fn deshred_to_entries<'a>(
     Ok(deshred_entries)
 }
 
+pub fn get_slot_entries_from_raw_shreds<S: AsRef<[u8]>>(
+    shreds: impl IntoIterator<Item = S>,
+) -> Result<Vec<Entry>, RpcError> {
+    let mut shreds_for_slot = BTreeMap::<u32, Vec<Shred>>::new();
+
+    for shred in shreds {
+        let deser = Shred::new_from_serialized_shred(shred.as_ref().to_vec())
+            .map_err(RpcError::ShredDeser)?;
+        shreds_for_slot
+            .entry(deser.fec_set_index())
+            .or_default()
+            .push(deser);
+    }
+
+    let mut entries = Vec::new();
+    for data_shreds in recover_shreds_and_group_by_completion(shreds_for_slot)? {
+        let mut deshred_entries = deshred_to_entries(data_shreds.values())?;
+        entries.append(&mut deshred_entries);
+    }
+
+    Ok(entries)
+}
+
 pub fn get_slot_entries_from_store(
     shred_store: &ShredStore,
     slot: u64,
