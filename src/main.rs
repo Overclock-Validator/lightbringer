@@ -26,7 +26,7 @@ use simple_logger::SimpleLogger;
 use solana_sdk::signature::Keypair;
 use store::{shred::ShredStore, slot_meta::SlotMetadataStore};
 use thread_manager::ThreadManager;
-use turbine_manager::start_turbine_manager;
+use turbine_manager::{start_no_op_turbine_manager, start_turbine_manager};
 
 use crate::{
     config::{Config, InfluxDbConfig},
@@ -80,7 +80,7 @@ fn main() {
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<7>::new();
+    let mut threadpool = ThreadManager::<8>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -102,9 +102,19 @@ fn main() {
     let (slot_store_tx, slot_store_rx) = kanal::unbounded_async();
     let (slot_meta_tx, slot_meta_rx) = kanal::unbounded_async();
 
+    let mut pkt_forwarder_addr = my_tvu_addr;
+    pkt_forwarder_addr.set_port(65400);
+    // mock packet receiver so we don't get ignored by gossip
+    threadpool.spawn(move |exit| async move {
+        let res = start_no_op_turbine_manager(exit, my_tvu_addr).await;
+        if let Err(e) = res {
+            log::error!("failed to start no_op turbine manager: {e}");
+        }
+    });
+
     // Turbine shred receiver
     threadpool.spawn(enclose!((filter_tx) move |exit| async move {
-        let res = start_turbine_manager(exit, my_tvu_addr, filter_tx).await;
+        let res = start_turbine_manager(exit, pkt_forwarder_addr, filter_tx).await;
         if let Err(e) = res {
             log::error!("failed to start turbine manager: {e}");
         }

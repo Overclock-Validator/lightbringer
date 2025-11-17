@@ -27,6 +27,21 @@ pub async fn recv_shred(socket: &UdpSocket) -> Option<(PacketView, SocketAddr)> 
     Some((packet, send_addr))
 }
 
+pub async fn start_no_op_turbine_manager(exit: CancelRx, addr: SocketAddr) -> anyhow::Result<()> {
+    let socket =
+        UdpSocket::bind(addr).map_err(|e| anyhow!("failed to create turbine socket {e}"))?;
+    let packet_task = spawn_local(async move {
+        loop {
+            _ = recv_shred(&socket).await;
+        }
+    });
+
+    exit.await;
+    packet_task.cancel().await;
+
+    Ok(())
+}
+
 pub async fn start_turbine_manager(
     exit: CancelRx,
     addr: SocketAddr,
