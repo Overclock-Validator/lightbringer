@@ -48,6 +48,10 @@ impl SlotMetadata {
     }
 
     fn calculate_missing_shreds_bounded(&self) -> Option<Vec<u32>> {
+        for (batch_idx, batch_idxs) in self.fec_data_map.iter() {
+            log::info!("bounded missing shreds: batch {batch_idx} has shreds {batch_idxs:?}");
+        }
+        log::info!("bounded missing shreds: required batches = {:?}", self.required_batches);
         let max_batch_index = self.required_batches? * DATA_SHREDS_PER_FEC_SET;
         let required_shreds = (0..max_batch_index as u32)
             .step_by(DATA_SHREDS_PER_FEC_SET)
