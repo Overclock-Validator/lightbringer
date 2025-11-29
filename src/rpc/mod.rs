@@ -1,11 +1,12 @@
-use std::net::SocketAddr;
+use std::{borrow::Cow, convert::Infallible, fmt, net::SocketAddr};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
-use ohkami::{IntoResponse, Json, Ohkami, Path, Response, Route, fang::Context};
-use solana_entry::entry::Entry;
+use ohkami::{
+    IntoResponse, Json, Ohkami, Path, Response, Route, claw::content::IntoContent, fang::Context,
+};
 use thiserror::Error;
 
-use crate::{store::shred::ShredStore, util::shred::get_slot_entries_from_store};
+use crate::{grpc_slot_stream, store::shred::ShredStore, util::shred::get_slot_entries_from_store};
 
 #[derive(Error, Debug)]
 pub enum RpcError {
@@ -35,6 +36,16 @@ impl IntoResponse for RpcError {
     }
 }
 
+struct ProtoBufResponse<T>(T);
+
+impl<T: prost::Message> IntoContent for ProtoBufResponse<T> {
+    const CONTENT_TYPE: &'static str = "application/x-protobuf";
+
+    fn into_content(self) -> Result<Cow<'static, [u8]>, impl fmt::Display> {
+        Ok::<_, Infallible>(Cow::Owned(self.0.encode_to_vec()))
+    }
+}
+
 pub struct DebugRpcInit {
     pub listen_addr: SocketAddr,
     pub shred_store: ShredStore,
@@ -43,14 +54,19 @@ pub struct DebugRpcInit {
 async fn get_slot(
     shred_store: Context<'_, ShredStore>,
     Path(slot): Path<u64>,
-) -> Result<Json<Vec<Entry>>, RpcError> {
+) -> Result<ProtoBufResponse<grpc_slot_stream::slot_stream_pb::SlotResponse>, RpcError> {
     let shred_store = shred_store.0.clone();
     let exec = glommio::executor();
     let entries = exec
         .spawn_blocking(move || get_slot_entries_from_store(&shred_store, slot))
         .await?;
 
-    Ok(Json(entries))
+    Ok(ProtoBufResponse(
+        grpc_slot_stream::slot_stream_pb::SlotResponse {
+            entries: entries.into_iter().map(|e| e.into()).collect(),
+            slot,
+        },
+    ))
 }
 
 async fn get_stored_shreds_raw(

@@ -1,5 +1,5 @@
-mod slot_entry;
-mod slot_stream_pb {
+pub mod slot_entry;
+pub mod slot_stream_pb {
     tonic::include_proto!("slot_stream");
 }
 
