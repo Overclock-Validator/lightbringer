@@ -6,9 +6,15 @@ package slot_stream;
 
 service SlotStream {
     rpc StreamSlots(SlotStreamRequest) returns (stream SlotResponse);
+    rpc CatchupSlots(CatchupRequest) returns (stream SlotResponse);
 }
 
 message SlotStreamRequest {}
+
+message CatchupRequest {
+    uint64 from_slot_inclusive = 1;
+    uint64 to_slot_exclusive = 2;
+}
 
 message SlotResponse {
     repeated slot_entry.Entry entries = 1; // JSON encoded entries 

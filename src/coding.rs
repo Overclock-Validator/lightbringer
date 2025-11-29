@@ -44,7 +44,6 @@ fn try_decode_and_deshred() {
     let shreds = raw_shreds.into_iter().map(|s| {
         use base64::{Engine, prelude::BASE64_STANDARD};
 
-        
         BASE64_STANDARD.decode(s).unwrap()
     });
 

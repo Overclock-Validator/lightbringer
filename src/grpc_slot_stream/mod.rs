@@ -3,7 +3,7 @@ pub mod slot_stream_pb {
     tonic::include_proto!("slot_stream");
 }
 
-use futures::Stream;
+use futures::{Stream, StreamExt, future, stream};
 use slot_stream_pb::{
     SlotResponse, SlotStreamRequest, slot_stream_server::SlotStream as SlotStreamTrait,
 };
@@ -12,20 +12,25 @@ use tokio::{
     sync::broadcast,
     task::{spawn, spawn_blocking},
 };
-use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, transport::Server};
 
-use crate::{store::shred::SlotRaw, util::shred::get_slot_entries_from_raw_shreds};
+use crate::{
+    rpc::RpcError,
+    store::shred::{ShredStore, SlotRaw},
+    util::shred::get_slot_entries_from_raw_shreds,
+};
 use slot_entry::Entry;
 use std::{net::SocketAddr, pin::Pin};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SlotStreamService {
     tx: broadcast::Sender<(Vec<Entry>, u64)>,
+    store: ShredStore,
 }
 
 impl SlotStreamService {
-    pub fn new(slot_notif: kanal::AsyncReceiver<SlotRaw>) -> Self {
+    pub fn new(slot_notif: kanal::AsyncReceiver<SlotRaw>, store: ShredStore) -> Self {
         let (broadcast_tx, _) = broadcast::channel(10000);
 
         let broadcast_tx_master = broadcast_tx.clone();
@@ -45,13 +50,17 @@ impl SlotStreamService {
             }
         });
 
-        Self { tx: broadcast_tx }
+        Self {
+            tx: broadcast_tx,
+            store,
+        }
     }
 }
 
 #[tonic::async_trait]
 impl SlotStreamTrait for SlotStreamService {
     type StreamSlotsStream = Pin<Box<dyn Stream<Item = Result<SlotResponse, Status>> + Send>>;
+    type CatchupSlotsStream = Pin<Box<dyn Stream<Item = Result<SlotResponse, Status>> + Send>>;
 
     async fn stream_slots(
         &self,
@@ -59,18 +68,50 @@ impl SlotStreamTrait for SlotStreamService {
     ) -> Result<Response<Self::StreamSlotsStream>, Status> {
         let rx = self.tx.subscribe();
 
-        let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-            Ok((entries, slot)) => Some(Ok(SlotResponse { entries, slot })),
-            Err(_) => None,
+        let stream = BroadcastStream::new(rx).filter_map(|result| {
+            let res = match result {
+                Ok((entries, slot)) => Some(Ok(SlotResponse { entries, slot })),
+                Err(_) => None,
+            };
+            future::ready(res)
         });
 
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn catchup_slots(
+        &self,
+        request: Request<slot_stream_pb::CatchupRequest>,
+    ) -> Result<Response<Self::CatchupSlotsStream>, Status> {
+        let req = request.into_inner();
+        let store = self.store.clone();
+        let slot_stream = stream::iter((req.from_slot_inclusive..req.to_slot_exclusive).map(
+            move |slot| {
+                let store = store.clone();
+                async move {
+                    spawn_blocking(move || {
+                        let shreds = store.get_slot_shreds(slot)?;
+                        let entries = get_slot_entries_from_raw_shreds(shreds).map(|ents| {
+                            ents.into_iter().map(|e| e.into()).collect::<Vec<Entry>>()
+                        })?;
+                        Ok::<_, RpcError>(SlotResponse { entries, slot })
+                    })
+                    .await
+                    .unwrap()
+                }
+            },
+        ))
+        .buffer_unordered(10)
+        .filter_map(|res| future::ready(res.ok().map(Ok)));
+
+        Ok(Response::new(Box::pin(slot_stream)))
     }
 }
 
 pub fn start_grpc_server(
     addr: SocketAddr,
     slot_notif: kanal::AsyncReceiver<SlotRaw>,
+    store: ShredStore,
     cancel: oneshot::Receiver<()>,
 ) {
     let rt = runtime::Builder::new_current_thread()
@@ -78,7 +119,7 @@ pub fn start_grpc_server(
         .build()
         .unwrap();
     rt.block_on(async move {
-        let service = SlotStreamService::new(slot_notif);
+        let service = SlotStreamService::new(slot_notif, store);
 
         log::info!("SlotStremaService grpc listening on {addr}");
 

@@ -166,8 +166,14 @@ fn main() {
     }));
 
     let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();
+    let grpc_shred_store = shred_store.clone();
     let grpc_thread = std::thread::spawn(move || {
-        grpc_slot_stream::start_grpc_server(conf.grpc_addr, grpc_rx, grpc_cancel_rx);
+        grpc_slot_stream::start_grpc_server(
+            conf.grpc_addr,
+            grpc_rx,
+            grpc_shred_store,
+            grpc_cancel_rx,
+        );
     });
 
     threadpool.spawn_rpc_with_cancel_handler(
