@@ -137,7 +137,7 @@ impl SlotMetadata {
     }
 }
 
-fn store_slot_metadata(cache: &mut SlotMetaStore, shred: Shred) {}
+fn store_slot_metadata(_cache: &mut SlotMetaStore, _shred: Shred) {}
 
 enum SlotMetaStoreRes {
     Complete(SlotRaw),
