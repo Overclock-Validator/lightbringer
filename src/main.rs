@@ -163,13 +163,14 @@ fn main() {
     );
 
     let slot_meta_store = SlotMetadataStore::new(version);
+    let (grpc_slot_meta_tx, grpc_slot_meta_rx) = kanal::bounded_async(1000);
+    threadpool.spawn(enclose!((metrics) move |exit| {
+        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_slot_meta_tx, slot_store_tx, metrics)
+    }));
+
     let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();
     let grpc_shred_store = shred_store.clone();
     let grpc_thread = if let Some(block_conf_config) = conf.block_confirmation {
-        threadpool.spawn(enclose!((metrics) move |exit| {
-            slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, None, slot_store_tx, metrics)
-        }));
-
         let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
         threadpool.spawn(enclose!((shred_store) async move |exit| {
             let block_conf = match BlockConfStream::new(block_conf_config.rpc_websocket).await {
@@ -179,7 +180,7 @@ fn main() {
                     return;
                 }
             };
-            confirmed_slot_shreds_glommio_runner(block_conf, shred_store, grpc_tx, exit).await;
+            confirmed_slot_shreds_glommio_runner(block_conf, grpc_slot_meta_rx, shred_store, grpc_tx, exit).await;
         }));
 
         std::thread::spawn(move || {
@@ -191,14 +192,10 @@ fn main() {
             )
         })
     } else {
-        let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
-        threadpool.spawn(enclose!((metrics) move |exit| {
-            slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, Some(grpc_tx), slot_store_tx, metrics)
-        }));
         std::thread::spawn(move || {
             grpc_slot_stream::start_grpc_server(
                 conf.grpc_addr,
-                SlotMetaShreds::new(grpc_rx),
+                SlotMetaShreds::new(grpc_slot_meta_rx),
                 grpc_shred_store,
                 grpc_cancel_rx,
             )

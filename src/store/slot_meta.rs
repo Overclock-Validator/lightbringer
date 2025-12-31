@@ -165,7 +165,7 @@ impl SlotMetadataStore {
         exit: CancelRx,
         rx: AsyncReceiver<PacketInfo>,
         repair_tx: AsyncSender<RepairReq>,
-        grpc_tx: Option<AsyncSender<SlotRaw>>,
+        grpc_tx: AsyncSender<SlotRaw>,
         store_tx: AsyncSender<SlotRaw>,
         metrics: MetricsSender,
     ) {
@@ -196,9 +196,7 @@ impl SlotMetadataStore {
                     SlotMetaStoreRes::Complete(raw_slot) => {
                         _ = timer_tx.try_send(SlotTimerMsg::ShredCompletion { slot });
                         _ = store_tx.send(raw_slot.clone()).await;
-                        if let Some(grpc_tx) = grpc_tx.as_ref() {
-                            _ = grpc_tx.send(raw_slot).await;
-                        }
+                        _ = grpc_tx.send(raw_slot).await;
                         continue;
                     }
                     SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
