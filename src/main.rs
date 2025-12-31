@@ -172,7 +172,13 @@ fn main() {
 
         let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
         threadpool.spawn(enclose!((shred_store) async move |exit| {
-            let block_conf = BlockConfStream::new(block_conf_config.rpc_websocket).await.expect("failed to start block confirmation stream");
+            let block_conf = match BlockConfStream::new(block_conf_config.rpc_websocket).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    log::error!("failed to create block confirmation stream: {e}");
+                    return;
+                }
+            };
             confirmed_slot_shreds_glommio_runner(block_conf, shred_store, grpc_tx, exit).await;
         }));
 
