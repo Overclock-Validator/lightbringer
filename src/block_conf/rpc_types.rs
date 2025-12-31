@@ -6,6 +6,8 @@ pub struct BlockSubscribeParams {
     commitment: String,
     encoding: String,
     transaction_details: Option<String>,
+    max_supported_transaction_version: u8,
+    show_rewards: bool,
 }
 
 impl Default for BlockSubscribeParams {
@@ -14,6 +16,8 @@ impl Default for BlockSubscribeParams {
             commitment: "confirmed".into(),
             encoding: "base64".into(),
             transaction_details: None,
+            max_supported_transaction_version: 0,
+            show_rewards: false,
         }
     }
 }
