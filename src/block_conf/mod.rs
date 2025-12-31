@@ -1,6 +1,8 @@
 mod glue;
 mod rpc_types;
 
+use std::time::{Duration, Instant};
+
 use anyhow::{Result, anyhow};
 use glommio::spawn_local;
 use http::Uri;
@@ -26,6 +28,7 @@ pub struct BlockConfUpdate {
 pub struct BlockConfStream {
     ws: Option<WebSocket<(), Xorshift64, MaybeTlsStream, WebSocketBuffer, true>>,
     subscription_id: u64,
+    last_ping: Instant,
 }
 
 impl BlockConfStream {
@@ -42,20 +45,12 @@ impl BlockConfStream {
             .connect(wtx_stream, &wtx::misc::Uri::new(&ws_url.to_string()))
             .await?;
 
-        let sub_req_id = Id::Str(Uuid::new_v4().into());
-        let req = MethodCall::new(
-            "blockSubscribe",
-            Some(jsonrpc_types::Params::Array(vec![
-                serde_json::Value::from("all"),
-                serde_json::to_value(BlockSubscribeParams::default()).unwrap(),
-            ])),
-            sub_req_id.clone(),
-        );
-        let req_ser = serde_json::to_vec(&req).unwrap();
-
-        ws.write_frame(&mut FrameVector::new_fin(OpCode::Text, req_ser.into()))
+        // the ping frame is necessary :|
+        ws.write_frame(&mut FrameVector::new_fin(OpCode::Ping, Vec::new().into()))
             .await?;
+        let last_ping = Instant::now();
 
+        let sub_req_id = Id::Str(Uuid::new_v4().into());
         let mut frame_buffer = Vec::new().into();
         while let Ok(frame) = ws
             .read_frame(&mut frame_buffer, WebSocketPayloadOrigin::Adaptive)
@@ -74,15 +69,21 @@ impl BlockConfStream {
                     return Ok(BlockConfStream {
                         ws: Some(ws),
                         subscription_id: res.result,
+                        last_ping,
                     });
                 }
-                OpCode::Ping => {
-                    let ping_payload = frame.payload().to_vec();
-                    ws.write_frame(&mut FrameVector::new_fin(OpCode::Pong, ping_payload.into()))
+                OpCode::Pong => {
+                    let req = MethodCall::new(
+                        "blockSubscribe",
+                        Some(jsonrpc_types::Params::Array(vec![
+                            serde_json::Value::from("all"),
+                            serde_json::to_value(BlockSubscribeParams::default()).unwrap(),
+                        ])),
+                        sub_req_id.clone(),
+                    );
+                    let req_ser = serde_json::to_vec(&req).unwrap();
+                    ws.write_frame(&mut FrameVector::new_fin(OpCode::Text, req_ser.into()))
                         .await?;
-                }
-                OpCode::Close => {
-                    break;
                 }
                 _ => (),
             }
@@ -94,21 +95,19 @@ impl BlockConfStream {
     pub async fn next(&mut self) -> Result<BlockConfUpdate> {
         let mut frame_buffer = Vec::new().into();
         let ws = self.ws.as_mut().expect("websocket accessed after drop?!");
+
         loop {
+            if self.last_ping.elapsed() >= Duration::from_secs(50) {
+                ws.write_frame(&mut FrameVector::new_fin(OpCode::Ping, Vec::new().into()))
+                    .await?;
+                self.last_ping = Instant::now();
+            }
+
             let frame = ws
                 .read_frame(&mut frame_buffer, WebSocketPayloadOrigin::Consistent)
                 .await?;
             let payload = match frame.op_code() {
                 OpCode::Binary | OpCode::Text => frame.payload(),
-                OpCode::Ping => {
-                    let ping_payload = frame.payload().to_vec();
-                    ws.write_frame(&mut FrameVector::new_fin(OpCode::Pong, ping_payload.into()))
-                        .await?;
-                    continue;
-                }
-                OpCode::Close => {
-                    return Err(wtx::Error::ClosedWebSocketConnection.into());
-                }
                 _ => continue,
             };
             let Ok(notif) =
