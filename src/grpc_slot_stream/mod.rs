@@ -35,18 +35,35 @@ impl SlotStreamService {
 
         let broadcast_tx_master = broadcast_tx.clone();
         spawn(async move {
-            while let Some((slot, shreds)) = slot_stream.next().await {
+            while let Some(slot_raw) = slot_stream.next().await {
                 let res = spawn_blocking(move || {
-                    get_slot_entries_from_raw_shreds(shreds.iter().map(|s| S::shred_bytes(s)))
+                    get_slot_entries_from_raw_shreds(
+                        slot_raw.shreds.iter().map(|s| S::shred_bytes(s)),
+                    )
                 });
                 let msg = match res.await.unwrap() {
-                    Ok(entries) => entries.into_iter().map(|e| e.into()).collect(),
+                    Ok(entries) => {
+                        let last_hash = entries.last().map(|e| e.hash.to_bytes());
+                        if last_hash
+                            .and_then(|h| Some(h != slot_raw.expected_blockhash?))
+                            .unwrap_or_default()
+                        {
+                            log::warn!(
+                                "expected hash does not match entry. slot: {}, hash: {:?}, expected hash: {:?}",
+                                slot_raw.slot,
+                                last_hash,
+                                slot_raw.expected_blockhash
+                            );
+                            continue;
+                        }
+                        entries.into_iter().map(|e| e.into()).collect()
+                    }
                     Err(e) => {
-                        log::warn!("failed to get slot entries for slot {slot}: {e}");
+                        log::warn!("failed to get slot entries for slot {}: {e}", slot_raw.slot);
                         continue;
                     }
                 };
-                _ = broadcast_tx_master.send((msg, slot));
+                _ = broadcast_tx_master.send((msg, slot_raw.slot));
             }
         });
 
