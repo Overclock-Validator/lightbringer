@@ -64,11 +64,13 @@ impl wtx::stream::StreamWriter for MaybeTlsStream {
                 for (elem, io_slice) in bytes.iter().zip(&mut buffer) {
                     *io_slice = IoSlice::new(elem);
                 }
-                let io_slices = buffer.get(..bytes.len()).unwrap_or_default();
-                _ = match self {
-                    MaybeTlsStream::Tls(tls_stream) => tls_stream.write_vectored(io_slices).await?,
+                let io_slices = buffer.get_mut(..bytes.len()).unwrap_or_default();
+                match self {
+                    MaybeTlsStream::Tls(tls_stream) => {
+                        tls_stream.write_all_vectored(io_slices).await?
+                    }
                     MaybeTlsStream::Plain(tcp_stream) => {
-                        tcp_stream.write_vectored(io_slices).await?
+                        tcp_stream.write_all_vectored(io_slices).await?
                     }
                 };
                 Ok(())
