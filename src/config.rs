@@ -5,13 +5,22 @@ use figment::{
     Figment,
     providers::{Format, Serialized, Toml},
 };
+use http::Uri;
 use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, serde_as};
 
 #[derive(Serialize, Deserialize)]
 pub struct InfluxDbConfig {
     pub host: String,
     pub database: String,
     pub token: String,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+pub struct BlockConfirmationConfig {
+    #[serde_as(as = "DisplayFromStr")]
+    pub rpc_websocket: Uri,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -21,6 +30,7 @@ struct ConfigRaw {
     rpc_addr: String,
     grpc_addr: String,
     influxdb: Option<InfluxDbConfig>,
+    block_confirmation: Option<BlockConfirmationConfig>,
 }
 
 impl Default for ConfigRaw {
@@ -31,6 +41,7 @@ impl Default for ConfigRaw {
             rpc_addr: "127.0.0.1:3000".to_string(),
             grpc_addr: "127.0.0.1:3001".to_string(),
             influxdb: None,
+            block_confirmation: None,
         }
     }
 }
@@ -41,6 +52,7 @@ pub struct Config {
     pub rpc_addr: SocketAddr,
     pub grpc_addr: SocketAddr,
     pub influxdb: Option<InfluxDbConfig>,
+    pub block_confirmation: Option<BlockConfirmationConfig>,
 }
 
 impl TryFrom<ConfigRaw> for Config {
@@ -71,6 +83,7 @@ impl TryFrom<ConfigRaw> for Config {
             rpc_addr,
             grpc_addr,
             influxdb: value.influxdb,
+            block_confirmation: value.block_confirmation,
         })
     }
 }

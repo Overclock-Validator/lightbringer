@@ -1,5 +1,5 @@
 // TODO: something for monitoring
-
+mod block_conf;
 #[cfg(test)]
 mod coding;
 mod config;
@@ -29,7 +29,11 @@ use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
 use crate::{
+    block_conf::BlockConfStream,
     config::{Config, InfluxDbConfig},
+    grpc_slot_stream::shred_source::{
+        ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
+    },
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
     repair::{
@@ -80,7 +84,7 @@ fn main() {
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<7>::new();
+    let mut threadpool = ThreadManager::<8>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -158,23 +162,42 @@ fn main() {
         enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
     );
 
-    // Shred Metadata Storage (timeout etc)
-    let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
     let slot_meta_store = SlotMetadataStore::new(version);
-    threadpool.spawn(enclose!((metrics) move |exit| {
-        slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, grpc_tx, slot_store_tx, metrics)
-    }));
-
     let (grpc_cancel_tx, grpc_cancel_rx) = oneshot::channel();
     let grpc_shred_store = shred_store.clone();
-    let grpc_thread = std::thread::spawn(move || {
-        grpc_slot_stream::start_grpc_server(
-            conf.grpc_addr,
-            grpc_rx,
-            grpc_shred_store,
-            grpc_cancel_rx,
-        );
-    });
+    let grpc_thread = if let Some(block_conf_config) = conf.block_confirmation {
+        threadpool.spawn(enclose!((metrics) move |exit| {
+            slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, None, slot_store_tx, metrics)
+        }));
+
+        let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
+        threadpool.spawn(enclose!((shred_store) async move |exit| {
+            let block_conf = BlockConfStream::new(block_conf_config.rpc_websocket).await.expect("failed to start block confirmation stream");
+            confirmed_slot_shreds_glommio_runner(block_conf, shred_store, grpc_tx, exit).await;
+        }));
+
+        std::thread::spawn(move || {
+            grpc_slot_stream::start_grpc_server(
+                conf.grpc_addr,
+                ConfirmedSlotShreds::new(grpc_rx),
+                grpc_shred_store,
+                grpc_cancel_rx,
+            )
+        })
+    } else {
+        let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
+        threadpool.spawn(enclose!((metrics) move |exit| {
+            slot_meta_store.packet_listener_loop(exit, slot_meta_rx, repair_tx, Some(grpc_tx), slot_store_tx, metrics)
+        }));
+        std::thread::spawn(move || {
+            grpc_slot_stream::start_grpc_server(
+                conf.grpc_addr,
+                SlotMetaShreds::new(grpc_rx),
+                grpc_shred_store,
+                grpc_cancel_rx,
+            )
+        })
+    };
 
     threadpool.spawn_rpc_with_cancel_handler(
         DebugRpcInit {

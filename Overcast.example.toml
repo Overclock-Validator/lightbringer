@@ -15,3 +15,7 @@ grpc_addr = "127.0.0.1:3001"
 host = "http://localhost:8181"
 database = "test"
 token = "xyz"
+
+# optional, grpc streams confirmed blocks if set
+[block_confirmation]
+rpc_websocket = "ws://localhost:8900"
