@@ -65,6 +65,7 @@ async fn confirmed_slot_shreds_glommio_runner_inner(
 ) -> Option<()> {
     loop {
         let notif = conf_stream.next().await.ok()?;
+        log::info!("recv conf slot notif: slot {}", notif.slot);
         let shreds = if finished_blocks.borrow_mut().remove(&notif.slot) {
             let Ok(shreds) = store.get_slot_shreds(notif.slot) else {
                 log::warn!("failed to get shreds for confirmed slot {}", notif.slot);
