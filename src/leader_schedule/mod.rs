@@ -3,7 +3,7 @@ mod solana_rpc;
 use std::str::FromStr;
 
 use anyhow::anyhow;
-use lru::LruCache;
+use lrumap::LruBTreeMap;
 use solana_rpc_client_types::response::RpcLeaderSchedule;
 use solana_sdk::pubkey::Pubkey;
 
@@ -14,14 +14,14 @@ const SLOTS_PER_EPOCH: usize = 432000;
 pub struct LeaderScheduleStore {
     // fairly inefficient implementation, which does slot => pubkey
     // eventually we should implement a range-map like implementation
-    leaders: LruCache<u64, Pubkey>,
+    leaders: LruBTreeMap<u64, Pubkey>,
     max_slot: u64,
 }
 
 impl Default for LeaderScheduleStore {
     fn default() -> Self {
         // 1.2 * number of slots per epoch
-        let leaders = LruCache::new(((SLOTS_PER_EPOCH * 12) / 10).try_into().unwrap());
+        let leaders = LruBTreeMap::new(((SLOTS_PER_EPOCH * 12) / 10).try_into().unwrap());
         Self {
             leaders,
             max_slot: Default::default(),
@@ -38,7 +38,7 @@ impl LeaderScheduleStore {
             };
             for relative_slot in relative_slots {
                 let slot = epoch_start_slot + relative_slot as u64;
-                _ = self.leaders.put(slot, parsed);
+                _ = self.leaders.push(slot, parsed);
                 self.max_slot = self.max_slot.max(slot);
             }
         }

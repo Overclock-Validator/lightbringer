@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use lru::LruCache;
 use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IndexedRandom};
 use solana_core::repair::serve_repair::{RepairProtocol, RepairRequestHeader, ServeRepair};
 use solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol};
@@ -8,24 +7,25 @@ use solana_ledger::shred::Nonce;
 use solana_sdk::{
     clock::Slot, pubkey::Pubkey, signature::Keypair, signer::Signer, timing::timestamp,
 };
+use uluru::LRUCache;
 
 #[derive(Clone)]
 pub struct RepairPeers {
-    cache: LruCache<Slot, Vec<(SocketAddr, Pubkey)>>,
+    cache: LRUCache<(Slot, Vec<(SocketAddr, Pubkey)>), 200>,
     cluster_info: Arc<ClusterInfo>,
 }
 
 impl RepairPeers {
     pub fn new(cluster_info: Arc<ClusterInfo>) -> Self {
         Self {
-            cache: LruCache::new(200.try_into().unwrap()),
+            cache: LRUCache::new(),
             cluster_info,
         }
     }
 
     fn random_peer(&mut self, rng: &mut impl Rng, slot: Slot) -> Option<(SocketAddr, Pubkey)> {
-        let cached = self.cache.get(&slot);
-        if let Some(cached) = cached {
+        let cached = self.cache.find(|(lru_slot, _)| *lru_slot == slot);
+        if let Some((_, cached)) = cached {
             return cached.choose(rng).cloned();
         }
         let peers = self
@@ -38,7 +38,7 @@ impl RepairPeers {
             })
             .collect::<Vec<_>>();
         let peer = peers.choose(rng).cloned()?;
-        self.cache.put(slot, peers);
+        self.cache.insert((slot, peers));
 
         Some(peer)
     }

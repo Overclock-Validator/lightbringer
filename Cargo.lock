@@ -3837,19 +3837,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f8cc7106155f10bdf99a6f379688f543ad6596a415375b36a59a054ceda1198"
-dependencies = [
- "hashbrown 0.15.5",
-]
-
-[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "lrumap"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1251ce8e8f9909600e127dcbe74ac50d8464e6685cf5953d37df7a741dbf9e9d"
 
 [[package]]
 name = "lsm-tree"
@@ -4497,7 +4494,7 @@ dependencies = [
  "jsonrpc-types",
  "kanal",
  "log",
- "lru 0.14.0",
+ "lrumap",
  "ohkami",
  "oneshot",
  "prost 0.14.1",
@@ -4528,6 +4525,7 @@ dependencies = [
  "tonic 0.14.2",
  "tonic-prost",
  "tonic-prost-build",
+ "uluru",
  "uuid",
  "wtx",
 ]
@@ -5380,7 +5378,7 @@ dependencies = [
  "cc",
  "libc",
  "libm",
- "lru 0.7.8",
+ "lru",
  "parking_lot 0.11.2",
  "smallvec",
  "spin",
@@ -7070,7 +7068,7 @@ dependencies = [
  "histogram",
  "itertools 0.12.1",
  "log",
- "lru 0.7.8",
+ "lru",
  "min-max-heap",
  "num_enum",
  "prio-graph",
@@ -7579,7 +7577,7 @@ dependencies = [
  "indexmap 2.11.0",
  "itertools 0.12.1",
  "log",
- "lru 0.7.8",
+ "lru",
  "num-traits",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -7779,7 +7777,7 @@ dependencies = [
  "lazy-lru",
  "libc",
  "log",
- "lru 0.7.8",
+ "lru",
  "mockall",
  "num_cpus",
  "num_enum",
@@ -10019,7 +10017,7 @@ source = "git+https://github.com/Overclock-Validator/agave.git?rev=a290c1e4a31cd
 dependencies = [
  "async-trait",
  "log",
- "lru 0.7.8",
+ "lru",
  "quinn",
  "rustls 0.23.35",
  "solana-clock",
@@ -10228,7 +10226,7 @@ dependencies = [
  "itertools 0.12.1",
  "lazy-lru",
  "log",
- "lru 0.7.8",
+ "lru",
  "quinn",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -11871,6 +11869,15 @@ name = "ucd-trie"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971"
+
+[[package]]
+name = "uluru"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
+dependencies = [
+ "arrayvec",
+]
 
 [[package]]
 name = "uncased"

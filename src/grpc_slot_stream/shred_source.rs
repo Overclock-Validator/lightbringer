@@ -7,6 +7,7 @@ use glommio::{
     enclose, spawn_local,
 };
 use kanal::{AsyncReceiver, AsyncSender};
+use uluru::LRUCache;
 
 use crate::{
     block_conf::{BlockConfStream, BlockConfUpdate},
@@ -58,6 +59,7 @@ impl ShredSource for SlotMetaShreds {
 #[derive(Clone, Default)]
 struct SlotShredsWaiter {
     finished_slots: Rc<RefCell<BTreeSet<u64>>>,
+    slot_cache: Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 5000>>>,
     block_notif: Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>,
 }
 
@@ -66,20 +68,23 @@ impl SlotShredsWaiter {
     fn insert(&self, slot: SlotRaw) {
         let mut block_notif = self.block_notif.borrow_mut();
         let mut finished_slots = self.finished_slots.borrow_mut();
-
-        let Some((slot_num, tx)) = block_notif.as_ref() else {
-            finished_slots.insert(slot.slot);
-            return;
-        };
-        if slot.slot != *slot_num {
-            finished_slots.insert(slot.slot);
-            return;
-        }
         let shreds = slot
             .shreds
             .into_iter()
             .map(|s| Slice::from(s.as_slice()))
             .collect();
+
+        let Some((slot_num, tx)) = block_notif.as_ref() else {
+            self.slot_cache.borrow_mut().insert((slot.slot, shreds));
+            finished_slots.insert(slot.slot);
+            return;
+        };
+        if slot.slot != *slot_num {
+            self.slot_cache.borrow_mut().insert((slot.slot, shreds));
+            finished_slots.insert(slot.slot);
+            return;
+        }
+
         _ = tx.try_send(shreds);
         *block_notif = None;
     }
@@ -92,11 +97,15 @@ impl SlotShredsWaiter {
     ) -> Option<()> {
         let slot = update.slot;
         let shreds = if self.finished_slots.borrow_mut().remove(&slot) {
-            let Ok(shreds) = store.get_slot_shreds(slot) else {
-                log::warn!("could not get shreds for slot {}", slot);
-                return Some(());
-            };
-            shreds
+            if let Some((_, shreds)) = self.slot_cache.borrow_mut().find(|(s, _)| *s == slot) {
+                shreds.clone()
+            } else {
+                let Ok(shreds) = store.get_slot_shreds(slot) else {
+                    log::warn!("could not get shreds for slot {}", slot);
+                    return Some(());
+                };
+                shreds
+            }
         } else {
             let (tx, rx) = local_channel::new_bounded(1);
             *self.block_notif.borrow_mut() = Some((slot, tx));

@@ -12,8 +12,7 @@ use std::{
 use arrayvec::ArrayVec;
 use glommio::{channels::local_channel, spawn_local, timer::TimerActionOnce};
 use kanal::{AsyncReceiver, AsyncSender};
-use lru::LruCache;
-use solana_ledger::shred::{self, Shred, ShredCommonHeader, ShredFlags, ShredType};
+use solana_ledger::shred::{self, ShredCommonHeader, ShredFlags, ShredType};
 
 use crate::{
     metrics::{MetricsSender, points::SlotMeasurement},
@@ -27,7 +26,6 @@ pub const DEFER_REPAIR_THRESHOLD: Duration = Duration::from_millis(200);
 const DATA_SHREDS_PER_FEC_SET: usize = 32;
 
 type FecMap = HashMap<u32, BTreeSet<u32>>;
-type SlotMetaStore = LruCache<u64, SlotMetadata>;
 
 pub struct SlotMetadata {
     pub slot_num: u64,
@@ -129,8 +127,6 @@ impl SlotMetadata {
         }
     }
 }
-
-fn store_slot_metadata(_cache: &mut SlotMetaStore, _shred: Shred) {}
 
 enum SlotMetaStoreRes {
     Complete(SlotRaw),
