@@ -1,16 +1,15 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    ops::Deref,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::BTreeSet, ops::Deref, rc::Rc};
 
 use fjall::Slice;
-use glommio::{enclose, spawn_local};
-use kanal::{AsyncReceiver, AsyncSender, SendError};
+use glommio::{
+    Task,
+    channels::local_channel::{self, LocalSender},
+    enclose, spawn_local,
+};
+use kanal::{AsyncReceiver, AsyncSender};
 
 use crate::{
-    block_conf::BlockConfStream,
+    block_conf::{BlockConfStream, BlockConfUpdate},
     store::shred::{ShredStore, SlotRaw},
     thread_manager::CancelRx,
     types::{PacketInfo, ShredInfoView},
@@ -56,75 +55,130 @@ impl ShredSource for SlotMetaShreds {
     }
 }
 
-async fn confirmed_slot_shreds_glommio_runner_inner(
-    mut conf_stream: BlockConfStream,
-    store: ShredStore,
-    finished_blocks: &RefCell<HashSet<u64>>,
-    back_queue: &RefCell<HashMap<u64, [u8; 32]>>,
-    tx: AsyncSender<SlotForGrpc<ShredInfoView>>,
-) -> Option<()> {
-    loop {
-        let notif = conf_stream.next().await.ok()?;
-        log::info!("recv conf slot notif: slot {}", notif.slot);
-        let shreds = if finished_blocks.borrow_mut().remove(&notif.slot) {
-            let Ok(shreds) = store.get_slot_shreds(notif.slot) else {
-                log::warn!("failed to get shreds for confirmed slot {}", notif.slot);
-                continue;
+#[derive(Clone, Default)]
+struct SlotShredsWaiter {
+    finished_slots: Rc<RefCell<BTreeSet<u64>>>,
+    block_notif: Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>,
+}
+
+impl SlotShredsWaiter {
+    /// Insert a slot, notifying the receiver if they are waiting for it
+    fn insert(&self, slot: SlotRaw) {
+        let mut block_notif = self.block_notif.borrow_mut();
+        let mut finished_slots = self.finished_slots.borrow_mut();
+
+        let Some((slot_num, tx)) = block_notif.as_ref() else {
+            finished_slots.insert(slot.slot);
+            return;
+        };
+        if slot.slot != *slot_num {
+            finished_slots.insert(slot.slot);
+            return;
+        }
+        let shreds = slot
+            .shreds
+            .into_iter()
+            .map(|s| Slice::from(s.as_slice()))
+            .collect();
+        _ = tx.try_send(shreds);
+        *block_notif = None;
+    }
+
+    async fn send_slot_shreds(
+        &self,
+        store: &ShredStore,
+        tx: &AsyncSender<SlotForGrpc<ShredInfoView>>,
+        update: BlockConfUpdate,
+    ) -> Option<()> {
+        let slot = update.slot;
+        let shreds = if self.finished_slots.borrow_mut().remove(&slot) {
+            let Ok(shreds) = store.get_slot_shreds(slot) else {
+                log::warn!("could not get shreds for slot {}", slot);
+                return Some(());
             };
             shreds
         } else {
-            back_queue.borrow_mut().insert(notif.slot, notif.block_hash);
-            continue;
+            let (tx, rx) = local_channel::new_bounded(1);
+            *self.block_notif.borrow_mut() = Some((slot, tx));
+            rx.recv().await?
         };
 
         tx.send(SlotForGrpc {
-            slot: notif.slot,
+            slot,
             shreds,
-            expected_blockhash: Some(notif.block_hash),
+            expected_blockhash: Some(update.block_hash),
         })
         .await
         .ok()?;
+
+        Some(())
     }
 }
 
 async fn confirmed_slot_shreds_glommio_runner_with_backqueue(
-    conf_stream: BlockConfStream,
+    mut conf_stream: BlockConfStream,
     slot_meta_stream: AsyncReceiver<SlotRaw>,
     store: ShredStore,
     tx: AsyncSender<SlotForGrpc<ShredInfoView>>,
 ) -> Option<()> {
-    let finished_blocks = Rc::new(RefCell::new(HashSet::new()));
-    let back_queue = Rc::new(RefCell::new(HashMap::new()));
-    let slot_meta_handle = spawn_local(enclose!((finished_blocks, back_queue, tx) async move {
+    let (first_slot_tx, first_slot_rx) = local_channel::new_bounded(1);
+    let (first_grpc_slot_tx, first_grpc_slot_rx) = local_channel::new_bounded(1);
+    let shreds_waiter = SlotShredsWaiter::default();
+
+    let slot_meta_handle = spawn_local(enclose!((shreds_waiter) async move {
+        let Ok(first_slot_shreds) = slot_meta_stream.recv().await else {
+            log::error!("slot meta stream ended before first slot received");
+            return None;
+        };
+        let first_slot = first_slot_shreds.slot;
+        shreds_waiter.insert(first_slot_shreds);
+        first_slot_tx.try_send(first_slot).ok()?;
+        let first_grpc_slot = first_grpc_slot_rx.recv().await?;
+
         while let Ok(slot) = slot_meta_stream.recv().await {
-            let Some(expected_blockhash) = back_queue.borrow_mut().remove(&slot.slot) else {
-                finished_blocks.borrow_mut().insert(slot.slot);
+            if slot.slot < first_grpc_slot {
                 continue;
-            };
-            tx.send(SlotForGrpc {
-                slot: slot.slot,
-                shreds: slot
-                    .shreds
-                    .iter()
-                    .map(|s| Slice::from(s.as_slice())) // suboptimal clone :P
-                    .collect(),
-                expected_blockhash: Some(expected_blockhash),
-            }).await?;
+            }
+            shreds_waiter.insert(slot);
         }
-        Ok::<_, SendError>(())
-    }));
-    let conf_block_handle = spawn_local(enclose!((finished_blocks, back_queue, tx) async move {
-        confirmed_slot_shreds_glommio_runner_inner(
-            conf_stream,
-            store,
-            &finished_blocks,
-            &back_queue,
-            tx,
-        )
-        .await
+        Some(())
     }));
 
-    conf_block_handle.await?;
+    // This wrapper is required because the confirmation stream must be driven constantly
+    // else the websocket connection will be dropped
+    let (conf_stream_tx, conf_stream_rx) = local_channel::new_bounded(1000);
+    let conf_stream_handle = spawn_local(async move {
+        while let Ok(notif) = conf_stream.next().await {
+            if conf_stream_tx.send(notif).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let slot_shreds_handle: Task<Option<()>> =
+        spawn_local(enclose!((shreds_waiter, tx) async move {
+            let first_slot = first_slot_rx.recv().await?;
+            log::info!("grpc slot stream is waiting for first confirmed slot... > {first_slot}");
+            loop {
+                let notif = conf_stream_rx.recv().await?;
+                if first_slot > notif.slot {
+                    continue;
+                }
+                log::info!("started grpc slot streaming from {}", notif.slot);
+                first_grpc_slot_tx.try_send(notif.slot).ok()?;
+                shreds_waiter.send_slot_shreds(&store, &tx, notif).await?;
+                break;
+            }
+
+            loop {
+                let notif = conf_stream_rx.recv().await?;
+                log::info!("recv conf slot notif: slot {}", notif.slot);
+                shreds_waiter.send_slot_shreds(&store, &tx, notif).await?;
+            }
+        }));
+
+    conf_stream_handle.await;
+    _ = slot_shreds_handle.cancel().await;
     _ = slot_meta_handle.cancel().await;
     Some(())
 }
