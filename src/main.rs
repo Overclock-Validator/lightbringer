@@ -18,7 +18,7 @@ mod util;
 
 use std::{path::PathBuf, sync::Arc};
 
-use fjall::Config as FjallConfig;
+use fjall::Database;
 use glommio::enclose;
 use gossip_manager::GossipManager;
 use repair::request::RepairManager;
@@ -45,10 +45,10 @@ use crate::{
     util::std_to_glommio_socket,
 };
 
-fn init_fjall(storage: PathBuf) -> fjall::Result<fjall::Keyspace> {
-    let config = FjallConfig::new(storage).cache_size(1024 * 1024 * 1024); // 1 GiB cache
+fn init_fjall(storage: PathBuf) -> fjall::Result<fjall::Database> {
+    let builder = Database::builder(&storage).cache_size(1024 * 1024 * 1024); // 1 GiB cache
 
-    config.open()
+    builder.open()
 }
 
 fn init_logger() -> Result<(), log::SetLoggerError> {

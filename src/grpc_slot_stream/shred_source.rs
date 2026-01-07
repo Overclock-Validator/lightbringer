@@ -59,7 +59,7 @@ impl ShredSource for SlotMetaShreds {
 #[derive(Clone, Default)]
 struct SlotShredsWaiter {
     finished_slots: Rc<RefCell<BTreeSet<u64>>>,
-    slot_cache: Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 5000>>>,
+    slot_cache: Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 300>>>,
     block_notif: Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>,
 }
 
