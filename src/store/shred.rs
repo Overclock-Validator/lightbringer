@@ -1,4 +1,6 @@
-use glommio::{executor, spawn_local};
+use std::time::Duration;
+
+use glommio::{enclose, executor, spawn_local, timer::sleep};
 use kanal::AsyncReceiver;
 use solana_ledger::shred::{self, ShredType};
 
@@ -18,8 +20,6 @@ pub struct SlotRaw {
     pub shreds: Vec<PacketInfo>,
 }
 
-// TODO: store last 500k slots only
-// TODO: use a more efficient storage format in memory (Storing all coding shreds & data shreds vs Reconstructing from 32 shreds)
 #[derive(Clone)]
 pub struct ShredStore {
     db: fjall::Database,
@@ -34,10 +34,11 @@ impl ShredStore {
     }
 
     pub async fn slot_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<SlotRaw>) {
-        let task = spawn_local(async move {
+        let this = self.clone();
+        let task = spawn_local(enclose!((this) async move {
             let executor = executor();
             while let Ok(slot) = rx.recv().await {
-                let this = self.clone();
+                let this = this.clone();
                 spawn_local(executor.spawn_blocking(move || {
                     if let Err(e) = this.store_slot(slot.slot, slot.shreds) {
                         log::warn!("failed to store slot {e}");
@@ -46,9 +47,40 @@ impl ShredStore {
                 .detach();
             }
             log::warn!("shred store thread died?!")
-        });
+        }));
+        let cleanup_task = spawn_local(this.slot_cleanup_loop());
         exit.await;
         task.cancel().await;
+        cleanup_task.cancel().await;
+    }
+
+    async fn slot_cleanup_loop(self) {
+        let executor = executor();
+        loop {
+            sleep(Duration::from_hours(1)).await;
+            let this = self.clone();
+            let res = executor
+                .spawn_blocking(move || -> anyhow::Result<()> {
+                    let Some(latest_slot) = this.shred_keyspace.last_key_value().and_then(|g| {
+                        Some(u64::from_le_bytes(g.key().ok()?[0..8].try_into().unwrap()))
+                    }) else {
+                        return Ok(());
+                    };
+
+                    let cutoff_slot = latest_slot.saturating_sub(72000); // ~ 8 hrs
+                    let mut batch = this.db.batch();
+                    for k in this.shred_keyspace.range(..cutoff_slot.to_le_bytes()) {
+                        batch.remove(&this.shred_keyspace, k.key()?)
+                    }
+                    batch.commit()?;
+
+                    Ok(())
+                })
+                .await;
+            if let Err(e) = res {
+                log::warn!("failed to cleanup shreds: {e}");
+            }
+        }
     }
 
     fn store_slot(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {

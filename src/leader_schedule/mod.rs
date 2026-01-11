@@ -21,7 +21,7 @@ pub struct LeaderScheduleStore {
 impl Default for LeaderScheduleStore {
     fn default() -> Self {
         // 1.2 * number of slots per epoch
-        let leaders = LruBTreeMap::new((SLOTS_PER_EPOCH * 12) / 10 );
+        let leaders = LruBTreeMap::new((SLOTS_PER_EPOCH * 12) / 10);
         Self {
             leaders,
             max_slot: Default::default(),
