@@ -68,11 +68,19 @@ impl ShredStore {
                     };
 
                     let cutoff_slot = latest_slot.saturating_sub(72000); // ~ 8 hrs
+                    let keys: Vec<_> = this
+                        .shred_keyspace
+                        .range(..cutoff_slot.to_le_bytes())
+                        .map(|k| k.key())
+                        .collect::<Result<_, _>>()?;
+                    let rm_count = keys.len();
+
                     let mut batch = this.db.batch();
-                    for k in this.shred_keyspace.range(..cutoff_slot.to_le_bytes()) {
-                        batch.remove(&this.shred_keyspace, k.key()?)
+                    for k in keys {
+                        batch.remove(&this.shred_keyspace, k);
                     }
                     batch.commit()?;
+                    log::info!("cleaned up {rm_count} shreds older than slot {cutoff_slot}");
 
                     Ok(())
                 })
