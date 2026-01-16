@@ -1,11 +1,11 @@
 [package]
-name = "overcast"
+name = "lightbringer"
 version = "0.1.0"
 edition = "2024"
-default-run = "overcast"
+default-run = "lightbringer"
 
 [[bin]]
-name = "overcast-grpc-client"
+name = "lightbringer-grpc-client"
 path = "src/grpc_client.rs"
 
 [dependencies]

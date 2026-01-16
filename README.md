@@ -1,11 +1,11 @@
-# Overcast
+# Lightbringer
 
-**Overcast** is a work‑in‑progress, lightweight Solana “edge” node that caches and republishes *ephemeral* Turbine + repair traffic.  
+**Lightbringer** is a work‑in‑progress, lightweight Solana “edge” node that caches and republishes *ephemeral* Turbine + repair traffic.  
 It lets downstream tools pull fresh blocks without the cost of running a full RPC validator or paying for high‑volume block subscriptions from centralized providers.
 
-Because Overcast **drops the Accounts DB, vote engine, and RPC layer**, it’s small enough to run as a *sidecar process*—for example, in the same container/VM/pod as **Mithril**.  
+Because Lightbringer **drops the Accounts DB, vote engine, and RPC layer**, it’s small enough to run as a *sidecar process*—for example, in the same container/VM/pod as **Mithril**.  
 
-* Overcast performs only **minimal validation**—shred signature checks, leader‑schedule sanity, duplicate suppression—so bad data is filtered early without heavy state.
+* Lightbringer performs only **minimal validation**—shred signature checks, leader‑schedule sanity, duplicate suppression—so bad data is filtered early without heavy state.
 
 * Mithril (or any other consumer) owns fork‑choice and full block validation. 
 
@@ -20,9 +20,9 @@ Because Overcast **drops the Accounts DB, vote engine, and RPC layer**, it’s s
 * Performance optimizations
 
 ### Milestone 2 — Mithril Sidecar Integration *(planned)*
-* Expose a lightweight local API so Mithril can stream blocks directly from the Overcast sidecar.  
-* Co‑location: run Overcast + Mithril on one host with minimal extra CPU/RAM/disk.  
-* Optional mesh discovery so multiple Overcast sidecars can backstop block availability for each other.
+* Expose a lightweight local API so Mithril can stream blocks directly from the Lightbringer sidecar.  
+* Co‑location: run Lightbringer + Mithril on one host with minimal extra CPU/RAM/disk.  
+* Optional mesh discovery so multiple Lightbringer sidecars can backstop block availability for each other.
 
 ### Milestone 3 — Mesh & Ops Tooling *(future)*
 * Peer discovery to form regional cache meshes.  

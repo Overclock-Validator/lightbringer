@@ -92,7 +92,7 @@ impl Config {
     pub fn parse() -> Self {
         let config: ConfigRaw = Figment::new()
             .merge(Serialized::defaults(ConfigRaw::default()))
-            .merge(Toml::file("Overcast.toml"))
+            .merge(Toml::file("Lightbringer.toml"))
             .extract()
             .expect("invalid config file");
         config.try_into().expect("invalid config values")
