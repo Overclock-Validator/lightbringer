@@ -3,14 +3,13 @@ use std::net::SocketAddr;
 
 use arrayvec::ArrayVec;
 use glommio::{net::UdpSocket, spawn_local};
-use solana_sdk::packet;
 
 use crate::{
     thread_manager::CancelRx,
     types::{PacketInfo, PacketView},
 };
 
-const BUFFER_SIZE: usize = packet::PACKET_DATA_SIZE;
+const BUFFER_SIZE: usize = solana_packet::PACKET_DATA_SIZE;
 
 pub async fn recv_shred(socket: &UdpSocket) -> Option<(PacketView, SocketAddr)> {
     let mut buffer = [0; BUFFER_SIZE];

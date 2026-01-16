@@ -1,8 +1,8 @@
 use solana_entry::entry::Entry as SolEntry;
 use solana_sdk::{
-    instruction::CompiledInstruction as SolCompiledInstruction,
     message::{
         MessageHeader as SolMessageHeader, VersionedMessage,
+        compiled_instruction::CompiledInstruction as SolCompiledInstruction,
         v0::MessageAddressTableLookup as SolMessageAddressTableLookup,
     },
     transaction::VersionedTransaction as SolVersionedTransaction,

@@ -2,13 +2,13 @@ use anyhow::anyhow;
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use jsonrpc_types::{MethodCall, Params};
 use serde::de::DeserializeOwned;
+use solana_commitment_config::CommitmentConfig;
 use solana_epoch_info::EpochInfo;
 use solana_rpc_client_types::{
     config::{RpcContextConfig, RpcLeaderScheduleConfig},
     request::RpcRequest,
     response::RpcLeaderSchedule,
 };
-use solana_sdk::commitment_config::CommitmentConfig;
 
 const MAINNET_RPC_NODE: &str = "https://api.mainnet-beta.solana.com";
 

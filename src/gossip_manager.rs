@@ -1,5 +1,5 @@
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     num::NonZeroUsize,
     sync::{
         Arc,
@@ -9,12 +9,13 @@ use std::{
 
 use anyhow::anyhow;
 use solana_gossip::{
-    cluster_info::{ClusterInfo, Node, NodeConfig},
+    cluster_info::{ClusterInfo, NodeConfig},
     contact_info::ContactInfo,
     gossip_service::GossipService,
+    node::Node,
 };
-use solana_net_utils::get_public_ip_addr;
-use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
+use solana_net_utils::{get_public_ip_addr_with_binding, multihomed_sockets::BindIpAddrs};
+use solana_sdk::{signature::Keypair, signer::Signer};
 use solana_streamer::socket::SocketAddrSpace;
 
 pub struct GossipManager {
@@ -32,18 +33,20 @@ impl GossipManager {
     pub fn new(gossip_entry: SocketAddr, keypair: Arc<Keypair>) -> anyhow::Result<(Self, Sockets)> {
         let cluster_entrypoints = vec![ContactInfo::new_gossip_entry_point(&gossip_entry)];
 
-        let my_ip = get_public_ip_addr(&gossip_entry)
+        let bind_ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let my_ip = get_public_ip_addr_with_binding(&gossip_entry, bind_ip_addr)
             .map_err(|e| anyhow!("Failed to get public IP: {}", e))?;
-        let gossip_addr = SocketAddr::new(my_ip, 65509);
         let node_config = NodeConfig {
-            gossip_addr,
-            port_range: (65510, 65530),
-            bind_ip_addr: my_ip,
+            gossip_port: 65400,
+            port_range: (65401, 65500),
+            advertised_ip: my_ip,
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
             num_tvu_receive_sockets: NonZeroUsize::new(1).unwrap(),
             num_tvu_retransmit_sockets: NonZeroUsize::new(1).unwrap(),
             num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
+            bind_ip_addrs: Arc::new(BindIpAddrs::new(vec![my_ip]).unwrap()),
+            vortexor_receiver_addr: None,
         };
 
         let ep_shred_version = solana_net_utils::get_cluster_shred_version(&gossip_entry)
@@ -85,9 +88,9 @@ impl GossipManager {
         self.cluster_info.my_contact_info()
     }
 
-    pub fn lookup_info(&self, pubkey: &Pubkey) -> Option<ContactInfo> {
-        self.cluster_info.lookup_contact_info(pubkey, |x| x.clone())
-    }
+    // pub fn lookup_info(&self, pubkey: &Pubkey) -> Option<ContactInfo> {
+    //     self.cluster_info.lookup_contact_info(pubkey, |x| x.clone())
+    // }
 
     pub fn get_cluster_info(&self) -> Arc<ClusterInfo> {
         self.cluster_info.clone()
