@@ -21,6 +21,8 @@ pub struct InfluxDbConfig {
 pub struct BlockConfirmationConfig {
     #[serde_as(as = "DisplayFromStr")]
     pub rpc_websocket: Uri,
+    #[serde_as(as = "DisplayFromStr")]
+    pub rpc_http: Uri,
 }
 
 #[derive(Serialize, Deserialize)]

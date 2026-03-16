@@ -1,5 +1,3 @@
-mod solana_rpc;
-
 use std::str::FromStr;
 
 use anyhow::anyhow;
@@ -7,7 +5,7 @@ use lrumap::LruBTreeMap;
 use solana_rpc_client_types::response::RpcLeaderSchedule;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::leader_schedule::solana_rpc::SolanaRpcClient;
+use crate::solana_rpc::SolanaRpcClient;
 
 const SLOTS_PER_EPOCH: usize = 432000;
 

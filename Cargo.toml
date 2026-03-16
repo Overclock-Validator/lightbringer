@@ -26,6 +26,7 @@ solana-hash = { version = "=3.0.0", features = ["serde"] }
 solana-blake3-hasher = "=3.0.0"
 solana-keccak-hasher = "=3.0.0"
 solana-epoch-rewards-hasher = "=3.0.0"
+solana-transaction-status-client-types = "3.0.14"
 
 glommio = "0.9.0"
 kanal = "0.1.1"

@@ -15,7 +15,7 @@ impl Default for BlockSubscribeParams {
         Self {
             commitment: "confirmed".into(),
             encoding: "base64".into(),
-            transaction_details: None,
+            transaction_details: Some("none".into()),
             max_supported_transaction_version: 0,
             show_rewards: false,
         }

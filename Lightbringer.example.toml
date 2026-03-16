@@ -18,4 +18,5 @@ token = "xyz"
 
 # optional, grpc streams confirmed blocks if set
 [block_confirmation]
+rpc_http = "http://localhost:8900"
 rpc_websocket = "ws://localhost:8900"

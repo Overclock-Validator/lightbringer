@@ -1,4 +1,3 @@
-// TODO: something for monitoring
 mod block_conf;
 #[cfg(test)]
 mod coding;
@@ -10,6 +9,7 @@ mod metrics;
 mod packet_filter;
 mod repair;
 mod rpc;
+mod solana_rpc;
 mod store;
 mod thread_manager;
 mod turbine_manager;
@@ -42,6 +42,7 @@ use crate::{
         socket::start_repair_socket_runner,
     },
     rpc::DebugRpcInit,
+    solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
 };
 
@@ -173,7 +174,8 @@ fn main() {
     let grpc_thread = if let Some(block_conf_config) = conf.block_confirmation {
         let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
         threadpool.spawn(enclose!((shred_store) async move |exit| {
-            let block_conf = match BlockConfStream::new(block_conf_config.rpc_websocket).await {
+            let rpc = SolanaRpcClient::new(block_conf_config.rpc_http.to_string());
+            let block_conf = match BlockConfStream::new(rpc, block_conf_config.rpc_websocket).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     log::error!("failed to create block confirmation stream: {e}");

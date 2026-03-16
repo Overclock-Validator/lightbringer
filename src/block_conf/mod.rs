@@ -1,10 +1,14 @@
 mod glue;
 mod rpc_types;
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, anyhow};
-use glommio::spawn_local;
+use futures::FutureExt;
+use glommio::{spawn_local, timer::timeout};
 use http::Uri;
 use jsonrpc_types::{Id, MethodCall, SubscriptionNotification};
 use uuid::Uuid;
@@ -15,9 +19,12 @@ use wtx::{
     },
 };
 
-use crate::block_conf::{
-    glue::MaybeTlsStream,
-    rpc_types::{BlockSubscribeParams, MinBlockNotif},
+use crate::{
+    block_conf::{
+        glue::MaybeTlsStream,
+        rpc_types::{BlockSubscribeParams, MinBlockNotif},
+    },
+    solana_rpc::SolanaRpcClient,
 };
 
 pub struct BlockConfUpdate {
@@ -25,14 +32,20 @@ pub struct BlockConfUpdate {
     pub block_hash: [u8; 32],
 }
 
+type Ws = WebSocket<(), Xorshift64, MaybeTlsStream, WebSocketBuffer, true>;
+
 pub struct BlockConfStream {
-    ws: Option<WebSocket<(), Xorshift64, MaybeTlsStream, WebSocketBuffer, true>>,
+    rpc: SolanaRpcClient,
+    ws: Option<Ws>,
+    ws_url: Uri,
     subscription_id: u64,
     last_ping: Instant,
+    catchup_slots: VecDeque<BlockConfUpdate>,
+    last_slot: Option<u64>,
 }
 
 impl BlockConfStream {
-    pub async fn new(ws_url: Uri) -> Result<Self> {
+    async fn subscribe(ws_url: &Uri) -> Result<(Ws, u64, Instant)> {
         let is_tls = ws_url
             .scheme_str()
             .ok_or_else(|| anyhow!("No scheme in ws_url"))?
@@ -66,11 +79,7 @@ impl BlockConfStream {
                     if res.id != sub_req_id {
                         continue;
                     }
-                    return Ok(BlockConfStream {
-                        ws: Some(ws),
-                        subscription_id: res.result,
-                        last_ping,
-                    });
+                    return Ok((ws, res.result, last_ping));
                 }
                 OpCode::Pong => {
                     let req = MethodCall::new(
@@ -92,9 +101,48 @@ impl BlockConfStream {
         Err(anyhow!("Failed to subscribe to block confirmations"))
     }
 
-    pub async fn next(&mut self) -> Result<BlockConfUpdate> {
+    pub async fn new(rpc: SolanaRpcClient, ws_url: Uri) -> Result<Self> {
+        let (ws, subscription_id, last_ping) = Self::subscribe(&ws_url).await?;
+        Ok(Self {
+            rpc,
+            ws: Some(ws),
+            ws_url,
+            subscription_id,
+            last_ping,
+            catchup_slots: VecDeque::new(),
+            last_slot: None,
+        })
+    }
+
+    async fn mark_for_resubscribe(&mut self) -> Result<()> {
+        self.ws = None;
+        let Some(last_slot) = self.last_slot else {
+            return Ok(());
+        };
+
+        let catchup_blocks = self.rpc.get_blocks(last_slot).await?;
+        self.catchup_slots = VecDeque::with_capacity(catchup_blocks.len());
+        for slot in catchup_blocks.into_iter().skip(1) {
+            self.catchup_slots.push_back(BlockConfUpdate {
+                slot,
+                block_hash: self.rpc.get_blockhash(slot).await?,
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn next_from_ws(&mut self) -> Result<BlockConfUpdate> {
         let mut frame_buffer = Vec::new().into();
-        let ws = self.ws.as_mut().expect("websocket accessed after drop?!");
+        let ws = if let Some(ws) = self.ws.as_mut() {
+            ws
+        } else {
+            let (ws, subscription_id, last_ping) = Self::subscribe(&self.ws_url).await?;
+            self.ws = Some(ws);
+            self.subscription_id = subscription_id;
+            self.last_ping = last_ping;
+            self.ws.as_mut().unwrap()
+        };
 
         loop {
             if self.last_ping.elapsed() >= Duration::from_secs(50) {
@@ -134,6 +182,35 @@ impl BlockConfStream {
                 block_hash,
             });
         }
+    }
+
+    async fn next_inner(&mut self) -> Result<BlockConfUpdate> {
+        loop {
+            if let Some(update) = self.catchup_slots.pop_front() {
+                return Ok(update);
+            }
+            match timeout(Duration::from_secs(5), self.next_from_ws().map(Ok)).await {
+                Ok(Ok(update)) => {
+                    if self.last_slot.unwrap_or_default() < update.slot {
+                        return Ok(update);
+                    }
+                }
+                Ok(Err(e)) => {
+                    log::warn!("block conf ws error: {e}, resubscribing...");
+                    self.mark_for_resubscribe().await?;
+                }
+                Err(_) => {
+                    log::warn!("block conf ws timeout, resubscribing...");
+                    self.mark_for_resubscribe().await?;
+                }
+            }
+        }
+    }
+
+    pub async fn next(&mut self) -> Result<BlockConfUpdate> {
+        let update = self.next_inner().await?;
+        self.last_slot = Some(update.slot);
+        Ok(update)
     }
 }
 
