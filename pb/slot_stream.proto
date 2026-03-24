@@ -19,4 +19,5 @@ message CatchupRequest {
 message SlotResponse {
     repeated slot_entry.Entry entries = 1; // JSON encoded entries 
     uint64 slot = 2;
+    uint64 parent_slot = 3;
 }

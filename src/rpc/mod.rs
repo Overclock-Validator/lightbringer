@@ -61,10 +61,19 @@ async fn get_slot(
         .spawn_blocking(move || get_slot_entries_from_store(&shred_store, slot))
         .await?;
 
+    if entries.parent_slot == 0 {
+        log::warn!(
+            "debug rpc: serving slot {} with parent_slot=0 | entries={}",
+            slot,
+            entries.entries.len(),
+        );
+    }
+
     Ok(ProtoBufResponse(
         grpc_slot_stream::slot_stream_pb::SlotResponse {
-            entries: entries.into_iter().map(|e| e.into()).collect(),
+            entries: entries.entries.into_iter().map(|e| e.into()).collect(),
             slot,
+            parent_slot: entries.parent_slot,
         },
     ))
 }

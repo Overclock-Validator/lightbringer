@@ -47,10 +47,13 @@ fn try_decode_and_deshred() {
         BASE64_STANDARD.decode(s).unwrap()
     });
 
-    let entries = get_slot_entries_from_raw_shreds(shreds).unwrap();
+    let slot_entries = get_slot_entries_from_raw_shreds(shreds).unwrap();
 
     println!(
         "total transaction count: {}",
-        entries.iter().fold(0, |acc, e| acc + e.transactions.len())
+        slot_entries
+            .entries
+            .iter()
+            .fold(0, |acc, e| acc + e.transactions.len())
     );
 }

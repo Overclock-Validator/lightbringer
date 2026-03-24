@@ -72,10 +72,20 @@ fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
     influxdb::Client::new(config.host, config.database).with_token(config.token)
 }
 
+fn log_build_banner() {
+    let marker = option_env!("LIGHTBRINGER_BUILD_MARKER").unwrap_or("unknown");
+    let git_sha = option_env!("LIGHTBRINGER_BUILD_GIT_SHA").unwrap_or("unknown");
+    log::info!("==============================================================");
+    log::info!("LIGHTBRINGER BUILD MARKER: {marker}");
+    log::info!("LIGHTBRINGER BUILD GIT SHA: {git_sha}");
+    log::info!("==============================================================");
+}
+
 fn main() {
     let conf = Config::parse();
 
     init_logger().unwrap();
+    log_build_banner();
 
     let lsm_ks = init_fjall(conf.storage).unwrap();
 
