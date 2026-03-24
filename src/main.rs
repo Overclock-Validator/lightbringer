@@ -34,7 +34,7 @@ use crate::{
     grpc_slot_stream::shred_source::{
         ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
     },
-    metrics::{MetricsSender, start_metrics_thread, points::MemoryMeasurement},
+    metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
     repair::{
         outstanding_timers::OutstandingTimerStore,
@@ -90,19 +90,9 @@ fn main() {
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
     let (metrics_exit_tx, metrics_exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        start_metrics_thread(metrics_client, metrics_rx, metrics_exit_rx);
-    });
-
-    let metrics_for_mem = metrics.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(10));
-            if let Some(measurement) = MemoryMeasurement::sample() {
-                metrics_for_mem.measure(measurement);
-            }
-        }
-    });
+    std::thread::spawn(enclose!((metrics) move || {
+        start_metrics_thread(metrics_client, metrics_rx, metrics, metrics_exit_rx);
+    }));
 
     let my_contact_info = gossip.lookup_my_info();
 

@@ -79,8 +79,8 @@ pub struct MemoryMeasurement {
 }
 
 impl MemoryMeasurement {
-    pub fn sample() -> Option<Self> {
-        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    pub async fn sample() -> Option<Self> {
+        let statm = tokio::fs::read_to_string("/proc/self/statm").await.ok()?;
         let mut fields = statm.split_whitespace();
         let virtual_pages: u64 = fields.next()?.parse().ok()?;
         let rss_pages: u64 = fields.next()?.parse().ok()?;

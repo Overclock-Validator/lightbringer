@@ -4,7 +4,7 @@ use influxdb::WriteQuery;
 use kanal::{AsyncReceiver, AsyncSender};
 use tokio::{runtime, task::spawn, time::sleep};
 
-use crate::metrics::points::DataPoint;
+use crate::metrics::points::{DataPoint, MemoryMeasurement};
 
 pub mod points;
 
@@ -63,9 +63,19 @@ async fn mock_metrics_loop(rx: AsyncReceiver<WriteQuery>) {
     }
 }
 
+async fn memory_sampling_loop(metrics: MetricsSender) {
+    loop {
+        sleep(Duration::from_secs(10)).await;
+        if let Some(measurement) = MemoryMeasurement::sample().await {
+            metrics.measure(measurement);
+        }
+    }
+}
+
 pub fn start_metrics_thread(
     client: Option<influxdb::Client>,
     rx: AsyncReceiver<WriteQuery>,
+    metrics: MetricsSender,
     exit: oneshot::Receiver<()>,
 ) {
     let rt = runtime::Builder::new_current_thread()
@@ -78,7 +88,9 @@ pub fn start_metrics_thread(
         } else {
             spawn(mock_metrics_loop(rx))
         };
+        let memory_task = spawn(memory_sampling_loop(metrics));
         exit.await.ok();
         metrics_task.abort();
+        memory_task.abort();
     })
 }
