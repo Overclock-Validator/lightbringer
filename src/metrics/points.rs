@@ -68,3 +68,32 @@ impl DataPoint for SlotMeasurement {
         "slot"
     }
 }
+
+const PAGE_SIZE: u64 = 4096; // x86_64 Linux
+
+#[derive(InfluxDbWriteable)]
+pub struct MemoryMeasurement {
+    time: Timestamp,
+    rss_bytes: u64,
+    virtual_bytes: u64,
+}
+
+impl MemoryMeasurement {
+    pub async fn sample() -> Option<Self> {
+        let statm = tokio::fs::read_to_string("/proc/self/statm").await.ok()?;
+        let mut fields = statm.split_whitespace();
+        let virtual_pages: u64 = fields.next()?.parse().ok()?;
+        let rss_pages: u64 = fields.next()?.parse().ok()?;
+        Some(Self {
+            time: now(),
+            rss_bytes: rss_pages * PAGE_SIZE,
+            virtual_bytes: virtual_pages * PAGE_SIZE,
+        })
+    }
+}
+
+impl DataPoint for MemoryMeasurement {
+    fn measurement() -> &'static str {
+        "memory"
+    }
+}

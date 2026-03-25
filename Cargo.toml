@@ -65,7 +65,7 @@ uluru = "3.1.0"
 lrumap = "0.1.0"
 
 # grpc streaming related
-tokio = { version = "1.0", features = ["rt", "sync", "time", "net"] }
+tokio = { version = "1.0", features = ["rt", "sync", "time", "net", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.14"
 prost = "0.14"

@@ -90,9 +90,9 @@ fn main() {
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
     let (metrics_exit_tx, metrics_exit_rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        start_metrics_thread(metrics_client, metrics_rx, metrics_exit_rx);
-    });
+    std::thread::spawn(enclose!((metrics) move || {
+        start_metrics_thread(metrics_client, metrics_rx, metrics, metrics_exit_rx);
+    }));
 
     let my_contact_info = gossip.lookup_my_info();
 
