@@ -9,15 +9,15 @@ name = "lightbringer-grpc-client"
 path = "src/grpc_client.rs"
 
 [dependencies]
-solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "b7c24db9ba19c3352bdcf3f0a4403ea2a7c27211" }
+solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
 solana-sdk = "3.0.0"
-solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", rev = "b7c24db9ba19c3352bdcf3f0a4403ea2a7c27211" }
-solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "b7c24db9ba19c3352bdcf3f0a4403ea2a7c27211" }
+solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
+solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
 solana-entry = "3.0.14"
-solana-net-utils = { git = "https://github.com/Overclock-Validator/agave.git", rev = "b7c24db9ba19c3352bdcf3f0a4403ea2a7c27211", features = ["agave-unstable-api"] }
+solana-net-utils = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4", features = ["agave-unstable-api"] }
 solana-rpc-client-types = "3.0.14"
 solana-epoch-info = "3.0.0"
-solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "b7c24db9ba19c3352bdcf3f0a4403ea2a7c27211" }
+solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
 solana-packet = "3.0.0"
 solana-commitment-config = "3.1.0"
 # pins because obviously someone doesn't want to follow semver

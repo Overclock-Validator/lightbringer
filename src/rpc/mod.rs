@@ -6,7 +6,10 @@ use ohkami::{
 };
 use thiserror::Error;
 
-use crate::{grpc_slot_stream, store::shred::ShredStore, util::shred::get_slot_entries_from_store};
+use crate::{
+    grpc_slot_stream, store::shred::ShredStore,
+    util::shred::get_slot_entries_and_parent_slot_from_store,
+};
 
 #[derive(Error, Debug)]
 pub enum RpcError {
@@ -57,14 +60,15 @@ async fn get_slot(
 ) -> Result<ProtoBufResponse<grpc_slot_stream::slot_stream_pb::SlotResponse>, RpcError> {
     let shred_store = shred_store.0.clone();
     let exec = glommio::executor();
-    let entries = exec
-        .spawn_blocking(move || get_slot_entries_from_store(&shred_store, slot))
+    let (entries, parent_slot) = exec
+        .spawn_blocking(move || get_slot_entries_and_parent_slot_from_store(&shred_store, slot))
         .await?;
 
     Ok(ProtoBufResponse(
         grpc_slot_stream::slot_stream_pb::SlotResponse {
             entries: entries.into_iter().map(|e| e.into()).collect(),
             slot,
+            parent_slot,
         },
     ))
 }

@@ -1,4 +1,4 @@
-use crate::util::shred::get_slot_entries_from_raw_shreds;
+use crate::util::shred::get_slot_entries_and_parent_slot_from_raw_shreds;
 
 #[test]
 fn try_deshred() {
@@ -47,7 +47,7 @@ fn try_decode_and_deshred() {
         BASE64_STANDARD.decode(s).unwrap()
     });
 
-    let entries = get_slot_entries_from_raw_shreds(shreds).unwrap();
+    let (entries, _) = get_slot_entries_and_parent_slot_from_raw_shreds(shreds).unwrap();
 
     println!(
         "total transaction count: {}",

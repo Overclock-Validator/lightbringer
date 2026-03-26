@@ -18,14 +18,14 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
     grpc_slot_stream::shred_source::ShredSource, rpc::RpcError, store::shred::ShredStore,
-    util::shred::get_slot_entries_from_raw_shreds,
+    util::shred::get_slot_entries_and_parent_slot_from_raw_shreds,
 };
 use slot_entry::Entry;
 use std::{net::SocketAddr, pin::Pin};
 
 #[derive(Clone)]
 pub struct SlotStreamService {
-    tx: broadcast::Sender<(Vec<Entry>, u64)>,
+    tx: broadcast::Sender<(Vec<Entry>, u64, u64)>,
     store: ShredStore,
 }
 
@@ -37,12 +37,12 @@ impl SlotStreamService {
         spawn(async move {
             while let Some(slot_raw) = slot_stream.next().await {
                 let res = spawn_blocking(move || {
-                    get_slot_entries_from_raw_shreds(
+                    get_slot_entries_and_parent_slot_from_raw_shreds(
                         slot_raw.shreds.iter().map(|s| S::shred_bytes(s)),
                     )
                 });
-                let msg = match res.await.unwrap() {
-                    Ok(entries) => {
+                let (msg, parent_slot) = match res.await.unwrap() {
+                    Ok((entries, parent_slot)) => {
                         let last_hash = entries.last().map(|e| e.hash.to_bytes());
                         if last_hash
                             .and_then(|h| Some(h != slot_raw.expected_blockhash?))
@@ -56,14 +56,14 @@ impl SlotStreamService {
                             );
                             continue;
                         }
-                        entries.into_iter().map(|e| e.into()).collect()
+                        (entries.into_iter().map(|e| e.into()).collect(), parent_slot)
                     }
                     Err(e) => {
                         log::warn!("failed to get slot entries for slot {}: {e}", slot_raw.slot);
                         continue;
                     }
                 };
-                _ = broadcast_tx_master.send((msg, slot_raw.slot));
+                _ = broadcast_tx_master.send((msg, slot_raw.slot, parent_slot));
             }
         });
 
@@ -87,7 +87,11 @@ impl SlotStreamTrait for SlotStreamService {
 
         let stream = BroadcastStream::new(rx).filter_map(|result| {
             let res = match result {
-                Ok((entries, slot)) => Some(Ok(SlotResponse { entries, slot })),
+                Ok((entries, slot, parent_slot)) => Some(Ok(SlotResponse {
+                    entries,
+                    slot,
+                    parent_slot,
+                })),
                 Err(_) => None,
             };
             future::ready(res)
@@ -108,10 +112,20 @@ impl SlotStreamTrait for SlotStreamService {
                 async move {
                     spawn_blocking(move || {
                         let shreds = store.get_slot_shreds(slot)?;
-                        let entries = get_slot_entries_from_raw_shreds(shreds).map(|ents| {
-                            ents.into_iter().map(|e| e.into()).collect::<Vec<Entry>>()
-                        })?;
-                        Ok::<_, RpcError>(SlotResponse { entries, slot })
+                        let (entries, parent_slot) =
+                            get_slot_entries_and_parent_slot_from_raw_shreds(shreds).map(
+                                |(ents, parent_slot)| {
+                                    (
+                                        ents.into_iter().map(|e| e.into()).collect::<Vec<Entry>>(),
+                                        parent_slot,
+                                    )
+                                },
+                            )?;
+                        Ok::<_, RpcError>(SlotResponse {
+                            entries,
+                            slot,
+                            parent_slot,
+                        })
                     })
                     .await
                     .unwrap()

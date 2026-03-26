@@ -53,9 +53,9 @@ struct BatchMeta {
     data_cnt: usize,
 }
 
-pub fn get_slot_entries_from_raw_shreds<S: AsRef<[u8]>>(
+pub fn get_slot_entries_and_parent_slot_from_raw_shreds<S: AsRef<[u8]>>(
     shreds: impl IntoIterator<Item = S>,
-) -> Result<Vec<Entry>, RpcError> {
+) -> Result<(Vec<Entry>, u64), RpcError> {
     let mut shreds_for_slot = BTreeMap::<u32, BatchMeta>::new();
 
     for shred in shreds {
@@ -69,19 +69,28 @@ pub fn get_slot_entries_from_raw_shreds<S: AsRef<[u8]>>(
     }
 
     let mut entries = Vec::new();
+    let mut parent_slot = 0;
     for data_shreds in recover_shreds_and_group_by_completion(shreds_for_slot)? {
+        if parent_slot == 0 {
+            parent_slot = data_shreds
+                .first_key_value()
+                .unwrap()
+                .1
+                .parent()
+                .expect("got empty data shreds batch after recovery?!");
+        }
         let mut deshred_entries = deshred_to_entries(data_shreds.values())?;
         entries.append(&mut deshred_entries);
     }
 
-    Ok(entries)
+    Ok((entries, parent_slot))
 }
 
-pub fn get_slot_entries_from_store(
+pub fn get_slot_entries_and_parent_slot_from_store(
     shred_store: &ShredStore,
     slot: u64,
-) -> Result<Vec<Entry>, RpcError> {
+) -> Result<(Vec<Entry>, u64), RpcError> {
     let unsorted_shreds = shred_store.get_slot_shreds(slot)?;
 
-    get_slot_entries_from_raw_shreds(unsorted_shreds)
+    get_slot_entries_and_parent_slot_from_raw_shreds(unsorted_shreds)
 }
