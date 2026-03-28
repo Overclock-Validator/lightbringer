@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use anyhow::anyhow;
+use glommio::timer::sleep;
 use lrumap::LruBTreeMap;
 use solana_rpc_client_types::response::RpcLeaderSchedule;
 use solana_sdk::pubkey::Pubkey;
@@ -74,15 +75,20 @@ impl LeaderScheduleSync {
         if diff == 0 || diff > SLOTS_PER_EPOCH as u64 {
             return None;
         }
-        let epoch_info = match self.rpc.get_epoch_info(Some(slot)).await {
-            Ok(Some(schedule)) => schedule,
-            Ok(None) => {
-                log::warn!("leader schedule was None for slot: {slot}, ignoring shred");
-                return None;
-            }
-            Err(e) => {
-                log::warn!("failed to get leader schedule for slot: {slot}, {e} ignoring shred");
-                return None;
+        let epoch_info = loop {
+            match self.rpc.get_epoch_info(Some(slot)).await {
+                Ok(Some(info)) => break info,
+                Ok(None) => {
+                    log::info!("leader schedule was None for slot: {slot}, retrying in 2s...");
+                    sleep(std::time::Duration::from_secs(2)).await;
+                    return None;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "failed to get leader schedule for slot: {slot}, {e} ignoring shred"
+                    );
+                    return None;
+                }
             }
         };
         if epoch_info.absolute_slot < slot {
