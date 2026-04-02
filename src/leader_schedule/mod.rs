@@ -75,13 +75,34 @@ impl LeaderScheduleSync {
         if diff == 0 || diff > SLOTS_PER_EPOCH as u64 {
             return None;
         }
-        let epoch_info = loop {
-            match self.rpc.get_epoch_info(Some(slot)).await {
-                Ok(Some(info)) => break info,
+        let (epoch_info, schedule) = loop {
+            let epoch_info = match self.rpc.get_epoch_info(Some(slot)).await {
+                Ok(Some(info)) => info,
                 Ok(None) => {
-                    log::info!("leader schedule was None for slot: {slot}, retrying in 2s...");
+                    log::info!("get_epoch_info was None for slot: {slot}, retrying in 2s...");
                     sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("failed to get epoch info for slot: {slot}, {e} ignoring shred");
                     return None;
+                }
+            };
+            if epoch_info.absolute_slot < slot {
+                log::info!(
+                    "epoch info absolute slot {} is less than requested slot {slot}, retrying in 2s...",
+                    epoch_info.absolute_slot
+                );
+                sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+
+            match self.rpc.get_leader_schedule(Some(slot)).await {
+                Ok(Some(schedule)) => break (epoch_info, schedule),
+                Ok(None) => {
+                    log::warn!("leader schedule was None for slot: {slot}, retrying in 2s...");
+                    sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
                 }
                 Err(e) => {
                     log::warn!(
@@ -89,22 +110,7 @@ impl LeaderScheduleSync {
                     );
                     return None;
                 }
-            }
-        };
-        if epoch_info.absolute_slot < slot {
-            return None;
-        }
-
-        let schedule = match self.rpc.get_leader_schedule(Some(slot)).await {
-            Ok(Some(schedule)) => schedule,
-            Ok(None) => {
-                log::warn!("leader schedule was None for slot: {slot}, ignoring shred");
-                return None;
-            }
-            Err(e) => {
-                log::warn!("failed to get leader schedule for slot: {slot}, {e} ignoring shred");
-                return None;
-            }
+            };
         };
 
         self.store
