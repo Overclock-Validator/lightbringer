@@ -6,7 +6,7 @@ use lrumap::LruBTreeMap;
 use solana_rpc_client_types::response::RpcLeaderSchedule;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::solana_rpc::SolanaRpcClient;
+use crate::solana_rpc::{SolanaRpcClient, SolanaRpcError};
 
 const SLOTS_PER_EPOCH: usize = 432000;
 
@@ -79,6 +79,13 @@ impl LeaderScheduleSync {
             let epoch_info = match self.rpc.get_epoch_info(Some(slot)).await {
                 Ok(Some(info)) => info,
                 Ok(None) => {
+                    log::info!("get_epoch_info was None for slot: {slot}, retrying in 2s...");
+                    sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(SolanaRpcError::JsonRpc(e))
+                    if e.message == "Minimum context slot has not been reached" =>
+                {
                     log::info!("get_epoch_info was None for slot: {slot}, retrying in 2s...");
                     sleep(std::time::Duration::from_secs(2)).await;
                     continue;

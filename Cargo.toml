@@ -62,6 +62,7 @@ uuid = { version = "1.19.0", features = ["v4"] }
 bs58 = "0.5.1"
 serde_with = "3.16.1"
 uluru = "3.1.0"
+circular-buffer = "0.1.9"
 lrumap = "0.1.0"
 
 # grpc streaming related

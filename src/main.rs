@@ -36,11 +36,7 @@ use crate::{
     },
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
-    repair::{
-        outstanding_timers::OutstandingTimerStore,
-        peer_manager::{RepairPeers, RepairRequestMapper},
-        socket::start_repair_socket_runner,
-    },
+    repair::socket::start_repair_socket_runner,
     rpc::DebugRpcInit,
     solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
@@ -85,7 +81,7 @@ fn main() {
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<8>::new();
+    let mut threadpool = ThreadManager::<7>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -124,23 +120,21 @@ fn main() {
     let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
     let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
 
-    let repair_timeout = OutstandingTimerStore::default();
-    let repair_peers = RepairPeers::new(cluster_info);
-    let repair_request_mapper = RepairRequestMapper::new(repair_peers, keypair.clone());
-
-    threadpool.spawn(enclose!((repair_request_mapper, repair_socket_tx, repair_timeout, filter_tx, metrics) move |exit| async {
-        let repair_manager =
-            RepairManager::new(
-                repair_rx,
-                repair_socket_tx,
-                repair_manager_rx,
-                filter_tx,
-                repair_timeout,
-                repair_request_mapper,
-                metrics,
-            );
-        repair_manager.start_repair_manager_loop(exit).await
-    }));
+    threadpool.spawn(
+        enclose!((cluster_info, keypair, repair_socket_tx, filter_tx, metrics) move |exit| async {
+            let repair_manager =
+                RepairManager::new(
+                    repair_rx,
+                    repair_socket_tx,
+                    repair_manager_rx,
+                    filter_tx,
+                    cluster_info,
+                    keypair,
+                    metrics,
+                );
+            repair_manager.start_repair_manager_loop(exit).await
+        }),
+    );
     threadpool.spawn(move |exit| async move {
         start_repair_socket_runner(
             exit,
@@ -150,11 +144,6 @@ fn main() {
             repair_manager_tx,
         )
         .await
-    });
-    threadpool.spawn(move |exit| async move {
-        repair_timeout
-            .timeout_watcher_loop(exit, repair_socket_tx, repair_request_mapper)
-            .await
     });
 
     // Shred Storage
