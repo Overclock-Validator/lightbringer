@@ -101,10 +101,6 @@ impl OutstandingTimerStore {
         self.0.range(prefix_key..prefix_key_limit).count() != 0
     }
 
-    pub fn size(&self) -> usize {
-        self.0.len()
-    }
-
     pub fn remove_slot(&mut self, slot: u64) {
         let mut prefix_key = [0u8; 30];
         prefix_key[..8].copy_from_slice(&slot.to_le_bytes());
@@ -125,7 +121,6 @@ pub async fn start_outstanding_requests_loop(
     peer_sample: Rc<RefCell<PeerSample>>,
     send_socket: AsyncSender<RepairSocketRequestBatch>,
 ) {
-    log::info!("outstanding_requests_loop started");
     while let Some(msg) = outstanding_rx.recv().await {
         match msg {
             OutstandingRequestMsg::New(req) => {
@@ -133,10 +128,6 @@ pub async fn start_outstanding_requests_loop(
                 let sent_at = req.sent_at;
                 let (slot, nonce, socket, kind, shred) =
                     (req.slot, req.nonce, req.socket, req.kind, req.shred);
-                log::info!(
-                    "outstanding: insert slot={slot} shred={shred} nonce={nonce} socket={socket}, store_size={}",
-                    outstanding_timers.borrow().0.len()
-                );
                 outstanding_timers.borrow_mut().insert(
                     slot,
                     nonce,
@@ -157,17 +148,9 @@ pub async fn start_outstanding_requests_loop(
                     .borrow_mut()
                     .remove(req.slot, req.nonce, req.socket);
                 if removed.is_none() {
-                    log::info!(
-                        "outstanding: timeout for already-fulfilled slot={} shred={}",
-                        req.slot, req.shred
-                    );
+                    // Already fulfilled by a response
                     continue;
                 }
-                log::info!(
-                    "outstanding: timeout slot={} shred={} nonce={} socket={}, store_size={}",
-                    req.slot, req.shred, req.nonce, req.socket,
-                    outstanding_timers.borrow().0.len()
-                );
                 peer_sample.borrow_mut().record_timeout(req.socket);
 
                 let Some((socket, nonce, raw_req)) = (match req.kind {
