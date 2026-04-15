@@ -1,138 +1,168 @@
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, collections::BTreeMap, net::SocketAddr, rc::Rc, time::Duration};
 
-use glommio::spawn_local;
+use glommio::{
+    channels::local_channel::{LocalReceiver, LocalSender},
+    enclose,
+    timer::TimerActionOnce,
+};
 use kanal::AsyncSender;
 use solana_ledger::shred::Nonce;
 
-use crate::{
-    repair::{peer_manager::RepairRequestMapper, socket::RepairSocketRequestBatch},
-    thread_manager::CancelRx,
-};
+use crate::repair::{peer_manager::RepairRequestMapper, socket::RepairSocketRequestBatch};
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum OutstandingRequestKind {
-    WindowIndex,
-    HighestWindowIndex,
+use super::OutstandingRequestKind;
+
+const REPAIR_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+
+type RepairKeyRaw = [u8; 30]; // slot(8) | nonce(4) | ip(16) | port(2)
+
+fn repair_key(slot: u64, nonce: u32, socket: SocketAddr) -> RepairKeyRaw {
+    let mut bytes = [0u8; 30];
+    bytes[..8].copy_from_slice(&slot.to_le_bytes());
+    bytes[8..12].copy_from_slice(&nonce.to_le_bytes());
+
+    let mut ip_bytes = [0u8; 16];
+    match socket.ip() {
+        std::net::IpAddr::V4(ipv4) => {
+            ip_bytes[..4].copy_from_slice(&ipv4.octets());
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            ip_bytes.copy_from_slice(&ipv6.octets());
+        }
+    }
+    bytes[12..28].copy_from_slice(&ip_bytes);
+    bytes[28..30].copy_from_slice(&socket.port().to_le_bytes());
+
+    bytes
 }
 
-pub type SlotRequestMap = BTreeMap<(Nonce, SocketAddr), (OutstandingRequestKind, u32)>;
-const REPAIR_SLOT_TIMEOUT: Duration = Duration::from_millis(200);
-
-#[derive(Clone, Default)]
-pub struct OutstandingTimerStore {
-    inner: Arc<scc::HashMap<u64, (SlotRequestMap, Instant)>>,
+pub struct OutstandingRequest {
+    pub kind: OutstandingRequestKind,
+    pub nonce: Nonce,
+    pub slot: u64,
+    pub shred: u32,
+    pub socket: SocketAddr,
 }
+
+pub enum OutstandingRequestMsg {
+    New(OutstandingRequest),
+    Timeout(OutstandingRequest),
+}
+
+#[derive(Default)]
+pub struct OutstandingTimerStore(
+    BTreeMap<RepairKeyRaw, (OutstandingRequestKind, u32, TimerActionOnce<()>)>,
+);
 
 impl OutstandingTimerStore {
-    pub async fn remove(
-        &self,
+    pub fn insert(
+        &mut self,
+        slot: u64,
+        nonce: Nonce,
+        socket: SocketAddr,
+        req_type: OutstandingRequestKind,
+        shred_index: u32,
+        timer: TimerActionOnce<()>,
+    ) {
+        self.0.insert(
+            repair_key(slot, nonce, socket),
+            (req_type, shred_index, timer),
+        );
+    }
+
+    /// remove an outstanding timer
+    /// returning the request type
+    pub fn remove(
+        &mut self,
         slot: u64,
         nonce: Nonce,
         socket: SocketAddr,
     ) -> Option<(OutstandingRequestKind, u32)> {
-        let mut slot_map = self.inner.get_async(&slot).await?;
-        let res = slot_map.0.remove(&(nonce, socket))?;
-        slot_map.1 = Instant::now() + REPAIR_SLOT_TIMEOUT;
-        std::mem::drop(slot_map);
+        let (kind, shred_index, timer) = self.0.remove(&repair_key(slot, nonce, socket))?;
+        timer.destroy();
 
-        self.inner.remove_if_async(&slot, |v| v.0.is_empty()).await;
-        Some(res)
+        Some((kind, shred_index))
     }
 
-    pub async fn cancel_repair(&self, slot: u64) {
-        self.inner.remove_async(&slot).await;
+    pub fn contains(&self, slot: u64) -> bool {
+        let mut prefix_key = [0u8; 30];
+        prefix_key[..8].copy_from_slice(&slot.to_le_bytes());
+        let mut prefix_key_limit = [0u8; 30];
+        prefix_key_limit[..8].copy_from_slice(&(slot + 1).to_le_bytes());
+        self.0.range(prefix_key..prefix_key_limit).count() != 0
     }
 
-    pub async fn contains(&self, slot: u64) -> bool {
-        self.inner.contains_async(&slot).await
+    pub fn remove_slot(&mut self, slot: u64) {
+        let mut prefix_key = [0u8; 30];
+        prefix_key[..8].copy_from_slice(&slot.to_le_bytes());
+        let mut prefix_key_limit = [0u8; 30];
+        prefix_key_limit[..8].copy_from_slice(&(slot + 1).to_le_bytes());
+        let drain_iter = self.0.extract_if(prefix_key..prefix_key_limit, |_, _| true);
+        for (_, (_, _, timer)) in drain_iter {
+            timer.destroy();
+        }
     }
+}
 
-    // try to insert a new slot,
-    // returning false if the slot already exists
-    pub async fn try_insert(&self, slot: u64, reqs: SlotRequestMap) -> bool {
-        self.inner
-            .insert_async(slot, (reqs, Instant::now() + REPAIR_SLOT_TIMEOUT))
-            .await
-            .is_ok()
-    }
-
-    pub async fn extend_requests(&self, slot: u64, mut reqs: SlotRequestMap) {
-        self.inner
-            .entry_async(slot)
-            .await
-            .and_modify(|(existing_reqs, timeout)| {
-                existing_reqs.append(&mut reqs);
-                *timeout = Instant::now() + REPAIR_SLOT_TIMEOUT;
-            })
-            .or_insert((reqs, Instant::now() + REPAIR_SLOT_TIMEOUT));
-    }
-
-    pub async fn timeout_watcher_loop(
-        self,
-        exit: CancelRx,
-        send_socket: AsyncSender<RepairSocketRequestBatch>,
-        mut mapper: RepairRequestMapper,
-    ) {
-        let task = spawn_local(async move {
-            loop {
-                glommio::timer::sleep(Duration::from_secs(5)).await;
-                let mut socket_reqs = Vec::new();
-                self.inner
-                    .iter_mut_async(|mut entry| {
-                        if entry.1.1 > Instant::now() {
-                            return true;
-                        }
-                        if entry.1.0.is_empty() {
-                            _ = entry.consume();
-                            return true;
-                        }
-                        #[cfg(feature = "debug")]
-                        {
-                            log::info!(
-                                "slot {}, repair time out, reqs: {:?}",
-                                entry.0,
-                                entry
-                                    .1
-                                    .0
-                                    .values()
-                                    .map(|(_, shred)| *shred)
-                                    .collect::<Vec<_>>()
-                            );
-                        }
-
-                        let mut new_reqs = SlotRequestMap::default();
-                        socket_reqs.extend(entry.1.0.values().filter_map(|&(kind, shred)| {
-                            let (socket, nonce, repair_raw) = match kind {
-                                OutstandingRequestKind::WindowIndex => {
-                                    mapper.map_bounded_shred(entry.0, shred)
-                                }
-                                OutstandingRequestKind::HighestWindowIndex => {
-                                    mapper.map_unbounded_shred(entry.0, shred)
-                                }
-                            }?;
-                            new_reqs.insert((nonce, socket), (kind, shred));
-
-                            Some((socket, repair_raw))
-                        }));
-
-                        entry.1.0 = new_reqs;
-                        entry.1.1 = Instant::now() + REPAIR_SLOT_TIMEOUT;
-
-                        true
-                    })
-                    .await;
-                if let Err(e) = send_socket.send(socket_reqs).await {
-                    log::warn!("repair socket rx died?! {e}");
-                    break;
-                }
+pub async fn start_outstanding_requests_loop(
+    mut mapper: RepairRequestMapper,
+    outstanding_timers: Rc<RefCell<OutstandingTimerStore>>,
+    outstanding_tx: Rc<LocalSender<OutstandingRequestMsg>>,
+    outstanding_rx: LocalReceiver<OutstandingRequestMsg>,
+    send_socket: AsyncSender<RepairSocketRequestBatch>,
+) {
+    while let Some(msg) = outstanding_rx.recv().await {
+        match msg {
+            OutstandingRequestMsg::New(req) => {
+                let mut outstanding_timers = outstanding_timers.borrow_mut();
+                outstanding_timers.insert(
+                    req.slot,
+                    req.nonce,
+                    req.socket,
+                    req.kind,
+                    req.shred,
+                    TimerActionOnce::do_in(
+                        REPAIR_REQUEST_TIMEOUT,
+                        enclose!((outstanding_tx) async move {
+                            _ = outstanding_tx.try_send(OutstandingRequestMsg::Timeout(req));
+                        }),
+                    ),
+                );
             }
-        });
-        exit.await;
-        task.cancel().await;
+            OutstandingRequestMsg::Timeout(mut req) => {
+                outstanding_timers
+                    .borrow_mut()
+                    .remove(req.slot, req.nonce, req.socket);
+                let Some((socket, nonce, raw_req)) = (match req.kind {
+                    OutstandingRequestKind::WindowIndex => {
+                        mapper.map_bounded_shred(req.slot, req.shred)
+                    }
+                    OutstandingRequestKind::HighestWindowIndex => {
+                        mapper.map_unbounded_shred(req.slot, req.shred)
+                    }
+                }) else {
+                    continue;
+                };
+                if send_socket.send(vec![(socket, raw_req)]).await.is_err() {
+                    continue;
+                }
+                req.nonce = nonce;
+                req.socket = socket;
+
+                outstanding_timers.borrow_mut().insert(
+                    req.slot,
+                    req.nonce,
+                    req.socket,
+                    req.kind,
+                    req.shred,
+                    TimerActionOnce::do_in(
+                        REPAIR_REQUEST_TIMEOUT,
+                        enclose!((outstanding_tx) async move {
+                            _ = outstanding_tx.try_send(OutstandingRequestMsg::Timeout(req));
+                        }),
+                    ),
+                );
+            }
+        }
     }
 }
