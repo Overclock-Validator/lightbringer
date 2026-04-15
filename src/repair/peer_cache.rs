@@ -1,22 +1,18 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 use circular_buffer::CircularBuffer;
 use rand::{Rng, seq::IndexedRandom};
 use solana_sdk::pubkey::Pubkey;
-use uluru::LRUCache;
 
-const MAX_PEERS: usize = 2000;
+const MAX_PEERS: usize = 6000;
 const LATENCY_WINDOW: usize = 100;
 const LOAD_WINDOW: u32 = 100;
 const TIMEOUT_ASSUMED_LATENCY_MS: f64 = 300.0;
 const REFERENCE_LATENCY_MS: f64 = 100.0;
 const MAX_COMPUTED_SCORE: f64 = 92.0;
+const BASELINE_SCORE: f64 = 50.0;
 
 /// Rolling window statistics using Welford's online algorithm.
-///
-/// Uses a fixed-capacity circular buffer. When the buffer is full,
-/// `push_back` evicts the oldest sample and returns it, allowing
-/// an incremental mean/M2 update without recomputation.
 struct RollingStats {
     samples: CircularBuffer<LATENCY_WINDOW, f64>,
     mean: f64,
@@ -34,7 +30,6 @@ impl RollingStats {
 
     fn push(&mut self, value: f64) {
         if self.samples.is_full() {
-            // Rolling: grab oldest before overwrite, window size unchanged
             let old = self.samples[0];
             self.samples.push_back(value);
             let n = LATENCY_WINDOW as f64;
@@ -43,7 +38,6 @@ impl RollingStats {
             self.m2 += (value - old) * (value - self.mean + old - old_mean);
             self.m2 = self.m2.max(0.0);
         } else {
-            // Growing: standard Welford's add
             self.samples.push_back(value);
             let n = self.samples.len() as f64;
             let delta = value - self.mean;
@@ -83,18 +77,11 @@ impl PeerStats {
             latency: RollingStats::new(),
             requests_sent: 0,
             requests_timed_out: 0,
-            score: 50.0,
+            score: BASELINE_SCORE,
         }
     }
 
-    /// Recompute and store the score from current stats.
-    ///
     /// `score = 50 * speed_factor * consistency_factor * load_factor`
-    ///
-    /// - **Speed**: `clamp(100ms / avg_latency, 0.1, 2.0)`
-    /// - **Consistency**: `1 / (1 + cv²)`
-    /// - **Load**: `exp(-(sent/N)²)`
-    /// - **Hard filter**: 0 if timeout ratio > 50%
     ///
     /// Clamped to `[0, 92]`; 100 is reserved as "always select".
     fn update_score(&mut self) {
@@ -124,72 +111,85 @@ impl PeerStats {
         self.score =
             (50.0 * speed_factor * consistency_factor * load_factor).clamp(0.0, MAX_COMPUTED_SCORE);
     }
-
-    fn record_request(&mut self) {
-        self.requests_sent += 1;
-        if self.requests_sent >= LOAD_WINDOW {
-            self.requests_sent = 0;
-            self.requests_timed_out = 0;
-        }
-        self.update_score();
-    }
-
-    fn record_response(&mut self, latency_ms: f64) {
-        self.latency.push(latency_ms);
-        self.update_score();
-    }
-
-    fn record_timeout(&mut self) {
-        self.latency.push(TIMEOUT_ASSUMED_LATENCY_MS);
-        self.requests_timed_out += 1;
-        self.update_score();
-    }
 }
 
+/// Fixed-size peer score cache. When full, evicts the lowest-scoring peer
+/// to make room for new observations.
 pub struct PeerSample {
-    cache: LRUCache<(SocketAddr, PeerStats), MAX_PEERS>,
+    peers: HashMap<SocketAddr, PeerStats>,
 }
 
 impl PeerSample {
     pub fn new() -> Self {
         Self {
-            cache: LRUCache::new(),
+            peers: HashMap::with_capacity(MAX_PEERS),
         }
     }
 
+    /// Insert a new peer at baseline score 50. No-op if already tracked.
+    /// When at capacity, evicts the lowest-scoring peer — but only if its
+    /// score is below the baseline (otherwise the new unknown peer isn't
+    /// worth displacing a proven one).
     pub fn observe(&mut self, addr: SocketAddr) {
-        if self.cache.find(|(a, _)| *a == addr).is_some() {
+        if self.peers.contains_key(&addr) {
             return;
         }
-        self.cache.insert((addr, PeerStats::new()));
+        if self.peers.len() >= MAX_PEERS {
+            let worst = self
+                .peers
+                .iter()
+                .min_by(|a, b| {
+                    a.1.score
+                        .partial_cmp(&b.1.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(addr, stats)| (*addr, stats.score));
+            if let Some((worst_addr, worst_score)) = worst {
+                if worst_score < BASELINE_SCORE {
+                    self.peers.remove(&worst_addr);
+                } else {
+                    return;
+                }
+            }
+        }
+        self.peers.insert(addr, PeerStats::new());
     }
 
     pub fn record_request(&mut self, addr: SocketAddr) {
-        if let Some((_, stats)) = self.cache.find(|(a, _)| *a == addr) {
-            stats.record_request();
+        if let Some(stats) = self.peers.get_mut(&addr) {
+            stats.requests_sent += 1;
+            if stats.requests_sent >= LOAD_WINDOW {
+                stats.requests_sent = 0;
+                stats.requests_timed_out = 0;
+            }
+            stats.update_score();
         }
     }
 
     pub fn record_response(&mut self, addr: SocketAddr, latency_ms: f64) {
-        if let Some((_, stats)) = self.cache.find(|(a, _)| *a == addr) {
-            stats.record_response(latency_ms);
+        if let Some(stats) = self.peers.get_mut(&addr) {
+            stats.latency.push(latency_ms);
+            stats.update_score();
         }
     }
 
     pub fn record_timeout(&mut self, addr: SocketAddr) {
-        if let Some((_, stats)) = self.cache.find(|(a, _)| *a == addr) {
-            stats.record_timeout();
+        if let Some(stats) = self.peers.get_mut(&addr) {
+            stats.latency.push(TIMEOUT_ASSUMED_LATENCY_MS);
+            stats.requests_timed_out += 1;
+            stats.update_score();
         }
     }
 
     fn score(&self, addr: &SocketAddr) -> f64 {
-        self.cache
-            .iter()
-            .find(|(a, _)| a == addr)
-            .map(|(_, stats)| stats.score)
-            .unwrap_or(50.0)
+        self.peers
+            .get(addr)
+            .map(|s| s.score)
+            .unwrap_or(BASELINE_SCORE)
     }
 
+    /// Select a peer using weighted random sampling.
+    /// Peers with score 0 are never selected.
     pub fn select_weighted(
         &self,
         peers: &[(SocketAddr, Pubkey)],
