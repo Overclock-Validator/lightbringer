@@ -24,7 +24,9 @@ type RepairKeyRaw = [u8; 30]; // slot(8) | nonce(4) | ip(16) | port(2)
 
 fn repair_key(slot: u64, nonce: u32, socket: SocketAddr) -> RepairKeyRaw {
     let mut bytes = [0u8; 30];
-    bytes[..8].copy_from_slice(&slot.to_le_bytes());
+    // Big-endian so lexicographic key ordering matches numeric slot ordering,
+    // which is required for prefix range queries in contains()/remove_slot().
+    bytes[..8].copy_from_slice(&slot.to_be_bytes());
     bytes[8..12].copy_from_slice(&nonce.to_le_bytes());
 
     let mut ip_bytes = [0u8; 16];
@@ -95,17 +97,17 @@ impl OutstandingTimerStore {
 
     pub fn contains(&self, slot: u64) -> bool {
         let mut prefix_key = [0u8; 30];
-        prefix_key[..8].copy_from_slice(&slot.to_le_bytes());
+        prefix_key[..8].copy_from_slice(&slot.to_be_bytes());
         let mut prefix_key_limit = [0u8; 30];
-        prefix_key_limit[..8].copy_from_slice(&(slot + 1).to_le_bytes());
+        prefix_key_limit[..8].copy_from_slice(&slot.saturating_add(1).to_be_bytes());
         self.0.range(prefix_key..prefix_key_limit).count() != 0
     }
 
     pub fn remove_slot(&mut self, slot: u64) {
         let mut prefix_key = [0u8; 30];
-        prefix_key[..8].copy_from_slice(&slot.to_le_bytes());
+        prefix_key[..8].copy_from_slice(&slot.to_be_bytes());
         let mut prefix_key_limit = [0u8; 30];
-        prefix_key_limit[..8].copy_from_slice(&(slot + 1).to_le_bytes());
+        prefix_key_limit[..8].copy_from_slice(&slot.saturating_add(1).to_be_bytes());
         let drain_iter = self.0.extract_if(prefix_key..prefix_key_limit, |_, _| true);
         for (_, (_, _, timer, _)) in drain_iter {
             timer.destroy();
