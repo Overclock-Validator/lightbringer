@@ -142,10 +142,17 @@ impl RepairManager {
                         .borrow_mut()
                         .remove(slot, nonce, socket_addr)
                     else {
+                        log::warn!(
+                            "repair_recv: no match slot={slot} nonce={nonce} from={socket_addr}, store_size={}",
+                            outstanding_store.borrow().size()
+                        );
                         continue;
                     };
 
                     let latency_ms = sent_at.elapsed().as_millis() as f64;
+                    log::info!(
+                        "repair_recv: matched slot={slot} shred={req_shred_index} kind={req_kind:?} latency={latency_ms:.0}ms"
+                    );
                     peer_sample
                         .borrow_mut()
                         .record_response(socket_addr, latency_ms);
@@ -200,6 +207,11 @@ impl RepairManager {
         } else {
             req_shred_index..shred_index
         };
+        log::info!(
+            "repair_recv: unbounded response slot={shred_slot} shred_index={shred_index} req_shred_index={req_shred_index} last_shred={}",
+            flags.contains(ShredFlags::LAST_SHRED_IN_SLOT)
+        );
+
         let reqs = range
             .filter_map(move |shred_index| {
                 let (socket, nonce, shred) = mapper.map_bounded_shred(shred_slot, shred_index)?;
@@ -269,6 +281,7 @@ impl RepairManager {
                 match req {
                     RepairReq::MissingBoundedShreds { slot, shreds } => {
                         if store.borrow().contains(slot) {
+                            log::info!("repair_req: slot {slot} already has outstanding requests, skipping");
                             continue;
                         }
                         if shreds.is_empty() {
@@ -289,6 +302,7 @@ impl RepairManager {
                         max_inclusive_shred,
                     } => {
                         if store.borrow().contains(slot) {
+                            log::info!("repair_req: slot {slot} already has outstanding requests, skipping");
                             continue;
                         }
 
@@ -328,6 +342,10 @@ impl RepairManager {
                 }
             };
 
+            log::info!(
+                "repair_req: sending {} packets for slot repair",
+                socket_reqs.len()
+            );
             _ = send_socket.send(socket_reqs).await;
         }
     }

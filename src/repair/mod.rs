@@ -14,7 +14,7 @@ pub fn repair_nonce(packet: &PacketView) -> Option<Nonce> {
     Some(Nonce::from_le_bytes(nonce_raw_le))
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum OutstandingRequestKind {
     WindowIndex,
     HighestWindowIndex,
