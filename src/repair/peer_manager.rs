@@ -1,6 +1,6 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{cell::RefCell, net::SocketAddr, rc::Rc, sync::Arc};
 
-use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IndexedRandom};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use solana_core::repair::serve_repair::{RepairProtocol, RepairRequestHeader, ServeRepair};
 use solana_gossip::{cluster_info::ClusterInfo, contact_info::Protocol};
 use solana_ledger::shred::Nonce;
@@ -9,24 +9,33 @@ use solana_sdk::{
 };
 use uluru::LRUCache;
 
-#[derive(Clone)]
-pub struct RepairPeers {
+use super::peer_cache::PeerSample;
+
+struct RepairPeers {
     cache: LRUCache<(Slot, Vec<(SocketAddr, Pubkey)>), 200>,
     cluster_info: Arc<ClusterInfo>,
 }
 
 impl RepairPeers {
-    pub fn new(cluster_info: Arc<ClusterInfo>) -> Self {
+    fn new(cluster_info: Arc<ClusterInfo>) -> Self {
         Self {
             cache: LRUCache::new(),
             cluster_info,
         }
     }
 
-    fn random_peer(&mut self, rng: &mut impl Rng, slot: Slot) -> Option<(SocketAddr, Pubkey)> {
+    fn random_peer(
+        &mut self,
+        rng: &mut impl Rng,
+        slot: Slot,
+        peer_sample: &mut PeerSample,
+    ) -> Option<(SocketAddr, Pubkey)> {
         let cached = self.cache.find(|(lru_slot, _)| *lru_slot == slot);
         if let Some((_, cached)) = cached {
-            return cached.choose(rng).cloned();
+            for &(addr, _) in cached.iter() {
+                peer_sample.observe(addr);
+            }
+            return peer_sample.select_weighted(cached, rng);
         }
         let peers = self
             .cluster_info
@@ -37,31 +46,42 @@ impl RepairPeers {
                 Some((socket, *ci.pubkey()))
             })
             .collect::<Vec<_>>();
-        let peer = peers.choose(rng).cloned()?;
+        for &(addr, _) in peers.iter() {
+            peer_sample.observe(addr);
+        }
+        let selected = peer_sample.select_weighted(&peers, rng);
         self.cache.insert((slot, peers));
 
-        Some(peer)
+        selected
     }
 }
 
-#[derive(Clone)]
 pub struct RepairRequestMapper {
     peers: RepairPeers,
     keypair: Arc<Keypair>,
     rng: SmallRng,
+    peer_sample: Rc<RefCell<PeerSample>>,
 }
 
 impl RepairRequestMapper {
-    pub fn new(peers: RepairPeers, keypair: Arc<Keypair>) -> Self {
+    pub fn new(
+        cluster_info: Arc<ClusterInfo>,
+        keypair: Arc<Keypair>,
+        peer_sample: Rc<RefCell<PeerSample>>,
+    ) -> Self {
         Self {
-            peers,
+            peers: RepairPeers::new(cluster_info),
             keypair,
             rng: SmallRng::from_rng(&mut rand::rng()),
+            peer_sample,
         }
     }
 
     fn random_peer(&mut self, slot: u64) -> Option<(SocketAddr, Pubkey)> {
-        if let Some(req_node) = self.peers.random_peer(&mut self.rng, slot) {
+        if let Some(req_node) =
+            self.peers
+                .random_peer(&mut self.rng, slot, &mut self.peer_sample.borrow_mut())
+        {
             Some(req_node)
         } else {
             log::error!("no repair peers available, unable to send repair request");

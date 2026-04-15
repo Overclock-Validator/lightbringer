@@ -36,10 +36,7 @@ use crate::{
     },
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
-    repair::{
-        peer_manager::{RepairPeers, RepairRequestMapper},
-        socket::start_repair_socket_runner,
-    },
+    repair::socket::start_repair_socket_runner,
     rpc::DebugRpcInit,
     solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
@@ -123,18 +120,16 @@ fn main() {
     let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
     let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
 
-    let repair_peers = RepairPeers::new(cluster_info);
-    let repair_request_mapper = RepairRequestMapper::new(repair_peers, keypair.clone());
-
     threadpool.spawn(
-        enclose!((repair_request_mapper, repair_socket_tx, filter_tx, metrics) move |exit| async {
+        enclose!((cluster_info, keypair, repair_socket_tx, filter_tx, metrics) move |exit| async {
             let repair_manager =
                 RepairManager::new(
                     repair_rx,
                     repair_socket_tx,
                     repair_manager_rx,
                     filter_tx,
-                    repair_request_mapper,
+                    cluster_info,
+                    keypair,
                     metrics,
                 );
             repair_manager.start_repair_manager_loop(exit).await

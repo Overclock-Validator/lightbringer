@@ -1,4 +1,4 @@
-use std::{cell::RefCell, net::SocketAddr, rc::Rc};
+use std::{cell::RefCell, net::SocketAddr, rc::Rc, sync::Arc, time::Instant};
 
 use glommio::{
     Latency, Shares,
@@ -6,7 +6,9 @@ use glommio::{
     executor, spawn_local_into,
 };
 use kanal::{AsyncReceiver, AsyncSender};
+use solana_gossip::cluster_info::ClusterInfo;
 use solana_ledger::shred::{self, ShredFlags, layout};
+use solana_sdk::signature::Keypair;
 
 use crate::{
     metrics::{MetricsSender, points::SlotMeasurement},
@@ -16,6 +18,7 @@ use crate::{
             OutstandingRequest, OutstandingRequestMsg, OutstandingTimerStore,
             start_outstanding_requests_loop,
         },
+        peer_cache::PeerSample,
         peer_manager::RepairRequestMapper,
         repair_nonce,
         socket::RepairSocketRequestBatch,
@@ -44,7 +47,8 @@ pub struct RepairManager {
     send_socket: AsyncSender<RepairSocketRequestBatch>,
     recv_socket: AsyncReceiver<(SocketAddr, PacketInfo)>,
     filter_shred_tx: AsyncSender<PacketInfo>,
-    request_mapper: RepairRequestMapper,
+    cluster_info: Arc<ClusterInfo>,
+    keypair: Arc<Keypair>,
     metrics: MetricsSender,
 }
 
@@ -54,7 +58,8 @@ impl RepairManager {
         send_socket: AsyncSender<RepairSocketRequestBatch>,
         recv_socket: AsyncReceiver<(SocketAddr, PacketInfo)>,
         filter_shred_tx: AsyncSender<PacketInfo>,
-        request_mapper: RepairRequestMapper,
+        cluster_info: Arc<ClusterInfo>,
+        keypair: Arc<Keypair>,
         metrics: MetricsSender,
     ) -> Self {
         Self {
@@ -62,13 +67,14 @@ impl RepairManager {
             send_socket,
             recv_socket,
             filter_shred_tx,
-            request_mapper,
+            cluster_info,
+            keypair,
             metrics,
         }
     }
 
     pub async fn start_repair_manager_loop(self, exit: CancelRx) {
-        let mut mapper = self.request_mapper;
+        let peer_sample = Rc::new(RefCell::new(PeerSample::new()));
 
         let exec = executor();
         let main_task_tq = exec.create_task_queue(
@@ -88,10 +94,15 @@ impl RepairManager {
 
         let outstanding_requests_task = spawn_local_into(
             start_outstanding_requests_loop(
-                mapper.clone(),
+                RepairRequestMapper::new(
+                    self.cluster_info.clone(),
+                    self.keypair.clone(),
+                    peer_sample.clone(),
+                ),
                 outstanding_store.clone(),
                 outstanding_request_tx.clone(),
                 outstanding_request_rx,
+                peer_sample.clone(),
                 self.send_socket.clone(),
             ),
             outstanding_task_tq,
@@ -100,7 +111,11 @@ impl RepairManager {
 
         let request_processor_task = spawn_local_into(
             Self::request_processor_loop(
-                mapper.clone(),
+                RepairRequestMapper::new(
+                    self.cluster_info.clone(),
+                    self.keypair.clone(),
+                    peer_sample.clone(),
+                ),
                 self.req_rx,
                 outstanding_store.clone(),
                 outstanding_request_tx.clone(),
@@ -111,6 +126,8 @@ impl RepairManager {
         )
         .unwrap();
 
+        let mut mapper =
+            RepairRequestMapper::new(self.cluster_info, self.keypair, peer_sample.clone());
         let repair_recv_task = spawn_local_into(
             async move {
                 while let Ok((socket_addr, packet)) = self.recv_socket.recv().await {
@@ -121,13 +138,17 @@ impl RepairManager {
                         continue;
                     };
                     // TODO: add more filters e.g shred should sig verify
-                    let Some((req_kind, req_shred_index)) =
-                        outstanding_store
-                            .borrow_mut()
-                            .remove(slot, nonce, socket_addr)
+                    let Some((req_kind, req_shred_index, sent_at)) = outstanding_store
+                        .borrow_mut()
+                        .remove(slot, nonce, socket_addr)
                     else {
                         continue;
                     };
+
+                    let latency_ms = sent_at.elapsed().as_millis() as f64;
+                    peer_sample
+                        .borrow_mut()
+                        .record_response(socket_addr, latency_ms);
 
                     if req_kind == OutstandingRequestKind::HighestWindowIndex {
                         let res = Self::handle_unbounded_packet_response(
@@ -188,6 +209,7 @@ impl RepairManager {
                     slot: shred_slot,
                     shred: shred_index,
                     socket,
+                    sent_at: Instant::now(),
                 }));
                 Some((socket, shred))
             })
@@ -200,6 +222,7 @@ impl RepairManager {
                         slot: shred_slot,
                         shred: shred_index,
                         socket,
+                        sent_at: Instant::now(),
                     }));
 
                     Some((socket, shred))
@@ -227,6 +250,7 @@ impl RepairManager {
                 slot,
                 shred,
                 socket,
+                sent_at: Instant::now(),
             }));
             Some((socket, packet))
         })
@@ -291,6 +315,7 @@ impl RepairManager {
                                 slot,
                                 shred: max_inclusive_shred,
                                 socket: req_socket,
+                                sent_at: Instant::now(),
                             },
                         ));
 
