@@ -20,3 +20,7 @@ token = "xyz"
 [block_confirmation]
 rpc_http = "http://localhost:8900"
 rpc_websocket = "ws://localhost:8900"
+
+# optional, suppress info/debug log lines (only warnings and errors are emitted)
+[log]
+quiet = false
