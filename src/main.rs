@@ -30,7 +30,7 @@ use turbine_manager::start_turbine_manager;
 
 use crate::{
     block_conf::BlockConfStream,
-    config::{Config, InfluxDbConfig},
+    config::{Config, InfluxDbConfig, LogConfig},
     grpc_slot_stream::shred_source::{
         ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
     },
@@ -48,18 +48,25 @@ fn init_fjall(storage: PathBuf) -> fjall::Result<fjall::Database> {
     builder.open()
 }
 
-fn init_logger() -> Result<(), log::SetLoggerError> {
+/// Install `simple_logger`. Level is `Warn` when `log_cfg.quiet` is true,
+/// otherwise picked by the `debug` Cargo feature (Debug if enabled, Info
+/// otherwise).
+fn init_logger(log_cfg: Option<&LogConfig>) -> Result<(), log::SetLoggerError> {
+    let quiet = log_cfg.map(|c| c.quiet).unwrap_or(false);
+    let level = if quiet {
+        log::LevelFilter::Warn
+    } else {
+        #[cfg(feature = "debug")]
+        {
+            log::LevelFilter::Debug
+        }
+        #[cfg(not(feature = "debug"))]
+        {
+            log::LevelFilter::Info
+        }
+    };
     SimpleLogger::new()
-        .with_level({
-            #[cfg(feature = "debug")]
-            {
-                log::LevelFilter::Debug
-            }
-            #[cfg(not(feature = "debug"))]
-            {
-                log::LevelFilter::Info
-            }
-        })
+        .with_level(level)
         .with_module_level("solana_metrics", log::LevelFilter::Warn)
         .with_module_level("solana_gossip::cluster_info", log::LevelFilter::Warn)
         .init()
@@ -72,7 +79,7 @@ fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
 fn main() {
     let conf = Config::parse();
 
-    init_logger().unwrap();
+    init_logger(conf.log.as_ref()).unwrap();
 
     let lsm_ks = init_fjall(conf.storage).unwrap();
 

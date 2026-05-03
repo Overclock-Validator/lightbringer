@@ -25,6 +25,16 @@ pub struct BlockConfirmationConfig {
     pub rpc_http: Uri,
 }
 
+/// Logger configuration.
+///
+/// When `quiet` is true, only Warn/Error level logs are emitted. Runtime
+/// `quiet = true` overrides the build-time `debug` Cargo feature.
+#[derive(Serialize, Deserialize, Default)]
+pub struct LogConfig {
+    #[serde(default)]
+    pub quiet: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ConfigRaw {
     gossip_entrypoint: Option<String>,
@@ -33,6 +43,7 @@ struct ConfigRaw {
     grpc_addr: String,
     influxdb: Option<InfluxDbConfig>,
     block_confirmation: Option<BlockConfirmationConfig>,
+    log: Option<LogConfig>,
 }
 
 impl Default for ConfigRaw {
@@ -44,6 +55,7 @@ impl Default for ConfigRaw {
             grpc_addr: "127.0.0.1:3001".to_string(),
             influxdb: None,
             block_confirmation: None,
+            log: None,
         }
     }
 }
@@ -55,6 +67,7 @@ pub struct Config {
     pub grpc_addr: SocketAddr,
     pub influxdb: Option<InfluxDbConfig>,
     pub block_confirmation: Option<BlockConfirmationConfig>,
+    pub log: Option<LogConfig>,
 }
 
 impl TryFrom<ConfigRaw> for Config {
@@ -86,6 +99,7 @@ impl TryFrom<ConfigRaw> for Config {
             grpc_addr,
             influxdb: value.influxdb,
             block_confirmation: value.block_confirmation,
+            log: value.log,
         })
     }
 }
@@ -96,7 +110,78 @@ impl Config {
             .merge(Serialized::defaults(ConfigRaw::default()))
             .merge(Toml::file("Lightbringer.toml"))
             .extract()
-            .expect("invalid config file");
+            .expect(
+                "invalid Lightbringer.toml: check syntax and types (e.g. [log] quiet must be bool)",
+            );
         config.try_into().expect("invalid config values")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use figment::providers::{Format, Serialized, Toml};
+
+    fn parse_toml(toml: &str) -> ConfigRaw {
+        Figment::new()
+            .merge(Serialized::defaults(ConfigRaw::default()))
+            .merge(Toml::string(toml))
+            .extract()
+            .expect("toml extract failed")
+    }
+
+    const REQUIRED: &str = r#"
+gossip_entrypoint = "127.0.0.1:8000"
+storage = "/tmp/shred-store"
+rpc_addr = "127.0.0.1:3000"
+grpc_addr = "127.0.0.1:3001"
+"#;
+
+    #[test]
+    fn log_section_absent_yields_none() {
+        let raw = parse_toml(REQUIRED);
+        assert!(raw.log.is_none());
+    }
+
+    #[test]
+    fn log_quiet_true_parses() {
+        let toml = format!("{REQUIRED}\n[log]\nquiet = true\n");
+        let raw = parse_toml(&toml);
+        let log = raw.log.expect("log section");
+        assert!(log.quiet);
+    }
+
+    #[test]
+    fn log_section_without_quiet_field_defaults_false() {
+        let toml = format!("{REQUIRED}\n[log]\n");
+        let raw = parse_toml(&toml);
+        let log = raw.log.expect("log section");
+        assert!(!log.quiet);
+    }
+
+    #[test]
+    fn log_quiet_false_parses() {
+        let toml = format!("{REQUIRED}\n[log]\nquiet = false\n");
+        let raw = parse_toml(&toml);
+        let log = raw.log.expect("log section");
+        assert!(!log.quiet);
+    }
+
+    #[test]
+    fn log_quiet_invalid_type_errors() {
+        let toml = format!("{REQUIRED}\n[log]\nquiet = \"yes\"\n");
+        let result: Result<ConfigRaw, _> = Figment::new()
+            .merge(Serialized::defaults(ConfigRaw::default()))
+            .merge(Toml::string(&toml))
+            .extract();
+        assert!(result.is_err(), "expected parse error for non-bool quiet");
+    }
+
+    #[test]
+    fn config_passes_log_through() {
+        let toml = format!("{REQUIRED}\n[log]\nquiet = true\n");
+        let raw = parse_toml(&toml);
+        let cfg: Config = raw.try_into().expect("validate");
+        assert!(cfg.log.expect("log").quiet);
     }
 }
