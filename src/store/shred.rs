@@ -1,5 +1,14 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
+use fjall::compaction::filter::{
+    CompactionFilter, CompactionFilterResult, Context, Factory, ItemAccessor, Verdict,
+};
 use glommio::{enclose, executor, spawn_local, timer::sleep};
 use kanal::AsyncReceiver;
 use solana_ledger::shred::{self, ShredType};
@@ -8,6 +17,9 @@ use crate::{
     thread_manager::CancelRx,
     types::{PacketInfo, ShredInfoView},
 };
+
+pub const SHRED_KEYSPACE: &str = "shred_store";
+const RETENTION_SLOTS: u64 = 72_000; // ~ 8 hrs
 
 pub struct ShredRes {
     data: Option<ShredInfoView>,
@@ -24,13 +36,56 @@ pub struct SlotRaw {
 pub struct ShredStore {
     db: fjall::Database,
     shred_keyspace: fjall::Keyspace,
+    cutoff_slot: Arc<AtomicU64>,
+}
+
+struct ShredCutoffFilter(u64);
+
+impl CompactionFilter for ShredCutoffFilter {
+    fn filter_item(&mut self, item: ItemAccessor<'_>, _ctx: &Context) -> CompactionFilterResult {
+        let key = item.key();
+        if key.len() < 8 {
+            return Ok(Verdict::Keep);
+        }
+        let slot = u64::from_le_bytes(key[0..8].try_into().unwrap());
+        if slot < self.0 {
+            Ok(Verdict::Destroy)
+        } else {
+            Ok(Verdict::Keep)
+        }
+    }
+}
+
+struct ShredCutoffFactory(Arc<AtomicU64>);
+
+impl Factory for ShredCutoffFactory {
+    fn make_filter(&self, _ctx: &Context) -> Box<dyn CompactionFilter> {
+        Box::new(ShredCutoffFilter(self.0.load(Ordering::Relaxed)))
+    }
+
+    fn name(&self) -> &str {
+        "shred-cutoff"
+    }
+}
+
+pub fn compaction_filter_factories(
+    cutoff_slot: Arc<AtomicU64>,
+) -> Arc<dyn Fn(&str) -> Option<Arc<dyn Factory>> + Send + Sync> {
+    Arc::new(move |keyspace| match keyspace {
+        SHRED_KEYSPACE => Some(Arc::new(ShredCutoffFactory(cutoff_slot.clone()))),
+        _ => None,
+    })
 }
 
 impl ShredStore {
-    pub fn new(db: fjall::Database) -> anyhow::Result<Self> {
-        let shred_keyspace = db.keyspace("shred_store", Default::default)?;
+    pub fn new(db: fjall::Database, cutoff_slot: Arc<AtomicU64>) -> anyhow::Result<Self> {
+        let shred_keyspace = db.keyspace(SHRED_KEYSPACE, Default::default)?;
 
-        Ok(Self { db, shred_keyspace })
+        Ok(Self {
+            db,
+            shred_keyspace,
+            cutoff_slot,
+        })
     }
 
     pub async fn slot_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<SlotRaw>) {
@@ -67,20 +122,10 @@ impl ShredStore {
                         return Ok(());
                     };
 
-                    let cutoff_slot = latest_slot.saturating_sub(72000); // ~ 8 hrs
-                    let keys: Vec<_> = this
-                        .shred_keyspace
-                        .range(..cutoff_slot.to_le_bytes())
-                        .map(|k| k.key())
-                        .collect::<Result<_, _>>()?;
-                    let rm_count = keys.len();
-
-                    let mut batch = this.db.batch();
-                    for k in keys {
-                        batch.remove(&this.shred_keyspace, k);
-                    }
-                    batch.commit()?;
-                    log::info!("cleaned up {rm_count} shreds older than slot {cutoff_slot}");
+                    let cutoff_slot = latest_slot.saturating_sub(RETENTION_SLOTS);
+                    this.cutoff_slot.store(cutoff_slot, Ordering::Relaxed);
+                    this.shred_keyspace.major_compact()?;
+                    log::info!("compacted shreds older than slot {cutoff_slot}");
 
                     Ok(())
                 })

@@ -16,7 +16,10 @@ mod turbine_manager;
 mod types;
 mod util;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use fjall::Database;
 use glommio::enclose;
@@ -42,10 +45,16 @@ use crate::{
     util::std_to_glommio_socket,
 };
 
-fn init_fjall(storage: PathBuf) -> fjall::Result<fjall::Database> {
-    let builder = Database::builder(&storage).cache_size(1024 * 1024 * 1024); // 1 GiB cache
-
-    builder.open()
+fn init_fjall(
+    storage: PathBuf,
+    shred_cutoff_slot: Arc<AtomicU64>,
+) -> fjall::Result<fjall::Database> {
+    Database::builder(&storage)
+        .cache_size(1024 * 1024 * 1024) // 1 GiB cache
+        .with_compaction_filter_factories(store::shred::compaction_filter_factories(
+            shred_cutoff_slot,
+        ))
+        .open()
 }
 
 /// Install `simple_logger`. Level is `Warn` when `log_cfg.quiet` is true,
@@ -81,7 +90,8 @@ fn main() {
 
     init_logger(conf.log.as_ref()).unwrap();
 
-    let lsm_ks = init_fjall(conf.storage).unwrap();
+    let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
+    let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
 
     let keypair = Arc::new(Keypair::new());
 
@@ -154,7 +164,7 @@ fn main() {
     });
 
     // Shred Storage
-    let shred_store = ShredStore::new(lsm_ks).unwrap();
+    let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
     );
