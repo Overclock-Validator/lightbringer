@@ -36,7 +36,7 @@ arrayvec = "0.7.6"
 ctrlc = "3.4.6"
 anyhow = "1.0.98"
 futures = { version = "0.3.31", features = ["write-all-vectored"] }
-fjall = "3.0.1"
+fjall = "3.1.4"
 rkyv = { version = "0.8.10", features = ["arrayvec-0_7"] }
 scc = "3.0.7"
 ohkami = { version = "0.24.1", features = ["rt_glommio"] }

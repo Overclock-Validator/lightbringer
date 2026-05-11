@@ -11,6 +11,8 @@ const TIMEOUT_ASSUMED_LATENCY_MS: f64 = 300.0;
 const REFERENCE_LATENCY_MS: f64 = 100.0;
 const MAX_COMPUTED_SCORE: f64 = 92.0;
 const BASELINE_SCORE: f64 = 50.0;
+const HARD_FILTER_FLOOR: f64 = 1.0;
+const HARD_FILTER_MIN_SAMPLES: u32 = 10;
 
 /// Rolling window statistics using Welford's online algorithm.
 struct RollingStats {
@@ -85,10 +87,12 @@ impl PeerStats {
     ///
     /// Clamped to `[0, 92]`; 100 is reserved as "always select".
     fn update_score(&mut self) {
-        if self.requests_sent > 0
+        if self.requests_sent >= HARD_FILTER_MIN_SAMPLES
             && self.requests_timed_out as f64 / self.requests_sent as f64 > 0.5
         {
-            self.score = 0.0;
+            // Floor at 1.0 instead of 0.0 so the peer can still be selected
+            // occasionally and eventually recover when the window resets.
+            self.score = HARD_FILTER_FLOOR;
             return;
         }
 
@@ -189,7 +193,7 @@ impl PeerSample {
     }
 
     /// Select a peer using weighted random sampling.
-    /// Peers with score 0 are never selected.
+    /// Falls back to uniform random if all scores are zero.
     pub fn select_weighted(
         &self,
         peers: &[(SocketAddr, Pubkey)],
@@ -198,6 +202,7 @@ impl PeerSample {
         peers
             .choose_weighted(rng, |&(addr, _)| self.score(&addr))
             .ok()
+            .or_else(|| peers.choose(rng))
             .copied()
     }
 }
