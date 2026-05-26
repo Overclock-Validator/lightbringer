@@ -4413,6 +4413,7 @@ dependencies = [
  "solana-ledger",
  "solana-net-utils",
  "solana-packet",
+ "solana-quic-definitions",
  "solana-rpc-client-types 3.0.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "solana-sdk",
  "solana-streamer",

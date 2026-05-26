@@ -16,6 +16,10 @@ use crate::{
     types::{PacketInfo, ShredInfoView},
 };
 
+type FinishedSlots = Rc<RefCell<BTreeSet<u64>>>;
+type SlotCache = Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 300>>>;
+type BlockNotification = Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>;
+
 pub struct SlotForGrpc<Shred> {
     pub slot: u64,
     pub shreds: Vec<Shred>,
@@ -58,9 +62,9 @@ impl ShredSource for SlotMetaShreds {
 
 #[derive(Clone, Default)]
 struct SlotShredsWaiter {
-    finished_slots: Rc<RefCell<BTreeSet<u64>>>,
-    slot_cache: Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 300>>>,
-    block_notif: Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>,
+    finished_slots: FinishedSlots,
+    slot_cache: SlotCache,
+    block_notif: BlockNotification,
 }
 
 impl SlotShredsWaiter {

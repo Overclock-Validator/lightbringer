@@ -141,9 +141,9 @@ pub struct SlotMetadataStore {
 }
 
 enum SlotTimerMsg {
-    ShredInsertion { slot: u64 },
-    ShredCompletion { slot: u64 },
-    ShredTimeout { slot: u64 },
+    Insertion { slot: u64 },
+    Completion { slot: u64 },
+    Timeout { slot: u64 },
 }
 
 impl SlotMetadataStore {
@@ -190,12 +190,12 @@ impl SlotMetadataStore {
                 let timer_msg = match store_res {
                     SlotMetaStoreRes::Ignored => continue,
                     SlotMetaStoreRes::Complete(raw_slot) => {
-                        _ = timer_tx.try_send(SlotTimerMsg::ShredCompletion { slot });
+                        _ = timer_tx.try_send(SlotTimerMsg::Completion { slot });
                         _ = store_tx.send(raw_slot.clone()).await;
                         _ = grpc_tx.send(raw_slot).await;
                         continue;
                     }
-                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
+                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::Insertion { slot },
                 };
                 _ = timer_tx.try_send(timer_msg);
             }
@@ -206,7 +206,7 @@ impl SlotMetadataStore {
             let mut timers: HashMap<u64, TimerActionOnce<()>> = HashMap::new();
             while let Some(msg) = timer_rx.recv().await {
                 match msg {
-                    SlotTimerMsg::ShredInsertion { slot } => {
+                    SlotTimerMsg::Insertion { slot } => {
                         timers
                             .entry(slot)
                             .and_modify(|timer| {
@@ -215,11 +215,11 @@ impl SlotMetadataStore {
                             .or_insert_with(|| {
                                 let timer_tx = timer_tx.clone();
                                 TimerActionOnce::do_in(DEFER_REPAIR_THRESHOLD, async move {
-                                    _ = timer_tx.send(SlotTimerMsg::ShredTimeout { slot }).await;
+                                    _ = timer_tx.send(SlotTimerMsg::Timeout { slot }).await;
                                 })
                             });
                     }
-                    SlotTimerMsg::ShredCompletion { slot } => {
+                    SlotTimerMsg::Completion { slot } => {
                         if let Some(timer) = timers.remove(&slot) {
                             timer.destroy();
                         }
@@ -234,7 +234,7 @@ impl SlotMetadataStore {
                             _ = repair_tx.send(RepairReq::CancelRepair { slot }).await;
                         }
                     }
-                    SlotTimerMsg::ShredTimeout { slot } => {
+                    SlotTimerMsg::Timeout { slot } => {
                         timers.remove(&slot);
                         let Some(mut slot_meta) = self.inner.get_sync(&slot) else {
                             continue;

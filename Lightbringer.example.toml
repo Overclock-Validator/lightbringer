@@ -1,5 +1,5 @@
 # entrypoint to solana gossip (must be a remote addr)
-gossip_entrypoint = "177.177.177.177:8000"
+gossip_entrypoint = "203.0.113.10:8000"
 
 # folder for storing shreds (optional, default = "./shred-store")
 storage = "./shred-store"
@@ -10,11 +10,16 @@ rpc_addr = "127.0.0.1:3000"
 # gRPC slot stream (optional, default = "127.0.0.1:3001")
 grpc_addr = "127.0.0.1:3001"
 
+[gossip]
+gossip_port = 65400
+port_range_start = 65401
+port_range_end = 65500
+
 # optional, fallback to mock metrics if not set
 [influxdb]
 host = "http://localhost:8181"
-database = "test"
-token = "xyz"
+database = "lightbringer"
+token = "replace-with-influxdb-token"
 
 # optional, grpc streams confirmed blocks if set
 [block_confirmation]

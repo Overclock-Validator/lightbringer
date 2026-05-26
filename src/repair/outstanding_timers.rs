@@ -63,20 +63,26 @@ pub struct OutstandingTimerStore(
     BTreeMap<RepairKeyRaw, (OutstandingRequestKind, u32, TimerActionOnce<()>, Instant)>,
 );
 
+struct OutstandingTimer {
+    kind: OutstandingRequestKind,
+    nonce: Nonce,
+    slot: u64,
+    shred_index: u32,
+    socket: SocketAddr,
+    sent_at: Instant,
+    timer: TimerActionOnce<()>,
+}
+
 impl OutstandingTimerStore {
-    pub fn insert(
-        &mut self,
-        slot: u64,
-        nonce: Nonce,
-        socket: SocketAddr,
-        req_type: OutstandingRequestKind,
-        shred_index: u32,
-        timer: TimerActionOnce<()>,
-        sent_at: Instant,
-    ) {
+    fn insert(&mut self, request: OutstandingTimer) {
         self.0.insert(
-            repair_key(slot, nonce, socket),
-            (req_type, shred_index, timer, sent_at),
+            repair_key(request.slot, request.nonce, request.socket),
+            (
+                request.kind,
+                request.shred_index,
+                request.timer,
+                request.sent_at,
+            ),
         );
     }
 
@@ -130,20 +136,20 @@ pub async fn start_outstanding_requests_loop(
                 let sent_at = req.sent_at;
                 let (slot, nonce, socket, kind, shred) =
                     (req.slot, req.nonce, req.socket, req.kind, req.shred);
-                outstanding_timers.borrow_mut().insert(
+                outstanding_timers.borrow_mut().insert(OutstandingTimer {
                     slot,
                     nonce,
                     socket,
                     kind,
-                    shred,
-                    TimerActionOnce::do_in(
+                    shred_index: shred,
+                    timer: TimerActionOnce::do_in(
                         REPAIR_REQUEST_TIMEOUT,
                         enclose!((outstanding_tx) async move {
                             _ = outstanding_tx.try_send(OutstandingRequestMsg::Timeout(req));
                         }),
                     ),
                     sent_at,
-                );
+                });
             }
             OutstandingRequestMsg::Timeout(mut req) => {
                 let removed = outstanding_timers
@@ -176,20 +182,20 @@ pub async fn start_outstanding_requests_loop(
                 let sent_at = req.sent_at;
                 let (slot, nonce, socket, kind, shred) =
                     (req.slot, req.nonce, req.socket, req.kind, req.shred);
-                outstanding_timers.borrow_mut().insert(
+                outstanding_timers.borrow_mut().insert(OutstandingTimer {
                     slot,
                     nonce,
                     socket,
                     kind,
-                    shred,
-                    TimerActionOnce::do_in(
+                    shred_index: shred,
+                    timer: TimerActionOnce::do_in(
                         REPAIR_REQUEST_TIMEOUT,
                         enclose!((outstanding_tx) async move {
                             _ = outstanding_tx.try_send(OutstandingRequestMsg::Timeout(req));
                         }),
                     ),
                     sent_at,
-                );
+                });
             }
         }
     }
