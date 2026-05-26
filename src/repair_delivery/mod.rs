@@ -4,7 +4,7 @@ use bincode::Options;
 use glommio::{net::UdpSocket, spawn_local};
 use solana_core::repair::serve_repair::{REPAIR_RESPONSE_SERIALIZED_PING_BYTES, RepairResponse};
 use solana_gossip::{cluster_info::ClusterInfo, ping_pong::Pong};
-use solana_ledger::shred::{Nonce, SIZE_OF_NONCE, ShredType};
+use solana_ledger::shred::{Nonce, SIZE_OF_NONCE};
 use solana_packet::PACKET_DATA_SIZE;
 use solana_sdk::{
     pubkey::Pubkey,
@@ -267,7 +267,7 @@ pub async fn start_serve_repair(
                         report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                         continue;
                     }
-                    match shred_store.get_shred(slot, shred_index, ShredType::Data) {
+                    match shred_store.get_shred(slot, shred_index) {
                         Ok(Some(shred_data)) => {
                             if let Some(response) = build_shred_response(&shred_data, header.nonce)
                             {
@@ -297,7 +297,7 @@ pub async fn start_serve_repair(
                         report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                         continue;
                     }
-                    match shred_store.get_first_data_shred_from(slot, shred_index) {
+                    match shred_store.get_highest_data_shred_from(slot, shred_index) {
                         Ok(Some(shred_data)) => {
                             if let Some(response) = build_shred_response(&shred_data, header.nonce)
                             {

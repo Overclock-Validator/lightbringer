@@ -11,7 +11,7 @@ use fjall::compaction::filter::{
 };
 use glommio::{enclose, executor, spawn_local, timer::sleep};
 use kanal::AsyncReceiver;
-use solana_ledger::shred::{self, ShredType};
+use solana_ledger::shred::{self, ReedSolomonCache, Shred};
 
 use solana_gossip::cluster_info::ClusterInfo;
 
@@ -23,15 +23,13 @@ use crate::{
 pub const SHRED_KEYSPACE: &str = "shred_store";
 const RETENTION_SLOTS: u64 = 72_000; // ~ 8 hrs
 
-/// Key layout (13 bytes, all big-endian for lexicographic ordering):
+/// Key layout (12 bytes, all big-endian for lexicographic ordering):
 ///   [0..8]  slot      (u64 BE)
 ///   [8..12] shred_idx (u32 BE)
-///   [12]    shred_type (0x5A = Code, 0xA5 = Data)
-fn make_key(slot: u64, shred_index: u32, shred_type: ShredType) -> [u8; 13] {
-    let mut key = [0u8; 13];
+fn make_key(slot: u64, shred_index: u32) -> [u8; 12] {
+    let mut key = [0u8; 12];
     key[0..8].copy_from_slice(&slot.to_be_bytes());
     key[8..12].copy_from_slice(&shred_index.to_be_bytes());
-    key[12] = shred_type as u8;
     key
 }
 
@@ -164,19 +162,41 @@ impl ShredStore {
     }
 
     fn store_batch(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {
+        let rs_cache = ReedSolomonCache::default();
+
+        let mut deserialized = Vec::with_capacity(shreds.len());
+        let mut data_count = 0usize;
+        for raw in &shreds {
+            let s = Shred::new_from_serialized_shred(raw.to_vec())
+                .map_err(|e| anyhow::anyhow!("invalid shred: {e}"))?;
+            if s.is_data() {
+                data_count += 1;
+            }
+            deserialized.push(s);
+        }
+
+        // recover missing data shreds from coding shreds
+        if data_count < 32
+            && let Ok(recovered) = shred::recover(deserialized.clone(), &rs_cache)
+        {
+            for r in recovered.into_iter().flatten() {
+                if r.is_data()
+                    && !deserialized
+                        .iter()
+                        .any(|s| s.is_data() && s.index() == r.index())
+                {
+                    deserialized.push(r);
+                }
+            }
+        }
+
         let mut batch = self.db.batch();
-        for shred in shreds {
-            let shred_info = shred::layout::get_shred_id(&shred)
-                .expect("received invalid shred from slot meta?!");
-            let key = make_key(
-                slot,
-                shred_info.index(),
-                match shred_info.shred_type() {
-                    shred::ShredType::Data => ShredType::Data,
-                    shred::ShredType::Code => ShredType::Code,
-                },
-            );
-            batch.insert(&self.shred_keyspace, key, shred.as_slice());
+        for s in &deserialized {
+            if !s.is_data() {
+                continue;
+            }
+            let key = make_key(slot, s.index());
+            batch.insert(&self.shred_keyspace, key, s.payload().as_ref());
         }
         batch.commit()?;
         self.db.persist(fjall::PersistMode::SyncAll)?;
@@ -185,24 +205,19 @@ impl ShredStore {
         Ok(())
     }
 
-    pub fn get_shred(
-        &self,
-        slot: u64,
-        shred_index: u64,
-        shred_type: ShredType,
-    ) -> fjall::Result<Option<ShredInfoView>> {
-        let key = make_key(slot, shred_index as u32, shred_type);
+    pub fn get_shred(&self, slot: u64, shred_index: u64) -> fjall::Result<Option<ShredInfoView>> {
+        let key = make_key(slot, shred_index as u32);
         self.shred_keyspace.get(key)
     }
 
-    /// Get the first data shred with index >= `min_index` for a slot.
-    pub fn get_first_data_shred_from(
+    /// Get the data shred with the highest index >= `min_index` for a slot.
+    pub fn get_highest_data_shred_from(
         &self,
         slot: u64,
         min_index: u64,
     ) -> fjall::Result<Option<ShredInfoView>> {
-        let start = make_key(slot, min_index as u32, ShredType::Data);
-        let end = make_key(slot, u32::MAX, ShredType::Data);
+        let start = make_key(slot, min_index as u32);
+        let end = make_key(slot, u32::MAX);
 
         match self.shred_keyspace.range(start..=end).next_back() {
             Some(entry) => Ok(Some(entry.value()?)),
