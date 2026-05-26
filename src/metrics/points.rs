@@ -69,6 +69,31 @@ impl DataPoint for SlotMeasurement {
     }
 }
 
+#[derive(InfluxDbWriteable)]
+pub struct ServeRepairMeasurement {
+    time: Timestamp,
+    requests_served: u64,
+    requests_dropped: u64,
+    requests_rate_limited: u64,
+}
+
+impl ServeRepairMeasurement {
+    pub fn new(requests_served: u64, requests_dropped: u64, requests_rate_limited: u64) -> Self {
+        Self {
+            time: now(),
+            requests_served,
+            requests_dropped,
+            requests_rate_limited,
+        }
+    }
+}
+
+impl DataPoint for ServeRepairMeasurement {
+    fn measurement() -> &'static str {
+        "serve_repair"
+    }
+}
+
 const PAGE_SIZE: u64 = 4096; // x86_64 Linux
 
 #[derive(InfluxDbWriteable)]

@@ -8,6 +8,7 @@ mod leader_schedule;
 mod metrics;
 mod packet_filter;
 mod repair;
+mod repair_delivery;
 mod rpc;
 mod solana_rpc;
 mod store;
@@ -40,6 +41,7 @@ use crate::{
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
     repair::socket::start_repair_socket_runner,
+    repair_delivery::start_serve_repair,
     rpc::DebugRpcInit,
     solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
@@ -98,7 +100,7 @@ fn main() {
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<7>::new();
+    let mut threadpool = ThreadManager::<8>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -152,6 +154,8 @@ fn main() {
             repair_manager.start_repair_manager_loop(exit).await
         }),
     );
+    let serve_repair_keypair = keypair.clone();
+    let serve_repair_socket = sockets.serve_repair_socket;
     threadpool.spawn(move |exit| async move {
         start_repair_socket_runner(
             exit,
@@ -164,9 +168,28 @@ fn main() {
     });
 
     // Shred Storage
-    let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot).unwrap();
+    let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot, cluster_info.clone()).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
+    );
+
+    // Serve Repair
+    let my_serve_repair_addr = my_contact_info
+        .serve_repair(solana_gossip::contact_info::Protocol::UDP)
+        .unwrap();
+    log::info!("serve_repair: {my_serve_repair_addr:?}");
+    threadpool.spawn(
+        enclose!((shred_store, cluster_info, metrics) move |exit| async move {
+            start_serve_repair(
+                exit,
+                serve_repair_keypair,
+                std_to_glommio_socket(serve_repair_socket),
+                shred_store,
+                cluster_info,
+                metrics,
+            )
+            .await
+        }),
     );
 
     let slot_meta_store = SlotMetadataStore::new(version);

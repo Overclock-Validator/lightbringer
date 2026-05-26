@@ -27,6 +27,7 @@ pub struct GossipManager {
 
 pub struct Sockets {
     pub repair_socket: std::net::UdpSocket,
+    pub serve_repair_socket: std::net::UdpSocket,
 }
 
 impl GossipManager {
@@ -80,6 +81,7 @@ impl GossipManager {
             },
             Sockets {
                 repair_socket: node.sockets.repair,
+                serve_repair_socket: node.sockets.serve_repair,
             },
         ))
     }

@@ -13,6 +13,8 @@ use glommio::{enclose, executor, spawn_local, timer::sleep};
 use kanal::AsyncReceiver;
 use solana_ledger::shred::{self, ShredType};
 
+use solana_gossip::cluster_info::ClusterInfo;
+
 use crate::{
     thread_manager::CancelRx,
     types::{PacketInfo, ShredInfoView},
@@ -37,6 +39,7 @@ pub struct ShredStore {
     db: fjall::Database,
     shred_keyspace: fjall::Keyspace,
     cutoff_slot: Arc<AtomicU64>,
+    cluster_info: Arc<ClusterInfo>,
 }
 
 struct ShredCutoffFilter(u64);
@@ -78,13 +81,18 @@ pub fn compaction_filter_factories(
 }
 
 impl ShredStore {
-    pub fn new(db: fjall::Database, cutoff_slot: Arc<AtomicU64>) -> anyhow::Result<Self> {
+    pub fn new(
+        db: fjall::Database,
+        cutoff_slot: Arc<AtomicU64>,
+        cluster_info: Arc<ClusterInfo>,
+    ) -> anyhow::Result<Self> {
         let shred_keyspace = db.keyspace(SHRED_KEYSPACE, Default::default)?;
 
         Ok(Self {
             db,
             shred_keyspace,
             cutoff_slot,
+            cluster_info,
         })
     }
 
@@ -153,8 +161,22 @@ impl ShredStore {
         }
         batch.commit()?;
         self.db.persist(fjall::PersistMode::SyncAll)?;
+        self.cluster_info.push_lowest_slot(slot);
 
         Ok(())
+    }
+
+    pub fn get_shred(
+        &self,
+        slot: u64,
+        shred_index: u64,
+        shred_type: ShredType,
+    ) -> fjall::Result<Option<ShredInfoView>> {
+        let mut key = [0; 13];
+        key[0..8].copy_from_slice(&slot.to_le_bytes());
+        key[8..12].copy_from_slice(&(shred_index as u32).to_le_bytes());
+        key[12] = shred_type as u8;
+        self.shred_keyspace.get(key)
     }
 
     pub fn get_slot_shreds(&self, slot: u64) -> fjall::Result<Vec<ShredInfoView>> {
