@@ -34,6 +34,7 @@ case "$token" in
   apiv3_*) ;;
   *) error "InfluxDB token must start with apiv3_" ;;
 esac
+export INFLUXDB3_AUTH_TOKEN="$token"
 
 database="${INFLUXDB_DATABASE:-lightbringer}"
 case "$database" in
@@ -86,7 +87,6 @@ if [ -n "$retention_period" ]; then
     "Failed to create InfluxDB database $database" \
     influxdb3 create database \
       --host "$influxdb_url" \
-      --token "$token" \
       --retention-period "$retention_period" \
       "$database"
 else
@@ -96,7 +96,6 @@ else
     "Failed to create InfluxDB database $database" \
     influxdb3 create database \
       --host "$influxdb_url" \
-      --token "$token" \
       "$database"
 fi
 
@@ -106,7 +105,6 @@ run_create \
   'Failed to create InfluxDB table slot' \
   influxdb3 create table \
     --host "$influxdb_url" \
-    --token "$token" \
     --database "$database" \
     --tags kind \
     --fields slot:int64 \
@@ -118,7 +116,6 @@ run_create \
   'Failed to create InfluxDB table memory' \
   influxdb3 create table \
     --host "$influxdb_url" \
-    --token "$token" \
     --database "$database" \
     --fields rss_bytes:int64,virtual_bytes:int64 \
     memory

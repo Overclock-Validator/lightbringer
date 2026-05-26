@@ -16,7 +16,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "token=$$(sed -n 's/.*\"token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' /run/secrets/influxdb-admin-token | head -n 1); [ -n \"$$token\" ] && influxdb3 show databases --host http://127.0.0.1:8181 --token \"$$token\" >/dev/null",
+          "token=$$(sed -n 's/.*\"token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' /run/secrets/influxdb-admin-token | head -n 1); [ -n \"$$token\" ] && INFLUXDB3_AUTH_TOKEN=\"$$token\" influxdb3 show databases --host http://127.0.0.1:8181 >/dev/null",
         ]
       interval: 10s
       timeout: 5s
