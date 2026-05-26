@@ -297,31 +297,19 @@ pub async fn start_serve_repair(
                         report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                         continue;
                     }
-                    match shred_store.get_slot_shreds(slot) {
-                        Ok(shreds) => {
-                            let mut sent = false;
-                            for shred_data in &shreds {
-                                if let Some(idx) =
-                                    solana_ledger::shred::layout::get_index(shred_data)
-                                    && u64::from(idx) >= shred_index
-                                    && let Some(response) =
-                                        build_shred_response(shred_data, header.nonce)
-                                {
-                                    if let Err(e) = socket.send_to(&response, from_addr).await {
-                                        log::warn!(
-                                            "serve_repair: send HighestWindowIndex failed: {e}"
-                                        );
-                                    }
-                                    sent = true;
-                                    break;
+                    match shred_store.get_first_data_shred_from(slot, shred_index) {
+                        Ok(Some(shred_data)) => {
+                            if let Some(response) = build_shred_response(&shred_data, header.nonce)
+                            {
+                                if let Err(e) = socket.send_to(&response, from_addr).await {
+                                    log::warn!("serve_repair: send HighestWindowIndex failed: {e}");
                                 }
-                            }
-                            if sent {
                                 stats.served += 1;
                             } else {
-                                stats.drop_not_found += 1;
+                                stats.drop_oversized += 1;
                             }
                         }
+                        Ok(None) => stats.drop_not_found += 1,
                         Err(e) => {
                             log::warn!("serve_repair: fjall lookup error: {e}");
                             stats.drop_fjall_error += 1;

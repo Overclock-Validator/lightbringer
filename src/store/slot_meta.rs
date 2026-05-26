@@ -302,11 +302,11 @@ impl SlotMetadataStore {
         // always learn required_batches before any early returns
         if let ShredType::Data = ShredType::from(hdr.shred_variant)
             && let Ok(flags) = shred::layout::get_flags(&shred)
-                && flags.contains(ShredFlags::LAST_SHRED_IN_SLOT) {
-                    m.required_batches = Some(
-                        (fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET,
-                    );
-                }
+            && flags.contains(ShredFlags::LAST_SHRED_IN_SLOT)
+        {
+            m.required_batches =
+                Some((fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET);
+        }
 
         // batch already completed - only check if this retroactively completed the slot
         if m.completed_batches.contains(&fec_index) {

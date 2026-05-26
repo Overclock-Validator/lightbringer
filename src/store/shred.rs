@@ -23,9 +23,21 @@ use crate::{
 pub const SHRED_KEYSPACE: &str = "shred_store";
 const RETENTION_SLOTS: u64 = 72_000; // ~ 8 hrs
 
-pub struct ShredRes {
-    data: Option<ShredInfoView>,
-    code: Option<ShredInfoView>,
+/// Key layout (13 bytes, all big-endian for lexicographic ordering):
+///   [0..8]  slot      (u64 BE)
+///   [8..12] shred_idx (u32 BE)
+///   [12]    shred_type (0x5A = Code, 0xA5 = Data)
+fn make_key(slot: u64, shred_index: u32, shred_type: ShredType) -> [u8; 13] {
+    let mut key = [0u8; 13];
+    key[0..8].copy_from_slice(&slot.to_be_bytes());
+    key[8..12].copy_from_slice(&shred_index.to_be_bytes());
+    key[12] = shred_type as u8;
+    key
+}
+
+fn slot_from_key(key: &[u8]) -> Option<u64> {
+    let bytes: [u8; 8] = key.get(0..8)?.try_into().ok()?;
+    Some(u64::from_be_bytes(bytes))
 }
 
 #[derive(Clone)]
@@ -53,10 +65,9 @@ struct ShredCutoffFilter(u64);
 impl CompactionFilter for ShredCutoffFilter {
     fn filter_item(&mut self, item: ItemAccessor<'_>, _ctx: &Context) -> CompactionFilterResult {
         let key = item.key();
-        if key.len() < 8 {
+        let Some(slot) = slot_from_key(key) else {
             return Ok(Verdict::Keep);
-        }
-        let slot = u64::from_le_bytes(key[0..8].try_into().unwrap());
+        };
         if slot < self.0 {
             Ok(Verdict::Destroy)
         } else {
@@ -130,9 +141,11 @@ impl ShredStore {
             let this = self.clone();
             let res = executor
                 .spawn_blocking(move || -> anyhow::Result<()> {
-                    let Some(latest_slot) = this.shred_keyspace.last_key_value().and_then(|g| {
-                        Some(u64::from_le_bytes(g.key().ok()?[0..8].try_into().unwrap()))
-                    }) else {
+                    let Some(latest_slot) = this
+                        .shred_keyspace
+                        .last_key_value()
+                        .and_then(|g| slot_from_key(&g.key().ok()?))
+                    else {
                         return Ok(());
                     };
 
@@ -155,14 +168,14 @@ impl ShredStore {
         for shred in shreds {
             let shred_info = shred::layout::get_shred_id(&shred)
                 .expect("received invalid shred from slot meta?!");
-            let mut key = [0; 13];
-            key[0..8].copy_from_slice(&slot.to_le_bytes());
-
-            key[8..12].copy_from_slice(&shred_info.index().to_le_bytes());
-            key[12] = match shred_info.shred_type() {
-                shred::ShredType::Data => ShredType::Data,
-                shred::ShredType::Code => ShredType::Code,
-            } as u8;
+            let key = make_key(
+                slot,
+                shred_info.index(),
+                match shred_info.shred_type() {
+                    shred::ShredType::Data => ShredType::Data,
+                    shred::ShredType::Code => ShredType::Code,
+                },
+            );
             batch.insert(&self.shred_keyspace, key, shred.as_slice());
         }
         batch.commit()?;
@@ -178,20 +191,31 @@ impl ShredStore {
         shred_index: u64,
         shred_type: ShredType,
     ) -> fjall::Result<Option<ShredInfoView>> {
-        let mut key = [0; 13];
-        key[0..8].copy_from_slice(&slot.to_le_bytes());
-        key[8..12].copy_from_slice(&(shred_index as u32).to_le_bytes());
-        key[12] = shred_type as u8;
+        let key = make_key(slot, shred_index as u32, shred_type);
         self.shred_keyspace.get(key)
     }
 
+    /// Get the first data shred with index >= `min_index` for a slot.
+    pub fn get_first_data_shred_from(
+        &self,
+        slot: u64,
+        min_index: u64,
+    ) -> fjall::Result<Option<ShredInfoView>> {
+        let start = make_key(slot, min_index as u32, ShredType::Data);
+        let end = make_key(slot, u32::MAX, ShredType::Data);
+
+        match self.shred_keyspace.range(start..=end).next_back() {
+            Some(entry) => Ok(Some(entry.value()?)),
+            None => Ok(None),
+        }
+    }
+
     pub fn get_slot_shreds(&self, slot: u64) -> fjall::Result<Vec<ShredInfoView>> {
-        let mut shred_prefix = [0; 8];
-        shred_prefix[0..8].copy_from_slice(&slot.to_le_bytes());
+        let prefix = slot.to_be_bytes();
 
         let res = self
             .shred_keyspace
-            .prefix(shred_prefix)
+            .prefix(prefix)
             .map(|shred_res| shred_res.value())
             .collect::<fjall::Result<_>>()?;
 
