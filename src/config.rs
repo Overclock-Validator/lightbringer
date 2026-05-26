@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    fs,
+    net::{SocketAddr, ToSocketAddrs},
+    path::{Path, PathBuf},
+};
 
 use anyhow::anyhow;
 use figment::{
@@ -12,10 +16,83 @@ use solana_net_utils::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH;
 use solana_quic_definitions::QUIC_PORT_OFFSET;
 
 #[derive(Serialize, Deserialize)]
+struct InfluxDbConfigRaw {
+    pub host: String,
+    pub database: String,
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
+}
+
 pub struct InfluxDbConfig {
     pub host: String,
     pub database: String,
     pub token: String,
+}
+
+#[derive(Deserialize)]
+struct InfluxDbTokenFile {
+    token: String,
+}
+
+fn read_influxdb_token_file(path: &Path) -> anyhow::Result<String> {
+    let contents = fs::read_to_string(path).map_err(|e| {
+        anyhow!(
+            "failed to read `influxdb.token_file` {}: {e}",
+            path.display()
+        )
+    })?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("`influxdb.token_file` {} is empty", path.display()));
+    }
+    if trimmed.starts_with('{') {
+        let token_file: InfluxDbTokenFile = serde_json::from_str(trimmed).map_err(|e| {
+            anyhow!(
+                "failed to parse `influxdb.token_file` {} as JSON: {e}",
+                path.display()
+            )
+        })?;
+        let token = token_file.token.trim();
+        if token.is_empty() {
+            return Err(anyhow!(
+                "`influxdb.token_file` {} does not contain a token",
+                path.display()
+            ));
+        }
+        Ok(token.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+impl TryFrom<InfluxDbConfigRaw> for InfluxDbConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(value: InfluxDbConfigRaw) -> Result<Self, Self::Error> {
+        let token = match (value.token, value.token_file) {
+            (Some(_), Some(_)) => {
+                return Err(anyhow!(
+                    "set only one of `influxdb.token` or `influxdb.token_file`"
+                ));
+            }
+            (Some(token), None) if token.trim().is_empty() => {
+                return Err(anyhow!("`influxdb.token` must not be empty"));
+            }
+            (Some(token), None) => token.trim().to_string(),
+            (None, Some(token_file)) => read_influxdb_token_file(&token_file)?,
+            (None, None) => {
+                return Err(anyhow!(
+                    "set one of `influxdb.token` or `influxdb.token_file`"
+                ));
+            }
+        };
+
+        Ok(Self {
+            host: value.host,
+            database: value.database,
+            token,
+        })
+    }
 }
 
 #[serde_as]
@@ -83,7 +160,7 @@ struct ConfigRaw {
     grpc_addr: String,
     #[serde(default)]
     gossip: GossipConfig,
-    influxdb: Option<InfluxDbConfig>,
+    influxdb: Option<InfluxDbConfigRaw>,
     block_confirmation: Option<BlockConfirmationConfig>,
     log: Option<LogConfig>,
 }
@@ -118,11 +195,14 @@ impl TryFrom<ConfigRaw> for Config {
     type Error = anyhow::Error;
 
     fn try_from(value: ConfigRaw) -> Result<Self, Self::Error> {
-        let gossip_entrypoint: SocketAddr = value
+        let gossip_entrypoint_raw = value
             .gossip_entrypoint
-            .ok_or_else(|| anyhow!("`gossip_entrypoint` must be specified in config"))?
-            .parse()
-            .map_err(|e| anyhow!("invalid `gossip_entrypoint`: {e}"))?;
+            .ok_or_else(|| anyhow!("`gossip_entrypoint` must be specified in config"))?;
+        let gossip_entrypoint: SocketAddr = gossip_entrypoint_raw
+            .to_socket_addrs()
+            .map_err(|e| anyhow!("invalid `gossip_entrypoint`: {e}"))?
+            .find(SocketAddr::is_ipv4)
+            .ok_or_else(|| anyhow!("`gossip_entrypoint` did not resolve to an IPv4 address"))?;
 
         let storage = PathBuf::from(value.storage);
 
@@ -175,13 +255,15 @@ impl TryFrom<ConfigRaw> for Config {
             ));
         }
 
+        let influxdb = value.influxdb.map(InfluxDbConfig::try_from).transpose()?;
+
         Ok(Self {
             gossip_entrypoint,
             storage,
             rpc_addr,
             grpc_addr,
             gossip: value.gossip,
-            influxdb: value.influxdb,
+            influxdb,
             block_confirmation: value.block_confirmation,
             log: value.log,
         })
@@ -205,6 +287,10 @@ impl Config {
 mod tests {
     use super::*;
     use figment::providers::{Format, Serialized, Toml};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn parse_toml(toml: &str) -> ConfigRaw {
         Figment::new()
@@ -220,6 +306,21 @@ storage = "/tmp/shred-store"
 rpc_addr = "127.0.0.1:3000"
 grpc_addr = "127.0.0.1:3001"
 "#;
+
+    fn temp_token_file(contents: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "lightbringer-influxdb-token-{}-{nanos}-{suffix}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("write token file");
+        path
+    }
 
     #[test]
     fn log_section_absent_yields_none() {
@@ -335,5 +436,43 @@ grpc_addr = "127.0.0.1:3001"
         let raw = parse_toml(&toml);
         let result: Result<Config, _> = raw.try_into();
         assert!(result.is_err(), "expected overlapping gossip port to fail");
+    }
+
+    #[test]
+    fn gossip_entrypoint_hostname_resolves_to_ipv4() {
+        let toml = REQUIRED.replace("127.0.0.1:8000", "localhost:8000");
+        let raw = parse_toml(&toml);
+        let cfg: Config = raw.try_into().expect("validate");
+        assert!(cfg.gossip_entrypoint.is_ipv4());
+        assert_eq!(cfg.gossip_entrypoint.port(), 8000);
+    }
+
+    #[test]
+    fn influxdb_token_file_json_parses() {
+        let token_file = temp_token_file(r#"{"token":"apiv3_test-token"}"#);
+        let toml = format!(
+            "{REQUIRED}\n[influxdb]\nhost = \"http://127.0.0.1:18181\"\ndatabase = \"lightbringer\"\ntoken_file = \"{}\"\n",
+            token_file.display()
+        );
+        let raw = parse_toml(&toml);
+        let cfg: Config = raw.try_into().expect("validate");
+        std::fs::remove_file(token_file).ok();
+        assert_eq!(cfg.influxdb.expect("influxdb").token, "apiv3_test-token");
+    }
+
+    #[test]
+    fn influxdb_rejects_token_and_token_file_together() {
+        let token_file = temp_token_file(r#"{"token":"apiv3_test-token"}"#);
+        let toml = format!(
+            "{REQUIRED}\n[influxdb]\nhost = \"http://127.0.0.1:18181\"\ndatabase = \"lightbringer\"\ntoken = \"apiv3_inline\"\ntoken_file = \"{}\"\n",
+            token_file.display()
+        );
+        let raw = parse_toml(&toml);
+        let result: Result<Config, _> = raw.try_into();
+        std::fs::remove_file(token_file).ok();
+        assert!(
+            result.is_err(),
+            "expected inline token and token_file to fail"
+        );
     }
 }

@@ -38,7 +38,6 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
-      jq \
       libgcc-s1 \
       libnghttp2-14 \
       libssl3 \
@@ -52,11 +51,8 @@ RUN useradd --system --create-home --home-dir /var/lib/lightbringer --shell /usr
     && chown -R lightbringer:lightbringer /var/lib/lightbringer
 
 COPY --from=builder /usr/src/lightbringer/target/release/lightbringer /usr/local/bin/lightbringer
-COPY docker/lightbringer/entrypoint.sh /usr/local/bin/lightbringer-entrypoint
-
-RUN chmod +x /usr/local/bin/lightbringer-entrypoint
 
 USER lightbringer
 WORKDIR /var/lib/lightbringer
 
-ENTRYPOINT ["lightbringer-entrypoint"]
+ENTRYPOINT ["lightbringer"]

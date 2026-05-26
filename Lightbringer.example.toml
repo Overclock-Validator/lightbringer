@@ -17,9 +17,9 @@ port_range_end = 65500
 
 # optional, fallback to mock metrics if not set
 [influxdb]
-host = "http://localhost:8181"
+host = "http://127.0.0.1:18181"
 database = "lightbringer"
-token = "replace-with-influxdb-token"
+token_file = "/run/secrets/influxdb-admin-token"
 
 # optional, grpc streams confirmed blocks if set
 [block_confirmation]

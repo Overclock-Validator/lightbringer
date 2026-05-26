@@ -23,6 +23,7 @@ An init container creates the configured InfluxDB database and the `slot` and `m
 
 - `docker-compose.yml`: InfluxDB, Grafana, and optional Lightbringer service.
 - `Dockerfile`: Linux runtime image for Lightbringer.
+- `Lightbringer.example.toml`: template for the local `Lightbringer.toml` runtime config.
 - `docker/influxdb/init-database.sh`: idempotent InfluxDB database and table creation.
 - `docker/grafana/provisioning`: Grafana datasource and dashboard provider.
 - `docker/grafana/dashboards`: provisioned classic dashboard JSON.
@@ -30,6 +31,7 @@ An init container creates the configured InfluxDB database and the `slot` and `m
 
 InfluxDB data is persisted in a named volume mounted at `/var/lib/influxdb3`.
 The server still writes to `/var/lib/influxdb3/data`; mounting the parent preserves the image's `influxdb3` user ownership on first volume initialization.
+Lightbringer reads the repository-root `Lightbringer.toml` file directly; Docker Compose mounts that file into the container as read-only config.
 
 ## Setup
 
@@ -46,18 +48,26 @@ chmod 444 secrets/influxdb-admin-token.json secrets/grafana-admin-password
 
 Docker Compose file-backed secrets are mounted from host files. Docker documents that `uid`, `gid`, and `mode` are not implemented for file-sourced secrets, so the source files must be readable by the non-root users in the InfluxDB and Grafana containers. Keep the `secrets` directory private and let only the files be container-readable.
 
-Create a local environment file:
+Create a local Lightbringer config. Do not commit this file.
 
 ```sh
-cp .env.example .env
+cp Lightbringer.example.toml Lightbringer.toml
 ```
 
-Set `LIGHTBRINGER_GOSSIP_ENTRYPOINT` in `.env` before starting the Lightbringer profile.
-The Docker entrypoint accepts either `ip:port` or `host:port`; hostnames are resolved to IPv4 before `Lightbringer.toml` is written because the Rust config expects a socket address.
-Optionally set `INFLUXDB_RETENTION_PERIOD` before the first startup if you want metrics to expire automatically.
-InfluxDB 3 Core retention periods are set when a database is created and cannot be changed later for that database.
-Supported units are `h`, `d`, `w`, `mo`, and `y`, or use `none` for infinite retention.
-InfluxDB does not support second or minute units for database retention periods and documents `1h` as the practical minimum.
+Set `gossip_entrypoint` in `Lightbringer.toml` before starting the Lightbringer profile.
+The config accepts either `ip:port` or `host:port`; hostnames are resolved to IPv4 at startup.
+Keep the Docker default InfluxDB section unless you intentionally change the compose stack:
+
+```toml
+[influxdb]
+host = "http://127.0.0.1:18181"
+database = "lightbringer"
+token_file = "/run/secrets/influxdb-admin-token"
+```
+
+The `token_file` value points at the Docker secret mounted into the Lightbringer container.
+For non-Docker local runs, replace it with a local token file path or use `token = "..."`.
+Lightbringer reads config at startup; restart the container after changing `Lightbringer.toml`.
 
 ## Validate Configuration
 
@@ -108,9 +118,9 @@ Default Lightbringer host ports:
 - Debug RPC: `127.0.0.1:13000`
 - gRPC: `127.0.0.1:13001`
 
-Override these in `.env` if the host already uses them.
-Agave's dynamic port range validator requires `LIGHTBRINGER_PORT_RANGE_END - LIGHTBRINGER_PORT_RANGE_START` to be at least `25`.
-The same Agave path also requires `LIGHTBRINGER_PORT_RANGE_END + 6 <= 65535` for QUIC companion ports.
+Override these in `Lightbringer.toml` if the host already uses them.
+Agave's dynamic port range validator requires `gossip.port_range_end - gossip.port_range_start` to be at least `25`.
+The same Agave path also requires `gossip.port_range_end + 6 <= 65535` for QUIC companion ports.
 
 ## Shared Server Safety
 

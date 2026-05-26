@@ -1,17 +1,17 @@
 services:
   influxdb3:
-    image: influxdb:${INFLUXDB_IMAGE_TAG:-3.9.2-core}
+    image: influxdb:3.9.2-core
     restart: unless-stopped
     command:
       - influxdb3
       - serve
-      - --node-id=${INFLUXDB_NODE_ID:-lightbringer-node}
+      - --node-id=lightbringer-node
       - --object-store=file
       - --data-dir=/var/lib/influxdb3/data
       - --admin-token-file=/run/secrets/influxdb-admin-token
       - --disable-authz=health,ping
     ports:
-      - "127.0.0.1:${INFLUXDB_HOST_PORT:-18181}:8181"
+      - "127.0.0.1:18181:8181"
     healthcheck:
       test:
         [
@@ -29,7 +29,7 @@ services:
       - influxdb3-data:/var/lib/influxdb3
 
   influxdb3-init:
-    image: influxdb:${INFLUXDB_IMAGE_TAG:-3.9.2-core}
+    image: influxdb:3.9.2-core
     restart: "no"
     depends_on:
       influxdb3:
@@ -39,8 +39,7 @@ services:
       - /docker-entrypoint-initdb.d/init-database.sh
     environment:
       INFLUXDB_ADMIN_TOKEN_FILE: /run/secrets/influxdb-admin-token
-      INFLUXDB_DATABASE: ${INFLUXDB_DATABASE:-lightbringer}
-      INFLUXDB_RETENTION_PERIOD: ${INFLUXDB_RETENTION_PERIOD:-}
+      INFLUXDB_DATABASE: lightbringer
       INFLUXDB_URL: http://influxdb3:8181
     secrets:
       - source: influxdb_admin_token
@@ -53,20 +52,20 @@ services:
       context: .
       dockerfile: docker/grafana/Dockerfile
       args:
-        GRAFANA_VERSION: ${GRAFANA_VERSION:-13.0.1-security-01}
+        GRAFANA_VERSION: 13.0.1-security-01
     restart: unless-stopped
     depends_on:
       influxdb3-init:
         condition: service_completed_successfully
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin-password
       INFLUXDB_ADMIN_TOKEN_FILE: /run/secrets/influxdb-admin-token
-      INFLUXDB_DATABASE: ${INFLUXDB_DATABASE:-lightbringer}
+      INFLUXDB_DATABASE: lightbringer
       INFLUXDB_URL: http://influxdb3:8181
     ports:
-      - "127.0.0.1:${GRAFANA_HOST_PORT:-3300}:3000"
+      - "127.0.0.1:3300:3000"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
       interval: 10s
@@ -94,18 +93,6 @@ services:
       influxdb3-init:
         condition: service_completed_successfully
     network_mode: host
-    environment:
-      INFLUXDB_ADMIN_TOKEN_FILE: /run/secrets/influxdb-admin-token
-      LIGHTBRINGER_GOSSIP_ENTRYPOINT: ${LIGHTBRINGER_GOSSIP_ENTRYPOINT:-}
-      LIGHTBRINGER_GOSSIP_PORT: ${LIGHTBRINGER_GOSSIP_PORT:-65400}
-      LIGHTBRINGER_PORT_RANGE_START: ${LIGHTBRINGER_PORT_RANGE_START:-65401}
-      LIGHTBRINGER_PORT_RANGE_END: ${LIGHTBRINGER_PORT_RANGE_END:-65500}
-      LIGHTBRINGER_RPC_ADDR: ${LIGHTBRINGER_RPC_ADDR:-127.0.0.1:13000}
-      LIGHTBRINGER_GRPC_ADDR: ${LIGHTBRINGER_GRPC_ADDR:-127.0.0.1:13001}
-      LIGHTBRINGER_STORAGE: ${LIGHTBRINGER_STORAGE:-/var/lib/lightbringer/shred-store}
-      LIGHTBRINGER_INFLUXDB_HOST: http://127.0.0.1:${INFLUXDB_HOST_PORT:-18181}
-      LIGHTBRINGER_INFLUXDB_DATABASE: ${INFLUXDB_DATABASE:-lightbringer}
-      LIGHTBRINGER_LOG_QUIET: ${LIGHTBRINGER_LOG_QUIET:-false}
     security_opt:
       - seccomp=unconfined
     ulimits:
@@ -115,8 +102,15 @@ services:
     secrets:
       - source: influxdb_admin_token
         target: influxdb-admin-token
+    configs:
+      - source: lightbringer_config
+        target: /var/lib/lightbringer/Lightbringer.toml
     volumes:
       - lightbringer-shred-store:/var/lib/lightbringer/shred-store
+
+configs:
+  lightbringer_config:
+    file: ./Lightbringer.toml
 
 secrets:
   influxdb_admin_token:
