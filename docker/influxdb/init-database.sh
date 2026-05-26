@@ -117,5 +117,6 @@ run_create \
   influxdb3 create table \
     --host "$influxdb_url" \
     --database "$database" \
+    --tags kind \
     --fields rss_bytes:int64,virtual_bytes:int64 \
     memory

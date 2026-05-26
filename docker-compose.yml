@@ -1,3 +1,5 @@
+name: lightbringer
+
 services:
   influxdb3:
     image: influxdb:3.9.2-core

@@ -71,11 +71,31 @@ impl DataPoint for SlotMeasurement {
 
 const PAGE_SIZE: u64 = 4096; // x86_64 Linux
 
+pub enum MemoryMeasurementKind {
+    Process,
+}
+
+impl Display for MemoryMeasurementKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryMeasurementKind::Process => write!(f, "process"),
+        }
+    }
+}
+
+impl From<MemoryMeasurementKind> for influxdb::Type {
+    fn from(value: MemoryMeasurementKind) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
 #[derive(InfluxDbWriteable)]
 pub struct MemoryMeasurement {
     time: Timestamp,
     rss_bytes: u64,
     virtual_bytes: u64,
+    #[influxdb(tag)]
+    kind: MemoryMeasurementKind,
 }
 
 impl MemoryMeasurement {
@@ -88,6 +108,7 @@ impl MemoryMeasurement {
             time: now(),
             rss_bytes: rss_pages * PAGE_SIZE,
             virtual_bytes: virtual_pages * PAGE_SIZE,
+            kind: MemoryMeasurementKind::Process,
         })
     }
 }

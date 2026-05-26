@@ -15,7 +15,7 @@ solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", re
 solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
 solana-entry = "3.0.14"
 solana-net-utils = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4", features = ["agave-unstable-api"] }
-solana-quic-definitions = "3.0.0"
+solana-quic-definitions = "=3.0.0"
 solana-rpc-client-types = "3.0.14"
 solana-epoch-info = "3.0.0"
 solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }

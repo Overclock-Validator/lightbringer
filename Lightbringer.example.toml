@@ -15,16 +15,17 @@ gossip_port = 65400
 port_range_start = 65401
 port_range_end = 65500
 
-# optional, fallback to mock metrics if not set
+# Docker Compose mounts this secret path for local observability.
+# Remove this section when running without that secret file.
 [influxdb]
 host = "http://127.0.0.1:18181"
 database = "lightbringer"
 token_file = "/run/secrets/influxdb-admin-token"
 
-# optional, grpc streams confirmed blocks if set
-[block_confirmation]
-rpc_http = "http://localhost:8900"
-rpc_websocket = "ws://localhost:8900"
+# Enable only when a local RPC node is available for confirmed-block streaming.
+# [block_confirmation]
+# rpc_http = "http://localhost:8900"
+# rpc_websocket = "ws://localhost:8900"
 
 # optional, suppress info/debug log lines (only warnings and errors are emitted)
 [log]
