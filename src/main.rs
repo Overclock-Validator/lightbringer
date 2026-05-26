@@ -190,7 +190,7 @@ fn main() {
     // Shred Storage
     let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot, cluster_info.clone()).unwrap();
     threadpool.spawn(
-        enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
+        enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
     );
 
     // Serve Repair

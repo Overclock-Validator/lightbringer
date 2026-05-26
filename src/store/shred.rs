@@ -35,6 +35,12 @@ pub struct SlotRaw {
 }
 
 #[derive(Clone)]
+pub struct BatchRaw {
+    pub slot: u64,
+    pub shreds: Vec<PacketInfo>,
+}
+
+#[derive(Clone)]
 pub struct ShredStore {
     db: fjall::Database,
     shred_keyspace: fjall::Keyspace,
@@ -96,15 +102,15 @@ impl ShredStore {
         })
     }
 
-    pub async fn slot_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<SlotRaw>) {
+    pub async fn batch_listener_loop(self, exit: CancelRx, rx: AsyncReceiver<BatchRaw>) {
         let this = self.clone();
         let task = spawn_local(enclose!((this) async move {
             let executor = executor();
-            while let Ok(slot) = rx.recv().await {
+            while let Ok(batch) = rx.recv().await {
                 let this = this.clone();
                 spawn_local(executor.spawn_blocking(move || {
-                    if let Err(e) = this.store_slot(slot.slot, slot.shreds) {
-                        log::warn!("failed to store slot {e}");
+                    if let Err(e) = this.store_batch(batch.slot, batch.shreds) {
+                        log::warn!("failed to store batch {e}");
                     }
                 }))
                 .detach();
@@ -144,7 +150,7 @@ impl ShredStore {
         }
     }
 
-    fn store_slot(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {
+    fn store_batch(&self, slot: u64, shreds: Vec<PacketInfo>) -> anyhow::Result<()> {
         let mut batch = self.db.batch();
         for shred in shreds {
             let shred_info = shred::layout::get_shred_id(&shred)
