@@ -91,36 +91,67 @@ impl PeerRateLimit {
     }
 }
 
+#[derive(Default)]
 struct ServeRepairStats {
-    requests_served: u64,
-    requests_dropped: u64,
-    requests_rate_limited: u64,
+    // by request type
+    window_index: u64,
+    highest_window_index: u64,
+    orphan: u64,
+    ancestor_hashes: u64,
+    pong: u64,
+    legacy: u64,
+
+    // outcomes
+    served: u64,
+    rate_limited: u64,
+
+    // drop reasons
+    drop_deserialize: u64,
+    drop_header_invalid: u64,
+    drop_not_found: u64,
+    drop_fjall_error: u64,
+    drop_oversized: u64,
+    drop_unsupported: u64,
 }
 
 impl ServeRepairStats {
-    fn new() -> Self {
-        Self {
-            requests_served: 0,
-            requests_dropped: 0,
-            requests_rate_limited: 0,
-        }
+    fn total_dropped(&self) -> u64 {
+        self.drop_deserialize
+            + self.drop_header_invalid
+            + self.drop_not_found
+            + self.drop_fjall_error
+            + self.drop_oversized
+            + self.drop_unsupported
     }
 
     fn flush(&mut self, metrics: &MetricsSender) {
+        let dropped = self.total_dropped();
         log::info!(
-            "serve_repair: served={} dropped={} rate_limited={}",
-            self.requests_served,
-            self.requests_dropped,
-            self.requests_rate_limited,
+            "serve_repair stats: served={} dropped={} rate_limited={} | \
+             requests: window_index={} highest_window_index={} orphan={} ancestor_hashes={} pong={} legacy={} | \
+             drop reasons: deserialize={} header_invalid={} not_found={} fjall_error={} oversized={} unsupported={}",
+            self.served,
+            dropped,
+            self.rate_limited,
+            self.window_index,
+            self.highest_window_index,
+            self.orphan,
+            self.ancestor_hashes,
+            self.pong,
+            self.legacy,
+            self.drop_deserialize,
+            self.drop_header_invalid,
+            self.drop_not_found,
+            self.drop_fjall_error,
+            self.drop_oversized,
+            self.drop_unsupported,
         );
         metrics.measure(ServeRepairMeasurement::new(
-            self.requests_served,
-            self.requests_dropped,
-            self.requests_rate_limited,
+            self.served,
+            dropped,
+            self.rate_limited,
         ));
-        self.requests_served = 0;
-        self.requests_dropped = 0;
-        self.requests_rate_limited = 0;
+        *self = Self::default();
     }
 }
 
@@ -172,14 +203,23 @@ async fn handle_ping(
 
 fn validate_header(header: &RepairRequestHeader, my_id: &Pubkey) -> bool {
     if header.recipient != *my_id {
+        log::debug!(
+            "serve_repair: recipient mismatch: expected={my_id} got={}",
+            header.recipient,
+        );
         return false;
     }
     if header.sender == *my_id {
+        log::debug!("serve_repair: rejected self-repair from {my_id}");
         return false;
     }
     let time_diff_ms = solana_sdk::timing::timestamp().abs_diff(header.timestamp);
     // 10 minute window
     if time_diff_ms > 10 * 60 * 1000 {
+        log::debug!(
+            "serve_repair: timestamp skew too large: {time_diff_ms}ms from sender={}",
+            header.sender,
+        );
         return false;
     }
     true
@@ -198,7 +238,7 @@ pub async fn start_serve_repair(
 
     let task = spawn_local(async move {
         let mut rate_limits: HashMap<SocketAddr, PeerRateLimit> = HashMap::new();
-        let mut stats = ServeRepairStats::new();
+        let mut stats = ServeRepairStats::default();
         let mut last_stats_report = std::time::Instant::now();
         let mut last_rate_limit_cleanup = std::time::Instant::now();
 
@@ -216,13 +256,13 @@ pub async fn start_serve_repair(
                 .entry(from_addr)
                 .or_insert_with(PeerRateLimit::new);
             if !rate_limit.check_and_increment() {
-                stats.requests_rate_limited += 1;
+                stats.rate_limited += 1;
                 report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                 continue;
             }
 
             let Some(request) = deserialize_request(&packet) else {
-                stats.requests_dropped += 1;
+                stats.drop_deserialize += 1;
                 report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                 continue;
             };
@@ -233,8 +273,9 @@ pub async fn start_serve_repair(
                     slot,
                     shred_index,
                 } => {
+                    stats.window_index += 1;
                     if !validate_header(&header, &my_id) {
-                        stats.requests_dropped += 1;
+                        stats.drop_header_invalid += 1;
                         report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                         continue;
                     }
@@ -245,15 +286,15 @@ pub async fn start_serve_repair(
                                 if let Err(e) = socket.send_to(&response, from_addr).await {
                                     log::warn!("serve_repair: send WindowIndex failed: {e}");
                                 }
-                                stats.requests_served += 1;
+                                stats.served += 1;
                             } else {
-                                stats.requests_dropped += 1;
+                                stats.drop_oversized += 1;
                             }
                         }
-                        Ok(None) => stats.requests_dropped += 1,
+                        Ok(None) => stats.drop_not_found += 1,
                         Err(e) => {
                             log::warn!("serve_repair: fjall lookup error: {e}");
-                            stats.requests_dropped += 1;
+                            stats.drop_fjall_error += 1;
                         }
                     }
                 }
@@ -262,8 +303,9 @@ pub async fn start_serve_repair(
                     slot,
                     shred_index,
                 } => {
+                    stats.highest_window_index += 1;
                     if !validate_header(&header, &my_id) {
-                        stats.requests_dropped += 1;
+                        stats.drop_header_invalid += 1;
                         report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
                         continue;
                     }
@@ -274,39 +316,44 @@ pub async fn start_serve_repair(
                                 if let Some(idx) =
                                     solana_ledger::shred::layout::get_index(shred_data)
                                     && u64::from(idx) >= shred_index
-                                        && let Some(response) =
-                                            build_shred_response(shred_data, header.nonce)
-                                        {
-                                            if let Err(e) =
-                                                socket.send_to(&response, from_addr).await
-                                            {
-                                                log::warn!(
-                                                    "serve_repair: send HighestWindowIndex failed: {e}"
-                                                );
-                                            }
-                                            sent = true;
-                                            break;
-                                        }
+                                    && let Some(response) =
+                                        build_shred_response(shred_data, header.nonce)
+                                {
+                                    if let Err(e) = socket.send_to(&response, from_addr).await {
+                                        log::warn!(
+                                            "serve_repair: send HighestWindowIndex failed: {e}"
+                                        );
+                                    }
+                                    sent = true;
+                                    break;
+                                }
                             }
                             if sent {
-                                stats.requests_served += 1;
+                                stats.served += 1;
                             } else {
-                                stats.requests_dropped += 1;
+                                stats.drop_not_found += 1;
                             }
                         }
                         Err(e) => {
                             log::warn!("serve_repair: fjall lookup error: {e}");
-                            stats.requests_dropped += 1;
+                            stats.drop_fjall_error += 1;
                         }
                     }
                 }
-                RepairProtocol::Orphan { .. } | RepairProtocol::AncestorHashes { .. } => {
-                    // We don't track parent slots or ancestor hashes
-                    stats.requests_dropped += 1;
+                RepairProtocol::Orphan { .. } => {
+                    stats.orphan += 1;
+                    stats.drop_unsupported += 1;
+                }
+                RepairProtocol::AncestorHashes { .. } => {
+                    stats.ancestor_hashes += 1;
+                    stats.drop_unsupported += 1;
+                }
+                RepairProtocol::Pong(_) => {
+                    stats.pong += 1;
                 }
                 _ => {
-                    // Legacy, Pong, or unsupported
-                    stats.requests_dropped += 1;
+                    stats.legacy += 1;
+                    stats.drop_unsupported += 1;
                 }
             }
 
