@@ -27,7 +27,7 @@ use glommio::enclose;
 use gossip_manager::GossipManager;
 use repair::request::RepairManager;
 use simple_logger::SimpleLogger;
-use solana_sdk::signature::Keypair;
+use solana_sdk::signature::{Keypair, Signer};
 use store::{shred::ShredStore, slot_meta::SlotMetadataStore};
 use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
@@ -87,6 +87,26 @@ fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
     influxdb::Client::new(config.host, config.database).with_token(config.token)
 }
 
+const KEYPAIR_PATH: &str = "identity.json";
+
+fn load_or_create_keypair() -> Keypair {
+    if let Ok(bytes) = std::fs::read(KEYPAIR_PATH) {
+        let parsed: Option<Keypair> = serde_json::from_slice::<Vec<u8>>(&bytes)
+            .ok()
+            .and_then(|v| Keypair::try_from(v.as_slice()).ok());
+        if let Some(kp) = parsed {
+            log::info!("loaded keypair from {KEYPAIR_PATH}: {}", kp.pubkey());
+            return kp;
+        }
+        log::warn!("failed to parse existing {KEYPAIR_PATH}, generating new keypair");
+    }
+    let kp = Keypair::new();
+    let bytes = serde_json::to_vec(&kp.to_bytes().to_vec()).expect("serialize keypair");
+    std::fs::write(KEYPAIR_PATH, &bytes).expect("failed to write keypair to disk");
+    log::info!("generated new keypair at {KEYPAIR_PATH}: {}", kp.pubkey());
+    kp
+}
+
 fn main() {
     let conf = Config::parse();
 
@@ -95,7 +115,7 @@ fn main() {
     let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
     let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
 
-    let keypair = Arc::new(Keypair::new());
+    let keypair = Arc::new(load_or_create_keypair());
 
     let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
     let version = gossip.version;

@@ -202,24 +202,12 @@ async fn handle_ping(
 }
 
 fn validate_header(header: &RepairRequestHeader, my_id: &Pubkey) -> bool {
-    if header.recipient != *my_id {
-        log::debug!(
-            "serve_repair: recipient mismatch: expected={my_id} got={}",
-            header.recipient,
-        );
-        return false;
-    }
     if header.sender == *my_id {
-        log::debug!("serve_repair: rejected self-repair from {my_id}");
         return false;
     }
     let time_diff_ms = solana_sdk::timing::timestamp().abs_diff(header.timestamp);
     // 10 minute window
     if time_diff_ms > 10 * 60 * 1000 {
-        log::debug!(
-            "serve_repair: timestamp skew too large: {time_diff_ms}ms from sender={}",
-            header.sender,
-        );
         return false;
     }
     true
