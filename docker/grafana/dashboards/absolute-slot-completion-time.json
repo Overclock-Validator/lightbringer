@@ -477,7 +477,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH slot_completions AS (\n  SELECT\n    slot,\n    time AS completion_time,\n    LAG(time) OVER (ORDER BY time) AS prev_completion_time\n  FROM slot\n  WHERE kind = 'completion'\n    AND $__timeFilter(time)\n),\ncompletion_deltas AS (\n  SELECT\n    slot,\n    completion_time,\n    CAST((completion_time - prev_completion_time) AS BIGINT) / 1000000.0 AS completion_delta_ms\n  FROM slot_completions\n  WHERE prev_completion_time IS NOT NULL\n)\nSELECT\n  CAST(slot AS VARCHAR) AS slot,\n  completion_delta_ms\nFROM completion_deltas\nORDER BY slot",
+          "rawSql": "WITH slot_completions AS (\n  SELECT\n    slot,\n    time AS completion_time,\n    LAG(time) OVER (ORDER BY time) AS prev_completion_time\n  FROM slot\n  WHERE kind = 'completion'\n    AND $__timeFilter(time)\n),\ncompletion_deltas AS (\n  SELECT\n    slot,\n    completion_time,\n    CAST((completion_time - prev_completion_time) AS BIGINT) / 1000000.0 AS completion_delta_ms\n  FROM slot_completions\n  WHERE prev_completion_time IS NOT NULL\n)\nSELECT\n  CAST(slot AS VARCHAR) AS slot,\n  completion_delta_ms\nFROM completion_deltas\nORDER BY completion_time",
           "sql": {
             "columns": [
               {

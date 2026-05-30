@@ -1,9 +1,63 @@
 name: lightbringer
 
 services:
+  secrets-preflight:
+    image: influxdb:3.9.2-core
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - /docker-secrets/check-readable.sh
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+      - source: grafana_admin_password
+        target: grafana-admin-password
+    volumes:
+      - ./docker/secrets/check-readable.sh:/docker-secrets/check-readable.sh:ro
+
+  lightbringer-config-preflight:
+    profiles:
+      - lightbringer
+    image: influxdb:3.9.2-core
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - /docker-secrets/check-readable.sh
+    environment:
+      LIGHTBRINGER_CONFIG_FILE: /docker-config/Lightbringer.toml
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+      - source: grafana_admin_password
+        target: grafana-admin-password
+    volumes:
+      - ./docker/secrets/check-readable.sh:/docker-secrets/check-readable.sh:ro
+      - ./Lightbringer.toml:/docker-config/Lightbringer.toml:ro
+
   influxdb3:
     image: influxdb:3.9.2-core
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      secrets-preflight:
+        condition: service_completed_successfully
     command:
       - influxdb3
       - serve
@@ -33,6 +87,10 @@ services:
   influxdb3-init:
     image: influxdb:3.9.2-core
     restart: "no"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       influxdb3:
         condition: service_healthy
@@ -56,6 +114,10 @@ services:
       args:
         GRAFANA_VERSION: 13.0.1-security-01
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       influxdb3-init:
         condition: service_completed_successfully
@@ -94,8 +156,13 @@ services:
     depends_on:
       influxdb3-init:
         condition: service_completed_successfully
+      lightbringer-config-preflight:
+        condition: service_completed_successfully
     network_mode: host
+    cap_drop:
+      - ALL
     security_opt:
+      - no-new-privileges:true
       - seccomp=unconfined
     ulimits:
       memlock:

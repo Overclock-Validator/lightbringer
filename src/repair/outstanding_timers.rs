@@ -86,8 +86,8 @@ impl OutstandingTimerStore {
         );
     }
 
-    /// remove an outstanding timer
-    /// returning the request type and the time it was sent
+    /// Removes an outstanding timer.
+    /// Returns the request kind and send time.
     pub fn remove(
         &mut self,
         slot: u64,

@@ -1,7 +1,3 @@
-// use pure in-memory data structures
-// we'll use scc::HashMap
-// FOR later: investigate queues
-
 use std::{
     collections::{BTreeSet, HashMap},
     rc::Rc,
@@ -34,7 +30,7 @@ pub struct SlotMetadata {
     pub timestamp_ms: u64,
     pub completed_batches: BTreeSet<u32>,
     pub required_batches: Option<usize>,
-    // highest shred index seen
+    // Highest shred index seen.
     pub max_inclusive_shred: u32,
     pub shreds: Option<Vec<PacketInfo>>,
     pub timed_out: bool,
@@ -108,8 +104,8 @@ impl SlotMetadata {
         missing_shreds
     }
 
-    /// find required shreds to complete the slot
-    /// returning None if the last shred hasn't been seen yet
+    /// Finds required shreds to complete the slot.
+    /// Returns unbounded repairs until the last shred is seen.
     pub fn calculate_missing_shreds(&self) -> RepairReq {
         if let Some(shreds) = self.calculate_missing_shreds_bounded() {
             return RepairReq::MissingBoundedShreds {
@@ -148,7 +144,7 @@ enum SlotTimerMsg {
 
 impl SlotMetadataStore {
     pub fn new(version: u16) -> Self {
-        // stores the last 4096 slots only
+        // Stores the last 4096 slots.
         let hash_cache = scc::HashCache::with_capacity(0, 4096);
         Self {
             inner: Arc::new(hash_cache),
@@ -257,7 +253,7 @@ impl SlotMetadataStore {
         );
     }
 
-    // stores the shred, returning whether slots are complete or not
+    // Stores a shred and reports whether the slot is complete.
     fn store_shred(&self, hdr: ShredCommonHeader, shred: PacketInfo) -> SlotMetaStoreRes {
         let slot = hdr.slot;
         let fec_index = hdr.fec_set_index;
