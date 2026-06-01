@@ -15,12 +15,14 @@ solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", re
 solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
 solana-entry = "3.0.14"
 solana-net-utils = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4", features = ["agave-unstable-api"] }
+solana-quic-definitions = "=3.0.0"
 solana-rpc-client-types = "3.0.14"
 solana-epoch-info = "3.0.0"
 solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "bb110d1fad7f1523c13709dcd1a0336f9f9975b4" }
 solana-packet = "3.0.0"
 solana-commitment-config = "3.1.0"
-# pins because obviously someone doesn't want to follow semver
+# Keep these transitive Solana crates pinned to the exact versions required by
+# the Agave revision above.
 solana-sysvar = { version = "=3.0.0", features = ["serde"] }
 solana-hash = { version = "=3.0.0", features = ["serde"] }
 solana-blake3-hasher = "=3.0.0"
@@ -65,7 +67,7 @@ uluru = "3.1.0"
 circular-buffer = "0.1.9"
 lrumap = "0.1.0"
 
-# grpc streaming related
+# gRPC streaming dependencies.
 tokio = { version = "1.0", features = ["rt", "sync", "time", "net", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.14"

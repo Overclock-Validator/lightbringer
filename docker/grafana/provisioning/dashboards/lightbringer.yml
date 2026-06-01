@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: lightbringer
+    orgId: 1
+    folder: Lightbringer
+    folderUid: lightbringer
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

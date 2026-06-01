@@ -60,7 +60,7 @@ impl PacketProcessor {
     }
 }
 struct PacketProcessorPool {
-    jobs: Vec<JoinHandle<()>>,
+    _jobs: Vec<JoinHandle<()>>,
     senders: Vec<kanal::AsyncSender<(PacketInfo, Pubkey)>>,
     leader_schedule: LeaderScheduleSync,
 }
@@ -88,7 +88,7 @@ impl PacketProcessorPool {
         }
 
         Self {
-            jobs,
+            _jobs: jobs,
             senders,
             leader_schedule,
         }

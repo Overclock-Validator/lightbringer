@@ -1,26 +1,32 @@
-# entrypoint to solana gossip (must be a remote addr)
-gossip_entrypoint = "177.177.177.177:8000"
+# Replace this TEST-NET address with a real Solana gossip entrypoint.
+gossip_entrypoint = "203.0.113.10:8000"
 
-# folder for storing shreds (optional, default = "./shred-store")
+# Shred storage path.
 storage = "./shred-store"
 
-# Debugging RPC address (optional, default = "127.0.0.1:3000")
+# Local debug RPC address.
 rpc_addr = "127.0.0.1:3000"
 
-# gRPC slot stream (optional, default = "127.0.0.1:3001")
+# gRPC slot stream address.
 grpc_addr = "127.0.0.1:3001"
 
-# optional, fallback to mock metrics if not set
+[gossip]
+gossip_port = 65400
+port_range_start = 65401
+port_range_end = 65500
+
+# Compose mounts the InfluxDB token here.
+# Remove this section when running without InfluxDB.
 [influxdb]
-host = "http://localhost:8181"
-database = "test"
-token = "xyz"
+host = "http://127.0.0.1:18181"
+database = "lightbringer"
+token_file = "/run/secrets/influxdb-admin-token"
 
-# optional, grpc streams confirmed blocks if set
-[block_confirmation]
-rpc_http = "http://localhost:8900"
-rpc_websocket = "ws://localhost:8900"
+# Enable only when a local RPC node is available.
+# [block_confirmation]
+# rpc_http = "http://localhost:8900"
+# rpc_websocket = "ws://localhost:8900"
 
-# optional, suppress info/debug log lines (only warnings and errors are emitted)
+# Suppress info/debug logs.
 [log]
 quiet = false

@@ -1,7 +1,3 @@
-// use pure in-memory data structures
-// we'll use scc::HashMap
-// FOR later: investigate queues
-
 use std::{
     collections::{BTreeSet, HashMap},
     rc::Rc,
@@ -34,7 +30,7 @@ pub struct SlotMetadata {
     pub timestamp_ms: u64,
     pub completed_batches: BTreeSet<u32>,
     pub required_batches: Option<usize>,
-    // highest shred index seen
+    // Highest shred index seen.
     pub max_inclusive_shred: u32,
     pub shreds: Option<Vec<PacketInfo>>,
     pub timed_out: bool,
@@ -108,8 +104,8 @@ impl SlotMetadata {
         missing_shreds
     }
 
-    /// find required shreds to complete the slot
-    /// returning None if the last shred hasn't been seen yet
+    /// Finds required shreds to complete the slot.
+    /// Returns unbounded repairs until the last shred is seen.
     pub fn calculate_missing_shreds(&self) -> RepairReq {
         if let Some(shreds) = self.calculate_missing_shreds_bounded() {
             return RepairReq::MissingBoundedShreds {
@@ -141,14 +137,14 @@ pub struct SlotMetadataStore {
 }
 
 enum SlotTimerMsg {
-    ShredInsertion { slot: u64 },
-    ShredCompletion { slot: u64 },
-    ShredTimeout { slot: u64 },
+    Insertion { slot: u64 },
+    Completion { slot: u64 },
+    Timeout { slot: u64 },
 }
 
 impl SlotMetadataStore {
     pub fn new(version: u16) -> Self {
-        // stores the last 4096 slots only
+        // Stores the last 4096 slots.
         let hash_cache = scc::HashCache::with_capacity(0, 4096);
         Self {
             inner: Arc::new(hash_cache),
@@ -190,12 +186,12 @@ impl SlotMetadataStore {
                 let timer_msg = match store_res {
                     SlotMetaStoreRes::Ignored => continue,
                     SlotMetaStoreRes::Complete(raw_slot) => {
-                        _ = timer_tx.try_send(SlotTimerMsg::ShredCompletion { slot });
+                        _ = timer_tx.try_send(SlotTimerMsg::Completion { slot });
                         _ = store_tx.send(raw_slot.clone()).await;
                         _ = grpc_tx.send(raw_slot).await;
                         continue;
                     }
-                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
+                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::Insertion { slot },
                 };
                 _ = timer_tx.try_send(timer_msg);
             }
@@ -206,7 +202,7 @@ impl SlotMetadataStore {
             let mut timers: HashMap<u64, TimerActionOnce<()>> = HashMap::new();
             while let Some(msg) = timer_rx.recv().await {
                 match msg {
-                    SlotTimerMsg::ShredInsertion { slot } => {
+                    SlotTimerMsg::Insertion { slot } => {
                         timers
                             .entry(slot)
                             .and_modify(|timer| {
@@ -215,11 +211,11 @@ impl SlotMetadataStore {
                             .or_insert_with(|| {
                                 let timer_tx = timer_tx.clone();
                                 TimerActionOnce::do_in(DEFER_REPAIR_THRESHOLD, async move {
-                                    _ = timer_tx.send(SlotTimerMsg::ShredTimeout { slot }).await;
+                                    _ = timer_tx.send(SlotTimerMsg::Timeout { slot }).await;
                                 })
                             });
                     }
-                    SlotTimerMsg::ShredCompletion { slot } => {
+                    SlotTimerMsg::Completion { slot } => {
                         if let Some(timer) = timers.remove(&slot) {
                             timer.destroy();
                         }
@@ -234,7 +230,7 @@ impl SlotMetadataStore {
                             _ = repair_tx.send(RepairReq::CancelRepair { slot }).await;
                         }
                     }
-                    SlotTimerMsg::ShredTimeout { slot } => {
+                    SlotTimerMsg::Timeout { slot } => {
                         timers.remove(&slot);
                         let Some(mut slot_meta) = self.inner.get_sync(&slot) else {
                             continue;
@@ -257,7 +253,7 @@ impl SlotMetadataStore {
         );
     }
 
-    // stores the shred, returning whether slots are complete or not
+    // Stores a shred and reports whether the slot is complete.
     fn store_shred(&self, hdr: ShredCommonHeader, shred: PacketInfo) -> SlotMetaStoreRes {
         let slot = hdr.slot;
         let fec_index = hdr.fec_set_index;

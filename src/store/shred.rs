@@ -20,11 +20,7 @@ use crate::{
 
 pub const SHRED_KEYSPACE: &str = "shred_store";
 const RETENTION_SLOTS: u64 = 72_000; // ~ 8 hrs
-
-pub struct ShredRes {
-    data: Option<ShredInfoView>,
-    code: Option<ShredInfoView>,
-}
+type CompactionFilterFactories = Arc<dyn Fn(&str) -> Option<Arc<dyn Factory>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SlotRaw {
@@ -68,9 +64,7 @@ impl Factory for ShredCutoffFactory {
     }
 }
 
-pub fn compaction_filter_factories(
-    cutoff_slot: Arc<AtomicU64>,
-) -> Arc<dyn Fn(&str) -> Option<Arc<dyn Factory>> + Send + Sync> {
+pub fn compaction_filter_factories(cutoff_slot: Arc<AtomicU64>) -> CompactionFilterFactories {
     Arc::new(move |keyspace| match keyspace {
         SHRED_KEYSPACE => Some(Arc::new(ShredCutoffFactory(cutoff_slot.clone()))),
         _ => None,

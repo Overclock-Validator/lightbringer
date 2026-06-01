@@ -95,7 +95,8 @@ fn main() {
 
     let keypair = Arc::new(Keypair::new());
 
-    let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
+    let (gossip, sockets) =
+        GossipManager::new(conf.gossip_entrypoint, keypair.clone(), conf.gossip).unwrap();
     let version = gossip.version;
 
     let mut threadpool = ThreadManager::<7>::new();
@@ -128,12 +129,12 @@ fn main() {
         }
     }));
 
-    // Shred Filter
+    // Shred filter
     threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
 
-    // Slot Repair
+    // Slot repair
     let (repair_tx, repair_rx) = kanal::bounded_async(10000);
-    // allow upto 20 slots to be queued for repairing at a time
+    // Allow up to 20 slots to queue for repair.
     let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
     let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
 
@@ -163,7 +164,7 @@ fn main() {
         .await
     });
 
-    // Shred Storage
+    // Shred storage
     let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),

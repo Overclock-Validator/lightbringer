@@ -18,6 +18,8 @@ use solana_net_utils::{get_public_ip_addr_with_binding, multihomed_sockets::Bind
 use solana_sdk::{signature::Keypair, signer::Signer};
 use solana_streamer::socket::SocketAddrSpace;
 
+use crate::config::GossipConfig;
+
 pub struct GossipManager {
     exit: Arc<AtomicBool>,
     gossip_service: GossipService,
@@ -30,15 +32,19 @@ pub struct Sockets {
 }
 
 impl GossipManager {
-    pub fn new(gossip_entry: SocketAddr, keypair: Arc<Keypair>) -> anyhow::Result<(Self, Sockets)> {
+    pub fn new(
+        gossip_entry: SocketAddr,
+        keypair: Arc<Keypair>,
+        gossip_config: GossipConfig,
+    ) -> anyhow::Result<(Self, Sockets)> {
         let cluster_entrypoints = vec![ContactInfo::new_gossip_entry_point(&gossip_entry)];
 
         let bind_ip_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         let my_ip = get_public_ip_addr_with_binding(&gossip_entry, bind_ip_addr)
             .map_err(|e| anyhow!("Failed to get public IP: {}", e))?;
         let node_config = NodeConfig {
-            gossip_port: 65400,
-            port_range: (65401, 65500),
+            gossip_port: gossip_config.gossip_port,
+            port_range: gossip_config.port_range(),
             advertised_ip: my_ip,
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
@@ -88,16 +94,8 @@ impl GossipManager {
         self.cluster_info.my_contact_info()
     }
 
-    // pub fn lookup_info(&self, pubkey: &Pubkey) -> Option<ContactInfo> {
-    //     self.cluster_info.lookup_contact_info(pubkey, |x| x.clone())
-    // }
-
     pub fn get_cluster_info(&self) -> Arc<ClusterInfo> {
         self.cluster_info.clone()
-    }
-
-    pub fn get_all_peers(&self) -> Vec<(ContactInfo, u64)> {
-        self.cluster_info.all_peers()
     }
 
     pub fn stop(self) -> anyhow::Result<()> {
