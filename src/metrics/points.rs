@@ -69,6 +69,52 @@ impl DataPoint for SlotMeasurement {
     }
 }
 
+#[derive(InfluxDbWriteable)]
+pub struct ServeRepairMeasurement {
+    time: Timestamp,
+    requests_served: u64,
+    requests_dropped: u64,
+    requests_rate_limited: u64,
+    #[influxdb(tag)]
+    kind: ServeRepairMeasurementKind,
+}
+
+pub enum ServeRepairMeasurementKind {
+    Aggregate,
+}
+
+impl Display for ServeRepairMeasurementKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServeRepairMeasurementKind::Aggregate => write!(f, "aggregate"),
+        }
+    }
+}
+
+impl From<ServeRepairMeasurementKind> for influxdb::Type {
+    fn from(value: ServeRepairMeasurementKind) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
+impl ServeRepairMeasurement {
+    pub fn new(requests_served: u64, requests_dropped: u64, requests_rate_limited: u64) -> Self {
+        Self {
+            time: now(),
+            requests_served,
+            requests_dropped,
+            requests_rate_limited,
+            kind: ServeRepairMeasurementKind::Aggregate,
+        }
+    }
+}
+
+impl DataPoint for ServeRepairMeasurement {
+    fn measurement() -> &'static str {
+        "serve_repair"
+    }
+}
+
 const PAGE_SIZE: u64 = 4096; // x86_64 Linux
 
 pub enum MemoryMeasurementKind {

@@ -2,6 +2,7 @@
 
 .direnv
 Lightbringer.toml
+identity.json
 .env
 .env.local
 .env.*.local

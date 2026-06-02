@@ -8,6 +8,7 @@ mod leader_schedule;
 mod metrics;
 mod packet_filter;
 mod repair;
+mod repair_delivery;
 mod rpc;
 mod solana_rpc;
 mod store;
@@ -17,6 +18,7 @@ mod types;
 mod util;
 
 use std::{
+    io::{ErrorKind, Write},
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
 };
@@ -26,7 +28,7 @@ use glommio::enclose;
 use gossip_manager::GossipManager;
 use repair::request::RepairManager;
 use simple_logger::SimpleLogger;
-use solana_sdk::signature::Keypair;
+use solana_sdk::signature::{Keypair, Signer};
 use store::{shred::ShredStore, slot_meta::SlotMetadataStore};
 use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
@@ -40,6 +42,7 @@ use crate::{
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
     repair::socket::start_repair_socket_runner,
+    repair_delivery::start_serve_repair,
     rpc::DebugRpcInit,
     solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
@@ -85,6 +88,42 @@ fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
     influxdb::Client::new(config.host, config.database).with_token(config.token)
 }
 
+const KEYPAIR_PATH: &str = "identity.json";
+
+fn parse_keypair(bytes: &[u8]) -> anyhow::Result<Keypair> {
+    let raw: Vec<u8> = serde_json::from_slice(bytes)?;
+    Keypair::try_from(raw.as_slice()).map_err(|e| anyhow::anyhow!("invalid keypair: {e}"))
+}
+
+fn create_keypair_file() -> anyhow::Result<Keypair> {
+    let kp = Keypair::new();
+    let bytes = serde_json::to_vec(&kp.to_bytes().to_vec())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(KEYPAIR_PATH)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    log::info!("generated new keypair at {KEYPAIR_PATH}: {}", kp.pubkey());
+    Ok(kp)
+}
+
+fn load_or_create_keypair() -> anyhow::Result<Keypair> {
+    match std::fs::read(KEYPAIR_PATH) {
+        Ok(bytes) => {
+            let kp = parse_keypair(&bytes)?;
+            log::info!("loaded keypair from {KEYPAIR_PATH}: {}", kp.pubkey());
+            Ok(kp)
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => create_keypair_file(),
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn main() {
     let conf = Config::parse();
 
@@ -93,13 +132,13 @@ fn main() {
     let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
     let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
 
-    let keypair = Arc::new(Keypair::new());
+    let keypair = Arc::new(load_or_create_keypair().expect("failed to load or create identity"));
 
     let (gossip, sockets) =
         GossipManager::new(conf.gossip_entrypoint, keypair.clone(), conf.gossip).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<7>::new();
+    let mut threadpool = ThreadManager::<8>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -153,6 +192,8 @@ fn main() {
             repair_manager.start_repair_manager_loop(exit).await
         }),
     );
+    let serve_repair_keypair = keypair.clone();
+    let serve_repair_socket = sockets.serve_repair_socket;
     threadpool.spawn(move |exit| async move {
         start_repair_socket_runner(
             exit,
@@ -165,9 +206,28 @@ fn main() {
     });
 
     // Shred storage
-    let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot).unwrap();
+    let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot, cluster_info.clone()).unwrap();
     threadpool.spawn(
-        enclose!((shred_store) move |exit| shred_store.slot_listener_loop(exit, slot_store_rx)),
+        enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
+    );
+
+    // Serve repair
+    let my_serve_repair_addr = my_contact_info
+        .serve_repair(solana_gossip::contact_info::Protocol::UDP)
+        .unwrap();
+    log::info!("serve_repair: {my_serve_repair_addr:?}");
+    threadpool.spawn(
+        enclose!((shred_store, cluster_info, metrics) move |exit| async move {
+            start_serve_repair(
+                exit,
+                serve_repair_keypair,
+                std_to_glommio_socket(serve_repair_socket),
+                shred_store,
+                cluster_info,
+                metrics,
+            )
+            .await
+        }),
     );
 
     let slot_meta_store = SlotMetadataStore::new(version);

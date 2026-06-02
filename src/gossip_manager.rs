@@ -14,9 +14,9 @@ use solana_gossip::{
     gossip_service::GossipService,
     node::Node,
 };
+use solana_net_utils::socket_addr_space::SocketAddrSpace;
 use solana_net_utils::{get_public_ip_addr_with_binding, multihomed_sockets::BindIpAddrs};
 use solana_sdk::{signature::Keypair, signer::Signer};
-use solana_streamer::socket::SocketAddrSpace;
 
 use crate::config::GossipConfig;
 
@@ -29,6 +29,7 @@ pub struct GossipManager {
 
 pub struct Sockets {
     pub repair_socket: std::net::UdpSocket,
+    pub serve_repair_socket: std::net::UdpSocket,
 }
 
 impl GossipManager {
@@ -48,11 +49,11 @@ impl GossipManager {
             advertised_ip: my_ip,
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
+            public_tvu_addr: None,
             num_tvu_receive_sockets: NonZeroUsize::new(1).unwrap(),
             num_tvu_retransmit_sockets: NonZeroUsize::new(1).unwrap(),
             num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
-            bind_ip_addrs: Arc::new(BindIpAddrs::new(vec![my_ip]).unwrap()),
-            vortexor_receiver_addr: None,
+            bind_ip_addrs: BindIpAddrs::new(vec![my_ip]).unwrap(),
         };
 
         let ep_shred_version = solana_net_utils::get_cluster_shred_version(&gossip_entry)
@@ -86,6 +87,7 @@ impl GossipManager {
             },
             Sockets {
                 repair_socket: node.sockets.repair,
+                serve_repair_socket: node.sockets.serve_repair,
             },
         ))
     }

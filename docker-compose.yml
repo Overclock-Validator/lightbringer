@@ -146,6 +146,28 @@ services:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
+  grafana-tunnel:
+    profiles:
+      - grafana-tunnel
+    image: cloudflare/cloudflared:2026.5.2
+    restart: unless-stopped
+    depends_on:
+      grafana:
+        condition: service_healthy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token-file
+      - /run/secrets/cloudflare-tunnel-token
+    secrets:
+      - source: cloudflare_tunnel_token
+        target: cloudflare-tunnel-token
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   lightbringer:
     profiles:
       - lightbringer
@@ -175,7 +197,7 @@ services:
       - source: lightbringer_config
         target: /var/lib/lightbringer/Lightbringer.toml
     volumes:
-      - lightbringer-shred-store:/var/lib/lightbringer/shred-store
+      - lightbringer-data:/var/lib/lightbringer
 
 configs:
   lightbringer_config:
@@ -186,8 +208,10 @@ secrets:
     file: ./secrets/influxdb-admin-token.json
   grafana_admin_password:
     file: ./secrets/grafana-admin-password
+  cloudflare_tunnel_token:
+    file: ./secrets/cloudflare-tunnel-token
 
 volumes:
   grafana-data:
   influxdb3-data:
-  lightbringer-shred-store:
+  lightbringer-data:

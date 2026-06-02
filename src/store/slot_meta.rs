@@ -13,7 +13,7 @@ use solana_ledger::shred::{self, ShredCommonHeader, ShredFlags, ShredType};
 use crate::{
     metrics::{MetricsSender, points::SlotMeasurement},
     repair::request::RepairReq,
-    store::shred::SlotRaw,
+    store::shred::{BatchRaw, SlotRaw},
     thread_manager::CancelRx,
     types::PacketInfo,
 };
@@ -32,13 +32,18 @@ pub struct SlotMetadata {
     pub required_batches: Option<usize>,
     // Highest shred index seen.
     pub max_inclusive_shred: u32,
-    pub shreds: Option<Vec<PacketInfo>>,
+    /// shreds grouped by fec_set_index, drained to store on batch completion
+    pub batch_shreds: HashMap<u32, Vec<PacketInfo>>,
     pub timed_out: bool,
 }
 
 impl SlotMetadata {
     pub fn is_complete(&self) -> bool {
         Some(self.completed_batches.len()) == self.required_batches
+    }
+
+    fn drain_all_shreds(&mut self) -> Vec<PacketInfo> {
+        self.batch_shreds.drain().flat_map(|(_, v)| v).collect()
     }
 
     fn calculate_missing_shreds_bounded(&self) -> Option<Vec<u32>> {
@@ -125,7 +130,11 @@ impl SlotMetadata {
 }
 
 enum SlotMetaStoreRes {
-    Complete(SlotRaw),
+    Complete {
+        store_batch: BatchRaw,
+        grpc_slot: SlotRaw,
+    },
+    BatchComplete(BatchRaw),
     Incomplete,
     Ignored,
 }
@@ -158,7 +167,7 @@ impl SlotMetadataStore {
         rx: AsyncReceiver<PacketInfo>,
         repair_tx: AsyncSender<RepairReq>,
         grpc_tx: AsyncSender<SlotRaw>,
-        store_tx: AsyncSender<SlotRaw>,
+        store_tx: AsyncSender<BatchRaw>,
         metrics: MetricsSender,
     ) {
         let (timer_tx, timer_rx) = local_channel::new_unbounded();
@@ -172,7 +181,7 @@ impl SlotMetadataStore {
             while let Ok(shred) = rx.recv().await {
                 let Some(common_header) = shred::layout::get_common_header_bytes(&shred)
                     .and_then(|raw_header| {
-                        bincode::deserialize::<ShredCommonHeader>(raw_header).ok()
+                        wincode::deserialize::<ShredCommonHeader>(raw_header).ok()
                     })
                     .filter(|hdr| hdr.version == shred_version)
                 else {
@@ -185,10 +194,17 @@ impl SlotMetadataStore {
                 let store_res = this.store_shred(common_header, shred);
                 let timer_msg = match store_res {
                     SlotMetaStoreRes::Ignored => continue,
-                    SlotMetaStoreRes::Complete(raw_slot) => {
+                    SlotMetaStoreRes::BatchComplete(batch) => {
+                        _ = store_tx.send(batch).await;
+                        SlotTimerMsg::Insertion { slot }
+                    }
+                    SlotMetaStoreRes::Complete {
+                        store_batch,
+                        grpc_slot,
+                    } => {
+                        _ = store_tx.send(store_batch).await;
                         _ = timer_tx.try_send(SlotTimerMsg::Completion { slot });
-                        _ = store_tx.send(raw_slot.clone()).await;
-                        _ = grpc_tx.send(raw_slot).await;
+                        _ = grpc_tx.send(grpc_slot).await;
                         continue;
                     }
                     SlotMetaStoreRes::Incomplete => SlotTimerMsg::Insertion { slot },
@@ -272,61 +288,92 @@ impl SlotMetadataStore {
             completed_batches: BTreeSet::new(),
             required_batches: None,
             max_inclusive_shred: 0,
-            shreds: Some(Default::default()),
+            batch_shreds: HashMap::new(),
             timed_out: false,
         });
-        let shred_meta = shred_entry.get_mut();
-        if shred_meta.is_complete() {
+        let m = shred_entry.get_mut();
+        if m.is_complete() {
             return SlotMetaStoreRes::Ignored;
         }
 
+        // Always learn required_batches before any early returns.
+        if let ShredType::Data = ShredType::from(hdr.shred_variant)
+            && let Ok(flags) = shred::layout::get_flags(&shred)
+            && flags.contains(ShredFlags::LAST_SHRED_IN_SLOT)
+        {
+            m.required_batches =
+                Some((fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET);
+        }
+
+        // A completed batch can still retroactively complete the slot.
+        if m.completed_batches.contains(&fec_index) {
+            return if m.is_complete() {
+                Self::make_complete(
+                    m,
+                    BatchRaw {
+                        shreds: vec![],
+                        slot,
+                    },
+                )
+            } else {
+                SlotMetaStoreRes::Ignored
+            };
+        }
+
+        // Insert into FEC tracking.
         let fec_map = match ShredType::from(hdr.shred_variant) {
-            ShredType::Data => {
-                let Ok(flags) = shred::layout::get_flags(&shred) else {
-                    return SlotMetaStoreRes::Ignored;
-                };
-                if flags.contains(ShredFlags::LAST_SHRED_IN_SLOT) {
-                    shred_meta.required_batches = Some(
-                        (fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET,
-                    );
-                }
-                &mut shred_meta.fec_data_map
-            }
-            ShredType::Code => &mut shred_meta.fec_coding_map,
+            ShredType::Data => &mut m.fec_data_map,
+            ShredType::Code => &mut m.fec_coding_map,
         };
-        let inserted = fec_map.entry(fec_index).or_default().insert(shred_index);
-        if !inserted {
+        if !fec_map.entry(fec_index).or_default().insert(shred_index) {
             return SlotMetaStoreRes::Ignored;
         }
-        shred_meta.timestamp_ms = timestamp_ms;
-        shred_meta.max_inclusive_shred = shred_meta.max_inclusive_shred.max(shred_index);
+        m.timestamp_ms = timestamp_ms;
+        m.max_inclusive_shred = m.max_inclusive_shred.max(shred_index);
+        m.batch_shreds.entry(fec_index).or_default().push(shred);
 
-        let completed_batch = shred_meta
-            .fec_coding_map
-            .get(&fec_index)
-            .map(|m| m.len())
-            .unwrap_or_default()
-            + shred_meta
-                .fec_data_map
-                .get(&fec_index)
-                .map(|m| m.len())
-                .unwrap_or_default()
-            >= DATA_SHREDS_PER_FEC_SET;
-        if completed_batch {
-            shred_meta.completed_batches.insert(fec_index);
-        }
-        if let Some(s) = shred_meta.shreds.as_mut() {
-            s.push(shred)
+        // Check batch completion.
+        let batch_count = m.fec_coding_map.get(&fec_index).map_or(0, |s| s.len())
+            + m.fec_data_map.get(&fec_index).map_or(0, |s| s.len());
+
+        if batch_count >= DATA_SHREDS_PER_FEC_SET {
+            m.completed_batches.insert(fec_index);
+            let batch_shreds = m.batch_shreds.get(&fec_index).cloned().unwrap_or_default();
+            let store_batch = BatchRaw {
+                shreds: batch_shreds,
+                slot,
+            };
+
+            return if m.is_complete() {
+                Self::make_complete(m, store_batch)
+            } else {
+                SlotMetaStoreRes::BatchComplete(store_batch)
+            };
         }
 
-        if shred_meta.is_complete() {
-            let shreds = shred_entry
-                .shreds
-                .take()
-                .expect("shred entry is none for complete slot?!");
-            SlotMetaStoreRes::Complete(SlotRaw { shreds, slot })
-        } else {
-            SlotMetaStoreRes::Incomplete
+        // required_batches may have been set above, so check slot completion.
+        if m.is_complete() {
+            return Self::make_complete(
+                m,
+                BatchRaw {
+                    shreds: vec![],
+                    slot,
+                },
+            );
+        }
+
+        SlotMetaStoreRes::Incomplete
+    }
+
+    fn make_complete(m: &mut SlotMetadata, store_batch: BatchRaw) -> SlotMetaStoreRes {
+        let slot = m.slot_num;
+        let grpc_shreds = m.drain_all_shreds();
+        SlotMetaStoreRes::Complete {
+            store_batch,
+            grpc_slot: SlotRaw {
+                shreds: grpc_shreds,
+                slot,
+            },
         }
     }
 }

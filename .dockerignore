@@ -8,6 +8,7 @@
 .env.*.local
 .envrc
 Lightbringer.toml
+identity.json
 target
 secrets
 shred-store

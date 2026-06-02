@@ -13,7 +13,8 @@ use http::Uri;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use solana_net_utils::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH;
-use solana_quic_definitions::QUIC_PORT_OFFSET;
+
+const QUIC_PORT_OFFSET: u16 = 6;
 
 #[derive(Serialize, Deserialize)]
 struct InfluxDbConfigRaw {

@@ -120,3 +120,14 @@ run_create \
     --tags kind \
     --fields rss_bytes:int64,virtual_bytes:int64 \
     memory
+
+run_create \
+  'InfluxDB table is ready: serve_repair' \
+  'InfluxDB table already exists: serve_repair' \
+  'Failed to create InfluxDB table serve_repair' \
+  influxdb3 create table \
+    --host "$influxdb_url" \
+    --database "$database" \
+    --tags kind \
+    --fields requests_served:int64,requests_dropped:int64,requests_rate_limited:int64 \
+    serve_repair
