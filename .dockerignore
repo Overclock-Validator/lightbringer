@@ -1,0 +1,14 @@
+.git
+.claude
+.direnv
+.vscode
+.DS_Store
+.env
+.env.local
+.env.*.local
+.envrc
+Lightbringer.toml
+identity.json
+target
+secrets
+shred-store

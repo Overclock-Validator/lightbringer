@@ -3,3 +3,11 @@
 .direnv
 Lightbringer.toml
 identity.json
+.env
+.env.local
+.env.*.local
+
+/secrets/*
+!/secrets/.gitignore
+!/secrets/*.example
+!/secrets/*.example.*

@@ -1,0 +1,21 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: lightbringer-influxdb
+    orgId: 1
+
+datasources:
+  - name: lightbringer-influxdb
+    uid: lightbringer-influxdb
+    type: influxdb
+    access: proxy
+    url: ${INFLUXDB_URL}
+    isDefault: true
+    editable: false
+    jsonData:
+      version: SQL
+      dbName: ${INFLUXDB_DATABASE}
+      httpMode: POST
+      insecureGrpc: true
+    secureJsonData:
+      token: $INFLUXDB_ADMIN_TOKEN

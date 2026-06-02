@@ -38,6 +38,13 @@ fn slot_from_key(key: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(bytes))
 }
 
+fn make_key_from_request(slot: u64, shred_index: u64) -> Option<[u8; 12]> {
+    let shred_index = u32::try_from(shred_index).ok()?;
+    Some(make_key(slot, shred_index))
+}
+
+type CompactionFilterFactories = Arc<dyn Fn(&str) -> Option<Arc<dyn Factory>> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct SlotRaw {
     pub slot: u64,
@@ -86,9 +93,7 @@ impl Factory for ShredCutoffFactory {
     }
 }
 
-pub fn compaction_filter_factories(
-    cutoff_slot: Arc<AtomicU64>,
-) -> Arc<dyn Fn(&str) -> Option<Arc<dyn Factory>> + Send + Sync> {
+pub fn compaction_filter_factories(cutoff_slot: Arc<AtomicU64>) -> CompactionFilterFactories {
     Arc::new(move |keyspace| match keyspace {
         SHRED_KEYSPACE => Some(Arc::new(ShredCutoffFactory(cutoff_slot.clone()))),
         _ => None,
@@ -175,7 +180,7 @@ impl ShredStore {
             deserialized.push(s);
         }
 
-        // recover missing data shreds from coding shreds
+        // Recover missing data shreds from coding shreds.
         if data_count < 32
             && let Ok(recovered) = shred::recover(deserialized.clone(), &rs_cache)
         {
@@ -206,7 +211,9 @@ impl ShredStore {
     }
 
     pub fn get_shred(&self, slot: u64, shred_index: u64) -> fjall::Result<Option<ShredInfoView>> {
-        let key = make_key(slot, shred_index as u32);
+        let Some(key) = make_key_from_request(slot, shred_index) else {
+            return Ok(None);
+        };
         self.shred_keyspace.get(key)
     }
 
@@ -216,7 +223,9 @@ impl ShredStore {
         slot: u64,
         min_index: u64,
     ) -> fjall::Result<Option<ShredInfoView>> {
-        let start = make_key(slot, min_index as u32);
+        let Some(start) = make_key_from_request(slot, min_index) else {
+            return Ok(None);
+        };
         let end = make_key(slot, u32::MAX);
 
         match self.shred_keyspace.range(start..=end).next_back() {

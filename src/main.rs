@@ -18,6 +18,7 @@ mod types;
 mod util;
 
 use std::{
+    io::{ErrorKind, Write},
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
 };
@@ -89,22 +90,38 @@ fn init_influxdb_client(config: InfluxDbConfig) -> influxdb::Client {
 
 const KEYPAIR_PATH: &str = "identity.json";
 
-fn load_or_create_keypair() -> Keypair {
-    if let Ok(bytes) = std::fs::read(KEYPAIR_PATH) {
-        let parsed: Option<Keypair> = serde_json::from_slice::<Vec<u8>>(&bytes)
-            .ok()
-            .and_then(|v| Keypair::try_from(v.as_slice()).ok());
-        if let Some(kp) = parsed {
-            log::info!("loaded keypair from {KEYPAIR_PATH}: {}", kp.pubkey());
-            return kp;
-        }
-        log::warn!("failed to parse existing {KEYPAIR_PATH}, generating new keypair");
-    }
+fn parse_keypair(bytes: &[u8]) -> anyhow::Result<Keypair> {
+    let raw: Vec<u8> = serde_json::from_slice(bytes)?;
+    Keypair::try_from(raw.as_slice()).map_err(|e| anyhow::anyhow!("invalid keypair: {e}"))
+}
+
+fn create_keypair_file() -> anyhow::Result<Keypair> {
     let kp = Keypair::new();
-    let bytes = serde_json::to_vec(&kp.to_bytes().to_vec()).expect("serialize keypair");
-    std::fs::write(KEYPAIR_PATH, &bytes).expect("failed to write keypair to disk");
+    let bytes = serde_json::to_vec(&kp.to_bytes().to_vec())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(KEYPAIR_PATH)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
     log::info!("generated new keypair at {KEYPAIR_PATH}: {}", kp.pubkey());
-    kp
+    Ok(kp)
+}
+
+fn load_or_create_keypair() -> anyhow::Result<Keypair> {
+    match std::fs::read(KEYPAIR_PATH) {
+        Ok(bytes) => {
+            let kp = parse_keypair(&bytes)?;
+            log::info!("loaded keypair from {KEYPAIR_PATH}: {}", kp.pubkey());
+            Ok(kp)
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => create_keypair_file(),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn main() {
@@ -115,9 +132,10 @@ fn main() {
     let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
     let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
 
-    let keypair = Arc::new(load_or_create_keypair());
+    let keypair = Arc::new(load_or_create_keypair().expect("failed to load or create identity"));
 
-    let (gossip, sockets) = GossipManager::new(conf.gossip_entrypoint, keypair.clone()).unwrap();
+    let (gossip, sockets) =
+        GossipManager::new(conf.gossip_entrypoint, keypair.clone(), conf.gossip).unwrap();
     let version = gossip.version;
 
     let mut threadpool = ThreadManager::<8>::new();
@@ -150,12 +168,12 @@ fn main() {
         }
     }));
 
-    // Shred Filter
+    // Shred filter
     threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
 
-    // Slot Repair
+    // Slot repair
     let (repair_tx, repair_rx) = kanal::bounded_async(10000);
-    // allow upto 20 slots to be queued for repairing at a time
+    // Allow up to 20 slots to queue for repair.
     let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
     let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
 
@@ -187,13 +205,13 @@ fn main() {
         .await
     });
 
-    // Shred Storage
+    // Shred storage
     let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot, cluster_info.clone()).unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
     );
 
-    // Serve Repair
+    // Serve repair
     let my_serve_repair_addr = my_contact_info
         .serve_repair(solana_gossip::contact_info::Protocol::UDP)
         .unwrap();

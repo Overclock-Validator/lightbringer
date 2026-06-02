@@ -1,0 +1,217 @@
+name: lightbringer
+
+services:
+  secrets-preflight:
+    image: influxdb:3.9.2-core
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - /docker-secrets/check-readable.sh
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+      - source: grafana_admin_password
+        target: grafana-admin-password
+    volumes:
+      - ./docker/secrets/check-readable.sh:/docker-secrets/check-readable.sh:ro
+
+  lightbringer-config-preflight:
+    profiles:
+      - lightbringer
+    image: influxdb:3.9.2-core
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    cap_drop:
+      - ALL
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - /docker-secrets/check-readable.sh
+    environment:
+      LIGHTBRINGER_CONFIG_FILE: /docker-config/Lightbringer.toml
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+      - source: grafana_admin_password
+        target: grafana-admin-password
+    volumes:
+      - ./docker/secrets/check-readable.sh:/docker-secrets/check-readable.sh:ro
+      - ./Lightbringer.toml:/docker-config/Lightbringer.toml:ro
+
+  influxdb3:
+    image: influxdb:3.9.2-core
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      secrets-preflight:
+        condition: service_completed_successfully
+    command:
+      - influxdb3
+      - serve
+      - --node-id=lightbringer-node
+      - --object-store=file
+      - --data-dir=/var/lib/influxdb3/data
+      - --admin-token-file=/run/secrets/influxdb-admin-token
+      - --disable-authz=health,ping
+    ports:
+      - "127.0.0.1:18181:8181"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "token=$$(sed -n 's/.*\"token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' /run/secrets/influxdb-admin-token | head -n 1); [ -n \"$$token\" ] && INFLUXDB3_AUTH_TOKEN=\"$$token\" influxdb3 show databases --host http://127.0.0.1:8181 >/dev/null",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+    volumes:
+      - influxdb3-data:/var/lib/influxdb3
+
+  influxdb3-init:
+    image: influxdb:3.9.2-core
+    restart: "no"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      influxdb3:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - /docker-entrypoint-initdb.d/init-database.sh
+    environment:
+      INFLUXDB_ADMIN_TOKEN_FILE: /run/secrets/influxdb-admin-token
+      INFLUXDB_DATABASE: lightbringer
+      INFLUXDB_URL: http://influxdb3:8181
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+    volumes:
+      - ./docker/influxdb/init-database.sh:/docker-entrypoint-initdb.d/init-database.sh:ro
+
+  grafana:
+    build:
+      context: .
+      dockerfile: docker/grafana/Dockerfile
+      args:
+        GRAFANA_VERSION: 13.0.1-security-01
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      influxdb3-init:
+        condition: service_completed_successfully
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin-password
+      INFLUXDB_ADMIN_TOKEN_FILE: /run/secrets/influxdb-admin-token
+      INFLUXDB_DATABASE: lightbringer
+      INFLUXDB_URL: http://influxdb3:8181
+    ports:
+      - "127.0.0.1:3300:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+      - source: grafana_admin_password
+        target: grafana-admin-password
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  grafana-tunnel:
+    profiles:
+      - grafana-tunnel
+    image: cloudflare/cloudflared:2026.5.2
+    restart: unless-stopped
+    depends_on:
+      grafana:
+        condition: service_healthy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token-file
+      - /run/secrets/cloudflare-tunnel-token
+    secrets:
+      - source: cloudflare_tunnel_token
+        target: cloudflare-tunnel-token
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  lightbringer:
+    profiles:
+      - lightbringer
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      influxdb3-init:
+        condition: service_completed_successfully
+      lightbringer-config-preflight:
+        condition: service_completed_successfully
+    network_mode: host
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    secrets:
+      - source: influxdb_admin_token
+        target: influxdb-admin-token
+    configs:
+      - source: lightbringer_config
+        target: /var/lib/lightbringer/Lightbringer.toml
+    volumes:
+      - lightbringer-data:/var/lib/lightbringer
+
+configs:
+  lightbringer_config:
+    file: ./Lightbringer.toml
+
+secrets:
+  influxdb_admin_token:
+    file: ./secrets/influxdb-admin-token.json
+  grafana_admin_password:
+    file: ./secrets/grafana-admin-password
+  cloudflare_tunnel_token:
+    file: ./secrets/cloudflare-tunnel-token
+
+volumes:
+  grafana-data:
+  influxdb3-data:
+  lightbringer-data:

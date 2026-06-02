@@ -62,7 +62,7 @@ uluru = "3.1.0"
 circular-buffer = "0.1.9"
 lrumap = "0.1.0"
 
-# grpc streaming related
+# gRPC streaming dependencies.
 tokio = { version = "1.0", features = ["rt", "sync", "time", "net", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.14"

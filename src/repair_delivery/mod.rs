@@ -93,7 +93,7 @@ impl PeerRateLimit {
 
 #[derive(Default)]
 struct ServeRepairStats {
-    // by request type
+    // Request counts.
     window_index: u64,
     highest_window_index: u64,
     orphan: u64,
@@ -101,11 +101,11 @@ struct ServeRepairStats {
     pong: u64,
     legacy: u64,
 
-    // outcomes
+    // Outcomes.
     served: u64,
     rate_limited: u64,
 
-    // drop reasons
+    // Drop reasons.
     drop_deserialize: u64,
     drop_header_invalid: u64,
     drop_not_found: u64,
@@ -205,8 +205,10 @@ fn validate_header(header: &RepairRequestHeader, my_id: &Pubkey) -> bool {
     if header.sender == *my_id {
         return false;
     }
+    if header.recipient != *my_id {
+        return false;
+    }
     let time_diff_ms = solana_sdk::timing::timestamp().abs_diff(header.timestamp);
-    // 10 minute window
     if time_diff_ms > 10 * 60 * 1000 {
         return false;
     }
@@ -239,7 +241,7 @@ pub async fn start_serve_repair(
                 continue;
             }
 
-            // Rate limit per peer
+            // Per-peer rate limit.
             let rate_limit = rate_limits
                 .entry(from_addr)
                 .or_insert_with(PeerRateLimit::new);
@@ -335,7 +337,7 @@ pub async fn start_serve_repair(
 
             report_stats_if_needed(&mut stats, &mut last_stats_report, &metrics);
 
-            // Periodic rate limit map cleanup (every 60s)
+            // Remove idle rate-limit entries.
             if last_rate_limit_cleanup.elapsed().as_secs() >= 60 {
                 rate_limits.retain(|_, rl| rl.window_start.elapsed().as_secs() < 30);
                 last_rate_limit_cleanup = std::time::Instant::now();

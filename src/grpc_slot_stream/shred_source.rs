@@ -16,6 +16,10 @@ use crate::{
     types::{PacketInfo, ShredInfoView},
 };
 
+type FinishedSlots = Rc<RefCell<BTreeSet<u64>>>;
+type SlotCache = Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 300>>>;
+type BlockNotification = Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>;
+
 pub struct SlotForGrpc<Shred> {
     pub slot: u64,
     pub shreds: Vec<Shred>,
@@ -58,13 +62,13 @@ impl ShredSource for SlotMetaShreds {
 
 #[derive(Clone, Default)]
 struct SlotShredsWaiter {
-    finished_slots: Rc<RefCell<BTreeSet<u64>>>,
-    slot_cache: Rc<RefCell<LRUCache<(u64, Vec<ShredInfoView>), 300>>>,
-    block_notif: Rc<RefCell<Option<(u64, LocalSender<Vec<ShredInfoView>>)>>>,
+    finished_slots: FinishedSlots,
+    slot_cache: SlotCache,
+    block_notif: BlockNotification,
 }
 
 impl SlotShredsWaiter {
-    /// Insert a slot, notifying the receiver if they are waiting for it
+    /// Inserts a slot and notifies any waiter for it.
     fn insert(&self, slot: SlotRaw) {
         let mut block_notif = self.block_notif.borrow_mut();
         let mut finished_slots = self.finished_slots.borrow_mut();
@@ -153,8 +157,7 @@ async fn confirmed_slot_shreds_glommio_runner_with_backqueue(
         Some(())
     }));
 
-    // This wrapper is required because the confirmation stream must be driven constantly
-    // else the websocket connection will be dropped
+    // The confirmation stream must be polled continuously to keep the websocket open.
     let (conf_stream_tx, conf_stream_rx) = local_channel::new_bounded(1000);
     let conf_stream_handle = spawn_local(async move {
         while let Ok(notif) = conf_stream.next().await {

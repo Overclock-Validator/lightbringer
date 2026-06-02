@@ -6,7 +6,7 @@ fn try_deshred() {
 
     use solana_ledger::shred::Shred;
 
-    simple_logger::init_with_level(log::Level::Info).unwrap();
+    let _ = simple_logger::init_with_level(log::Level::Info);
     let f = fs::read("./decoded_shreds.json").unwrap();
     let raw_shreds: Vec<String> = serde_json::from_slice(&f).unwrap();
     let shreds = raw_shreds.into_iter().map(|s| {
@@ -38,7 +38,7 @@ fn try_deshred() {
 fn try_decode_and_deshred() {
     use std::fs;
 
-    simple_logger::init_with_level(log::Level::Info).unwrap();
+    let _ = simple_logger::init_with_level(log::Level::Info);
     let f = fs::read("./stored_shreds.json").unwrap();
     let raw_shreds: Vec<String> = serde_json::from_slice(&f).unwrap();
     let shreds = raw_shreds.into_iter().map(|s| {

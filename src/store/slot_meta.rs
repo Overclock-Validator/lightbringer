@@ -1,7 +1,3 @@
-// use pure in-memory data structures
-// we'll use scc::HashMap
-// FOR later: investigate queues
-
 use std::{
     collections::{BTreeSet, HashMap},
     rc::Rc,
@@ -34,7 +30,7 @@ pub struct SlotMetadata {
     pub timestamp_ms: u64,
     pub completed_batches: BTreeSet<u32>,
     pub required_batches: Option<usize>,
-    // highest shred index seen
+    // Highest shred index seen.
     pub max_inclusive_shred: u32,
     /// shreds grouped by fec_set_index, drained to store on batch completion
     pub batch_shreds: HashMap<u32, Vec<PacketInfo>>,
@@ -113,8 +109,8 @@ impl SlotMetadata {
         missing_shreds
     }
 
-    /// find required shreds to complete the slot
-    /// returning None if the last shred hasn't been seen yet
+    /// Finds required shreds to complete the slot.
+    /// Returns unbounded repairs until the last shred is seen.
     pub fn calculate_missing_shreds(&self) -> RepairReq {
         if let Some(shreds) = self.calculate_missing_shreds_bounded() {
             return RepairReq::MissingBoundedShreds {
@@ -150,14 +146,14 @@ pub struct SlotMetadataStore {
 }
 
 enum SlotTimerMsg {
-    ShredInsertion { slot: u64 },
-    ShredCompletion { slot: u64 },
-    ShredTimeout { slot: u64 },
+    Insertion { slot: u64 },
+    Completion { slot: u64 },
+    Timeout { slot: u64 },
 }
 
 impl SlotMetadataStore {
     pub fn new(version: u16) -> Self {
-        // stores the last 4096 slots only
+        // Stores the last 4096 slots.
         let hash_cache = scc::HashCache::with_capacity(0, 4096);
         Self {
             inner: Arc::new(hash_cache),
@@ -200,18 +196,18 @@ impl SlotMetadataStore {
                     SlotMetaStoreRes::Ignored => continue,
                     SlotMetaStoreRes::BatchComplete(batch) => {
                         _ = store_tx.send(batch).await;
-                        SlotTimerMsg::ShredInsertion { slot }
+                        SlotTimerMsg::Insertion { slot }
                     }
                     SlotMetaStoreRes::Complete {
                         store_batch,
                         grpc_slot,
                     } => {
                         _ = store_tx.send(store_batch).await;
-                        _ = timer_tx.try_send(SlotTimerMsg::ShredCompletion { slot });
+                        _ = timer_tx.try_send(SlotTimerMsg::Completion { slot });
                         _ = grpc_tx.send(grpc_slot).await;
                         continue;
                     }
-                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::ShredInsertion { slot },
+                    SlotMetaStoreRes::Incomplete => SlotTimerMsg::Insertion { slot },
                 };
                 _ = timer_tx.try_send(timer_msg);
             }
@@ -222,7 +218,7 @@ impl SlotMetadataStore {
             let mut timers: HashMap<u64, TimerActionOnce<()>> = HashMap::new();
             while let Some(msg) = timer_rx.recv().await {
                 match msg {
-                    SlotTimerMsg::ShredInsertion { slot } => {
+                    SlotTimerMsg::Insertion { slot } => {
                         timers
                             .entry(slot)
                             .and_modify(|timer| {
@@ -231,11 +227,11 @@ impl SlotMetadataStore {
                             .or_insert_with(|| {
                                 let timer_tx = timer_tx.clone();
                                 TimerActionOnce::do_in(DEFER_REPAIR_THRESHOLD, async move {
-                                    _ = timer_tx.send(SlotTimerMsg::ShredTimeout { slot }).await;
+                                    _ = timer_tx.send(SlotTimerMsg::Timeout { slot }).await;
                                 })
                             });
                     }
-                    SlotTimerMsg::ShredCompletion { slot } => {
+                    SlotTimerMsg::Completion { slot } => {
                         if let Some(timer) = timers.remove(&slot) {
                             timer.destroy();
                         }
@@ -250,7 +246,7 @@ impl SlotMetadataStore {
                             _ = repair_tx.send(RepairReq::CancelRepair { slot }).await;
                         }
                     }
-                    SlotTimerMsg::ShredTimeout { slot } => {
+                    SlotTimerMsg::Timeout { slot } => {
                         timers.remove(&slot);
                         let Some(mut slot_meta) = self.inner.get_sync(&slot) else {
                             continue;
@@ -273,6 +269,7 @@ impl SlotMetadataStore {
         );
     }
 
+    // Stores a shred and reports whether the slot is complete.
     fn store_shred(&self, hdr: ShredCommonHeader, shred: PacketInfo) -> SlotMetaStoreRes {
         let slot = hdr.slot;
         let fec_index = hdr.fec_set_index;
@@ -299,7 +296,7 @@ impl SlotMetadataStore {
             return SlotMetaStoreRes::Ignored;
         }
 
-        // always learn required_batches before any early returns
+        // Always learn required_batches before any early returns.
         if let ShredType::Data = ShredType::from(hdr.shred_variant)
             && let Ok(flags) = shred::layout::get_flags(&shred)
             && flags.contains(ShredFlags::LAST_SHRED_IN_SLOT)
@@ -308,7 +305,7 @@ impl SlotMetadataStore {
                 Some((fec_index as usize + DATA_SHREDS_PER_FEC_SET) / DATA_SHREDS_PER_FEC_SET);
         }
 
-        // batch already completed - only check if this retroactively completed the slot
+        // A completed batch can still retroactively complete the slot.
         if m.completed_batches.contains(&fec_index) {
             return if m.is_complete() {
                 Self::make_complete(
@@ -323,7 +320,7 @@ impl SlotMetadataStore {
             };
         }
 
-        // insert into fec tracking
+        // Insert into FEC tracking.
         let fec_map = match ShredType::from(hdr.shred_variant) {
             ShredType::Data => &mut m.fec_data_map,
             ShredType::Code => &mut m.fec_coding_map,
@@ -335,7 +332,7 @@ impl SlotMetadataStore {
         m.max_inclusive_shred = m.max_inclusive_shred.max(shred_index);
         m.batch_shreds.entry(fec_index).or_default().push(shred);
 
-        // check batch completion
+        // Check batch completion.
         let batch_count = m.fec_coding_map.get(&fec_index).map_or(0, |s| s.len())
             + m.fec_data_map.get(&fec_index).map_or(0, |s| s.len());
 
@@ -354,7 +351,7 @@ impl SlotMetadataStore {
             };
         }
 
-        // required_batches may have been set above, check slot completion
+        // required_batches may have been set above, so check slot completion.
         if m.is_complete() {
             return Self::make_complete(
                 m,
