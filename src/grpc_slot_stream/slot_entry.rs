@@ -1,11 +1,11 @@
 use solana_entry::entry::Entry as SolEntry;
-use solana_sdk::{
-    message::{
-        MessageHeader as SolMessageHeader, VersionedMessage,
-        compiled_instruction::CompiledInstruction as SolCompiledInstruction,
-        v0::MessageAddressTableLookup as SolMessageAddressTableLookup,
-    },
-    transaction::VersionedTransaction as SolVersionedTransaction,
+use solana_message::{
+    MessageHeader as SolMessageHeader,
+    v0::MessageAddressTableLookup as SolMessageAddressTableLookup,
+};
+use solana_transaction::{
+    CompiledInstruction as SolCompiledInstruction, VersionedMessage,
+    versioned::VersionedTransaction as SolVersionedTransaction,
 };
 
 tonic::include_proto!("slot_entry");

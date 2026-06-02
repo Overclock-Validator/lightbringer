@@ -22,7 +22,7 @@ pub enum RpcError {
     #[error("failed to deshred data shreds for slot: {0}")]
     Deshred(solana_ledger::shred::Error),
     #[error("failed to deserialize entries: {0}")]
-    InvalidEntries(#[from] bincode::Error),
+    InvalidEntries(#[from] wincode::ReadError),
 }
 
 impl IntoResponse for RpcError {

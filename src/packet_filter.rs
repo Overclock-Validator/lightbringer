@@ -29,13 +29,13 @@ impl PacketProcessor {
     }
 
     fn validate_packet(&self, packet: &PacketInfo, leader: Pubkey) -> bool {
-        let Some(sig) = shred::layout::get_signature(packet) else {
+        let Some(sig) = shred::wire::get_signature(packet) else {
             return false;
         };
-        let Some(data) = shred::layout::get_signed_data(packet) else {
+        let Some(data) = shred::wire::get_merkle_root(packet) else {
             return false;
         };
-        let key: SigCacheKey = (sig, leader, data.as_ref().try_into().unwrap());
+        let key: SigCacheKey = (sig, leader, data.to_bytes());
 
         if self.sig_cache.contains_sync(&key) {
             return true;

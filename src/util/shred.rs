@@ -43,7 +43,7 @@ pub fn deshred_to_entries<'a>(
 ) -> Result<Vec<Entry>, RpcError> {
     let deshred_payload =
         Shredder::deshred(data_shreds.map(|s| s.payload())).map_err(RpcError::Deshred)?;
-    let deshred_entries: Vec<Entry> = bincode::deserialize(&deshred_payload)?;
+    let deshred_entries: Vec<Entry> = wincode::deserialize(&deshred_payload)?;
     Ok(deshred_entries)
 }
 

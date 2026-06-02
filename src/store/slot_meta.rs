@@ -185,7 +185,7 @@ impl SlotMetadataStore {
             while let Ok(shred) = rx.recv().await {
                 let Some(common_header) = shred::layout::get_common_header_bytes(&shred)
                     .and_then(|raw_header| {
-                        bincode::deserialize::<ShredCommonHeader>(raw_header).ok()
+                        wincode::deserialize::<ShredCommonHeader>(raw_header).ok()
                     })
                     .filter(|hdr| hdr.version == shred_version)
                 else {
