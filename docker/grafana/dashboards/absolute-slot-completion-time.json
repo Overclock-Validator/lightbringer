@@ -415,7 +415,7 @@
               "mode": "off"
             }
           },
-          "decimals": 1,
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -432,9 +432,26 @@
               }
             ]
           },
-          "unit": "ms"
+          "unit": "none"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "completion_delta_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 11,
@@ -458,7 +475,7 @@
           "placement": "bottom",
           "showLegend": true
         },
-        "orientation": "auto",
+        "orientation": "vertical",
         "showValue": "never",
         "stacking": "none",
         "tooltip": {
