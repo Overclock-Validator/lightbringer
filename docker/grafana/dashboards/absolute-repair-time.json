@@ -442,7 +442,7 @@
               "mode": "off"
             }
           },
-          "decimals": 1,
+          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -459,10 +459,25 @@
               }
             ]
           },
-          "unit": "ms"
+          "unit": "none"
         },
         "overrides": [
-
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "repair_duration_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
         ]
       },
       "gridPos": {
@@ -489,7 +504,7 @@
           "placement": "bottom",
           "showLegend": true
         },
-        "orientation": "auto",
+        "orientation": "vertical",
         "showValue": "never",
         "stacking": "none",
         "tooltip": {
