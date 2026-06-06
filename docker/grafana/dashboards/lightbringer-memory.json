@@ -547,7 +547,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CAST((now() - MAX(time)) AS BIGINT) / 1000000000.0 AS last_memory_sample_age_seconds FROM memory",
+          "rawSql": "SELECT CAST((now() - MAX(time)) AS BIGINT) / 1000000000.0 AS last_memory_sample_age_seconds FROM memory WHERE $__timeFilter(time)",
           "sql": {
             "columns": [
               {
