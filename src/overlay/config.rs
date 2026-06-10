@@ -36,6 +36,7 @@ pub struct OverlayConfig {
     #[serde(default = "default_fanout")]
     pub fanout: usize,
     pub repair_addr: Option<SocketAddr>,
+    pub shred_version: Option<u16>,
     #[serde(default = "default_peer_ttl_ms")]
     pub peer_ttl_ms: u64,
 }
@@ -50,6 +51,7 @@ impl Default for OverlayConfig {
             static_peers: Vec::new(),
             fanout: default_fanout(),
             repair_addr: None,
+            shred_version: None,
             peer_ttl_ms: default_peer_ttl_ms(),
         }
     }

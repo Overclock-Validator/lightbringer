@@ -251,10 +251,8 @@ impl OverlayQuicTransport {
             }
         }
 
-        if remove {
-            if let Some(connection) = self.connections.remove(&peer) {
-                self.handles.remove(&connection.handle);
-            }
+        if remove && let Some(connection) = self.connections.remove(&peer) {
+            self.handles.remove(&connection.handle);
         }
     }
 

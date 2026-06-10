@@ -27,7 +27,7 @@ fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
         return None;
     }
-    Some(ArrayVec::try_from(payload.as_slice()).ok()?)
+    ArrayVec::try_from(payload.as_slice()).ok()
 }
 
 async fn send_frame(transport: &mut OverlayQuicTransport, peer: SocketAddr, frame: &OverlayFrame) {

@@ -62,7 +62,7 @@ pub struct ShredStore {
     db: fjall::Database,
     shred_keyspace: fjall::Keyspace,
     cutoff_slot: Arc<AtomicU64>,
-    cluster_info: Arc<ClusterInfo>,
+    cluster_info: Option<Arc<ClusterInfo>>,
 }
 
 struct ShredCutoffFilter(u64);
@@ -104,7 +104,7 @@ impl ShredStore {
     pub fn new(
         db: fjall::Database,
         cutoff_slot: Arc<AtomicU64>,
-        cluster_info: Arc<ClusterInfo>,
+        cluster_info: Option<Arc<ClusterInfo>>,
     ) -> anyhow::Result<Self> {
         let shred_keyspace = db.keyspace(SHRED_KEYSPACE, Default::default)?;
 
@@ -205,7 +205,9 @@ impl ShredStore {
         }
         batch.commit()?;
         self.db.persist(fjall::PersistMode::SyncAll)?;
-        self.cluster_info.push_lowest_slot(slot);
+        if let Some(cluster_info) = &self.cluster_info {
+            cluster_info.push_lowest_slot(slot);
+        }
 
         Ok(())
     }

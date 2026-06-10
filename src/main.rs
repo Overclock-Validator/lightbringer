@@ -20,15 +20,20 @@ mod util;
 
 use std::{
     io::{ErrorKind, Write},
+    net::SocketAddr,
     path::PathBuf,
     sync::{Arc, atomic::AtomicU64},
 };
 
 use fjall::Database;
 use glommio::enclose;
-use gossip_manager::GossipManager;
-use repair::request::RepairManager;
+use gossip_manager::{GossipManager, Sockets};
+use repair::{
+    request::{RepairManager, RepairReq},
+    socket::RepairSocketRequestBatch,
+};
 use simple_logger::SimpleLogger;
+use solana_gossip::cluster_info::ClusterInfo;
 use solana_sdk::signature::{Keypair, Signer};
 use store::{shred::ShredStore, slot_meta::SlotMetadataStore};
 use thread_manager::ThreadManager;
@@ -36,7 +41,7 @@ use turbine_manager::start_turbine_manager;
 
 use crate::{
     block_conf::BlockConfStream,
-    config::{Config, InfluxDbConfig, LogConfig},
+    config::{Config, GossipConfig, InfluxDbConfig, LogConfig},
     grpc_slot_stream::shred_source::{
         ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
     },
@@ -125,84 +130,77 @@ fn load_or_create_keypair() -> anyhow::Result<Keypair> {
     }
 }
 
-fn main() {
-    let conf = Config::parse();
+struct SolanaContext {
+    gossip: GossipManager,
+    sockets: Sockets,
+    cluster_info: Arc<ClusterInfo>,
+    shred_version: u16,
+    tvu_addr: SocketAddr,
+}
 
-    init_logger(conf.log.as_ref()).unwrap();
+struct RunningSolanaServices {
+    gossip: GossipManager,
+    shred_version: u16,
+}
 
-    let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
-    let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
-
-    let keypair = Arc::new(load_or_create_keypair().expect("failed to load or create identity"));
-
-    let (gossip, sockets) =
-        GossipManager::new(conf.gossip_entrypoint, keypair.clone(), conf.gossip).unwrap();
-    let version = gossip.version;
-
-    let mut threadpool = ThreadManager::<10>::new();
-
-    let (metrics, metrics_rx) = MetricsSender::new();
-    let metrics_client = conf.influxdb.map(init_influxdb_client);
-    let (metrics_exit_tx, metrics_exit_rx) = oneshot::channel();
-    std::thread::spawn(enclose!((metrics) move || {
-        start_metrics_thread(metrics_client, metrics_rx, metrics, metrics_exit_rx);
-    }));
-
+fn init_solana_context(
+    gossip_entrypoint: SocketAddr,
+    gossip_config: GossipConfig,
+    keypair: Arc<Keypair>,
+) -> anyhow::Result<SolanaContext> {
+    let (gossip, sockets) = GossipManager::new(gossip_entrypoint, keypair.clone(), gossip_config)?;
+    let shred_version = gossip.version;
     let my_contact_info = gossip.lookup_my_info();
-
     let cluster_info = gossip.get_cluster_info();
-
-    let my_tvu_addr = my_contact_info
+    let tvu_addr = my_contact_info
         .tvu(solana_gossip::contact_info::Protocol::UDP)
         .unwrap();
-    log::info!("me: {my_tvu_addr:?}");
+    let serve_repair_addr = my_contact_info
+        .serve_repair(solana_gossip::contact_info::Protocol::UDP)
+        .unwrap();
+    log::info!("me: {tvu_addr:?}");
+    log::info!("serve_repair: {serve_repair_addr:?}");
 
-    let (filter_tx, filter_rx) = kanal::unbounded_async();
-    let (slot_store_tx, slot_store_rx) = kanal::unbounded_async();
-    let (slot_meta_tx, slot_meta_rx) = kanal::unbounded_async();
-    let overlay_config = conf.overlay.clone().filter(|config| config.enabled);
-    let (overlay_source_tx, overlay_source_rx) = if matches!(
-        overlay_config.as_ref().map(|config| config.mode),
-        Some(OverlayMode::Source)
-    ) {
-        let (tx, rx) = kanal::unbounded_async();
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
+    Ok(SolanaContext {
+        gossip,
+        sockets,
+        cluster_info,
+        shred_version,
+        tvu_addr,
+    })
+}
 
-    // Turbine shred receiver
+#[allow(clippy::too_many_arguments)]
+fn start_solana_services(
+    threadpool: &mut ThreadManager<10>,
+    context: SolanaContext,
+    keypair: Arc<Keypair>,
+    filter_tx: kanal::AsyncSender<types::PacketInfo>,
+    repair_rx: kanal::AsyncReceiver<RepairReq>,
+    repair_socket_tx: kanal::AsyncSender<RepairSocketRequestBatch>,
+    repair_socket_rx: kanal::AsyncReceiver<RepairSocketRequestBatch>,
+    repair_manager_tx: kanal::AsyncSender<(SocketAddr, types::PacketInfo)>,
+    repair_manager_rx: kanal::AsyncReceiver<(SocketAddr, types::PacketInfo)>,
+    shred_store: ShredStore,
+    metrics: MetricsSender,
+) -> RunningSolanaServices {
+    let SolanaContext {
+        gossip,
+        sockets,
+        cluster_info,
+        shred_version,
+        tvu_addr,
+    } = context;
+    threadpool.spawn(enclose!((filter_tx) move |exit| async move {
+        let res = start_turbine_manager(exit, tvu_addr, filter_tx).await;
+        if let Err(e) = res {
+            log::error!("failed to start turbine manager: {e}");
+        }
+    }));
+
+    let repair_keypair = keypair.clone();
     threadpool.spawn(
-        enclose!((filter_tx, overlay_source_tx) move |exit| async move {
-            let res = start_turbine_manager(exit, my_tvu_addr, filter_tx, overlay_source_tx).await;
-            if let Err(e) = res {
-                log::error!("failed to start turbine manager: {e}");
-            }
-        }),
-    );
-
-    if let Some(overlay_config) = overlay_config {
-        let overlay_keypair = keypair.clone();
-        threadpool.spawn(enclose!((filter_tx) move |exit| async move {
-            if let Err(e) =
-                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, filter_tx).await
-            {
-                log::error!("overlay runner stopped with error: {e}");
-            }
-        }));
-    }
-
-    // Shred filter
-    threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
-
-    // Slot repair
-    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
-    // Allow up to 20 slots to queue for repair.
-    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
-    let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
-
-    threadpool.spawn(
-        enclose!((cluster_info, keypair, repair_socket_tx, filter_tx, metrics) move |exit| async {
+        enclose!((cluster_info, repair_keypair, repair_socket_tx, filter_tx, metrics) move |exit| async {
             let repair_manager =
                 RepairManager::new(
                     repair_rx,
@@ -210,12 +208,13 @@ fn main() {
                     repair_manager_rx,
                     filter_tx,
                     cluster_info,
-                    keypair,
+                    repair_keypair,
                     metrics,
                 );
             repair_manager.start_repair_manager_loop(exit).await
         }),
     );
+
     let serve_repair_keypair = keypair.clone();
     let serve_repair_socket = sockets.serve_repair_socket;
     threadpool.spawn(move |exit| async move {
@@ -229,17 +228,6 @@ fn main() {
         .await
     });
 
-    // Shred storage
-    let shred_store = ShredStore::new(lsm_ks, shred_cutoff_slot, cluster_info.clone()).unwrap();
-    threadpool.spawn(
-        enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
-    );
-
-    // Serve repair
-    let my_serve_repair_addr = my_contact_info
-        .serve_repair(solana_gossip::contact_info::Protocol::UDP)
-        .unwrap();
-    log::info!("serve_repair: {my_serve_repair_addr:?}");
     threadpool.spawn(
         enclose!((shred_store, cluster_info, metrics) move |exit| async move {
             start_serve_repair(
@@ -253,6 +241,143 @@ fn main() {
             .await
         }),
     );
+
+    RunningSolanaServices {
+        gossip,
+        shred_version,
+    }
+}
+
+fn main() {
+    let conf = Config::parse();
+
+    init_logger(conf.log.as_ref()).unwrap();
+
+    let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
+    let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
+
+    let keypair = Arc::new(load_or_create_keypair().expect("failed to load or create identity"));
+    let overlay_config = conf.overlay.clone().filter(|config| config.enabled);
+    let solana_services_enabled = !matches!(
+        overlay_config.as_ref().map(|config| config.mode),
+        Some(OverlayMode::Sink)
+    );
+    let solana_context = if solana_services_enabled {
+        let gossip_entrypoint = conf
+            .gossip_entrypoint
+            .expect("gossip_entrypoint is required when Solana services are enabled");
+        Some(
+            init_solana_context(gossip_entrypoint, conf.gossip, keypair.clone())
+                .expect("failed to initialize Solana services"),
+        )
+    } else {
+        log::info!("overlay sink mode: Solana gossip, turbine, and repair sockets are disabled");
+        None
+    };
+
+    let mut threadpool = ThreadManager::<10>::new();
+
+    let (metrics, metrics_rx) = MetricsSender::new();
+    let metrics_client = conf.influxdb.map(init_influxdb_client);
+    let (metrics_exit_tx, metrics_exit_rx) = oneshot::channel();
+    std::thread::spawn(enclose!((metrics) move || {
+        start_metrics_thread(metrics_client, metrics_rx, metrics, metrics_exit_rx);
+    }));
+
+    let (filter_tx, filter_rx) = kanal::unbounded_async();
+    let (slot_store_tx, slot_store_rx) = kanal::unbounded_async();
+    let (slot_meta_tx, slot_meta_rx) = kanal::unbounded_async();
+    let (overlay_source_tx, overlay_source_rx) = if matches!(
+        overlay_config.as_ref().map(|config| config.mode),
+        Some(OverlayMode::Source)
+    ) {
+        let (tx, rx) = kanal::unbounded_async();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    if let Some(overlay_config) = overlay_config.clone() {
+        let overlay_keypair = keypair.clone();
+        let overlay_output_tx = filter_tx.clone();
+        threadpool.spawn(enclose!((overlay_output_tx) move |exit| async move {
+            if let Err(e) =
+                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, overlay_output_tx).await
+            {
+                log::error!("overlay runner stopped with error: {e}");
+            }
+        }));
+    }
+
+    // Shred filter. Source overlay dissemination is fed from this validated
+    // path, never directly from turbine.
+    let overlay_validated_tx = overlay_source_tx.clone().map(kanal::AsyncSender::to_sync);
+    threadpool.spawn(move |exit| {
+        packet_filter_loop(
+            exit,
+            filter_rx,
+            slot_meta_tx.to_sync(),
+            overlay_validated_tx,
+        )
+    });
+
+    // Shred storage
+    let shred_store = ShredStore::new(
+        lsm_ks,
+        shred_cutoff_slot,
+        solana_context
+            .as_ref()
+            .map(|context| context.cluster_info.clone()),
+    )
+    .unwrap();
+    threadpool.spawn(
+        enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
+    );
+
+    // Slot repair
+    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
+    // Allow up to 20 slots to queue for repair.
+    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
+    let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
+
+    let solana_services = if let Some(solana_context) = solana_context {
+        Some(start_solana_services(
+            &mut threadpool,
+            solana_context,
+            keypair,
+            filter_tx,
+            repair_rx,
+            repair_socket_tx,
+            repair_socket_rx,
+            repair_manager_tx,
+            repair_manager_rx,
+            shred_store.clone(),
+            metrics.clone(),
+        ))
+    } else {
+        threadpool.spawn(move |exit| async move {
+            let task = glommio::spawn_local(async move {
+                while repair_rx.recv().await.is_ok() {
+                    log::error!(
+                        "overlay sink repair request generated but overlay repair requester is not wired yet"
+                    );
+                }
+            });
+            exit.await;
+            task.cancel().await;
+        });
+        None
+    };
+
+    let version = solana_services
+        .as_ref()
+        .map(|services| services.shred_version)
+        .or_else(|| {
+            overlay_config
+                .as_ref()
+                .and_then(|config| config.shred_version)
+        })
+        .expect("overlay.shred_version is required when Solana services are disabled");
 
     let slot_meta_store = SlotMetadataStore::new(version);
     let (grpc_slot_meta_tx, grpc_slot_meta_rx) = kanal::bounded_async(1000);
@@ -296,7 +421,9 @@ fn main() {
     };
 
     threadpool.join_with_cancel_handler(move || {
-        if let Err(e) = gossip.stop() {
+        if let Some(solana_services) = solana_services
+            && let Err(e) = solana_services.gossip.stop()
+        {
             log::warn!("failed to stop gossip service {e}");
         }
         _ = grpc_cancel_tx.send(());
