@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use solana_net_utils::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH;
 
+use crate::overlay::OverlayConfig;
+
 const QUIC_PORT_OFFSET: u16 = 6;
 
 #[derive(Serialize, Deserialize)]
@@ -163,6 +165,7 @@ struct ConfigRaw {
     gossip: GossipConfig,
     influxdb: Option<InfluxDbConfigRaw>,
     block_confirmation: Option<BlockConfirmationConfig>,
+    overlay: Option<OverlayConfig>,
     log: Option<LogConfig>,
 }
 
@@ -176,6 +179,7 @@ impl Default for ConfigRaw {
             gossip: GossipConfig::default(),
             influxdb: None,
             block_confirmation: None,
+            overlay: None,
             log: None,
         }
     }
@@ -189,6 +193,7 @@ pub struct Config {
     pub gossip: GossipConfig,
     pub influxdb: Option<InfluxDbConfig>,
     pub block_confirmation: Option<BlockConfirmationConfig>,
+    pub overlay: Option<OverlayConfig>,
     pub log: Option<LogConfig>,
 }
 
@@ -266,6 +271,7 @@ impl TryFrom<ConfigRaw> for Config {
             gossip: value.gossip,
             influxdb,
             block_confirmation: value.block_confirmation,
+            overlay: value.overlay,
             log: value.log,
         })
     }

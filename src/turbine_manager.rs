@@ -30,6 +30,7 @@ pub async fn start_turbine_manager(
     exit: CancelRx,
     addr: SocketAddr,
     filter_tx: kanal::AsyncSender<PacketInfo>,
+    overlay_tx: Option<kanal::AsyncSender<PacketInfo>>,
 ) -> anyhow::Result<()> {
     let socket =
         UdpSocket::bind(addr).map_err(|e| anyhow!("failed to create turbine socket {e}"))?;
@@ -42,6 +43,11 @@ pub async fn start_turbine_manager(
             let packet = PacketInfo::new(packet);
             if let Err(e) = filter_tx.send(packet.clone()).await {
                 log::warn!("failed to send packet to filter: {e}");
+            }
+            if let Some(overlay_tx) = overlay_tx.as_ref()
+                && let Err(e) = overlay_tx.send(packet).await
+            {
+                log::warn!("failed to send packet to overlay: {e}");
             }
         }
     });

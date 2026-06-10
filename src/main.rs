@@ -10,6 +10,7 @@ mod packet_filter;
 mod repair;
 mod repair_delivery;
 //mod rpc;
+mod overlay;
 mod solana_rpc;
 mod store;
 mod thread_manager;
@@ -40,6 +41,7 @@ use crate::{
         ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
     },
     metrics::{MetricsSender, start_metrics_thread},
+    overlay::{OverlayMode, start_overlay_runner},
     packet_filter::packet_filter_loop,
     repair::socket::start_repair_socket_runner,
     repair_delivery::start_serve_repair,
@@ -137,7 +139,7 @@ fn main() {
         GossipManager::new(conf.gossip_entrypoint, keypair.clone(), conf.gossip).unwrap();
     let version = gossip.version;
 
-    let mut threadpool = ThreadManager::<8>::new();
+    let mut threadpool = ThreadManager::<10>::new();
 
     let (metrics, metrics_rx) = MetricsSender::new();
     let metrics_client = conf.influxdb.map(init_influxdb_client);
@@ -158,14 +160,37 @@ fn main() {
     let (filter_tx, filter_rx) = kanal::unbounded_async();
     let (slot_store_tx, slot_store_rx) = kanal::unbounded_async();
     let (slot_meta_tx, slot_meta_rx) = kanal::unbounded_async();
+    let overlay_config = conf.overlay.clone().filter(|config| config.enabled);
+    let (overlay_source_tx, overlay_source_rx) = if matches!(
+        overlay_config.as_ref().map(|config| config.mode),
+        Some(OverlayMode::Source)
+    ) {
+        let (tx, rx) = kanal::unbounded_async();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
 
     // Turbine shred receiver
-    threadpool.spawn(enclose!((filter_tx) move |exit| async move {
-        let res = start_turbine_manager(exit, my_tvu_addr, filter_tx).await;
-        if let Err(e) = res {
-            log::error!("failed to start turbine manager: {e}");
-        }
-    }));
+    threadpool.spawn(
+        enclose!((filter_tx, overlay_source_tx) move |exit| async move {
+            let res = start_turbine_manager(exit, my_tvu_addr, filter_tx, overlay_source_tx).await;
+            if let Err(e) = res {
+                log::error!("failed to start turbine manager: {e}");
+            }
+        }),
+    );
+
+    if let Some(overlay_config) = overlay_config {
+        let overlay_keypair = keypair.clone();
+        threadpool.spawn(enclose!((filter_tx) move |exit| async move {
+            if let Err(e) =
+                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, filter_tx).await
+            {
+                log::error!("overlay runner stopped with error: {e}");
+            }
+        }));
+    }
 
     // Shred filter
     threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
