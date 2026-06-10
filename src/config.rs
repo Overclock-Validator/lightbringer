@@ -184,7 +184,7 @@ impl Default for ConfigRaw {
 pub struct Config {
     pub gossip_entrypoint: SocketAddr,
     pub storage: PathBuf,
-    pub rpc_addr: SocketAddr,
+    //pub rpc_addr: SocketAddr,
     pub grpc_addr: SocketAddr,
     pub gossip: GossipConfig,
     pub influxdb: Option<InfluxDbConfig>,
@@ -207,10 +207,10 @@ impl TryFrom<ConfigRaw> for Config {
 
         let storage = PathBuf::from(value.storage);
 
-        let rpc_addr: SocketAddr = value
-            .rpc_addr
-            .parse()
-            .map_err(|e| anyhow!("invalid `rpc_addr`: {e}"))?;
+        // let rpc_addr: SocketAddr = value
+        //     .rpc_addr
+        //     .parse()
+        //     .map_err(|e| anyhow!("invalid `rpc_addr`: {e}"))?;
 
         let grpc_addr: SocketAddr = value
             .grpc_addr
@@ -261,7 +261,7 @@ impl TryFrom<ConfigRaw> for Config {
         Ok(Self {
             gossip_entrypoint,
             storage,
-            rpc_addr,
+            //rpc_addr,
             grpc_addr,
             gossip: value.gossip,
             influxdb,

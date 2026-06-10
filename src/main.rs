@@ -9,7 +9,7 @@ mod metrics;
 mod packet_filter;
 mod repair;
 mod repair_delivery;
-mod rpc;
+//mod rpc;
 mod solana_rpc;
 mod store;
 mod thread_manager;
@@ -43,7 +43,6 @@ use crate::{
     packet_filter::packet_filter_loop,
     repair::socket::start_repair_socket_runner,
     repair_delivery::start_serve_repair,
-    rpc::DebugRpcInit,
     solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
 };
@@ -271,20 +270,14 @@ fn main() {
         })
     };
 
-    threadpool.spawn_rpc_with_cancel_handler(
-        DebugRpcInit {
-            listen_addr: conf.rpc_addr,
-            shred_store,
-        },
-        move || {
-            if let Err(e) = gossip.stop() {
-                log::warn!("failed to stop gossip service {e}");
-            }
-            _ = grpc_cancel_tx.send(());
-            _ = metrics_exit_tx.send(());
-            if let Err(e) = grpc_thread.join() {
-                log::warn!("failed to stop grpc thread {e:?}");
-            }
-        },
-    );
+    threadpool.join_with_cancel_handler(move || {
+        if let Err(e) = gossip.stop() {
+            log::warn!("failed to stop gossip service {e}");
+        }
+        _ = grpc_cancel_tx.send(());
+        _ = metrics_exit_tx.send(());
+        if let Err(e) = grpc_thread.join() {
+            log::warn!("failed to stop grpc thread {e:?}");
+        }
+    });
 }
