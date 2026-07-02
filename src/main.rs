@@ -126,23 +126,27 @@ fn load_or_create_keypair() -> anyhow::Result<Keypair> {
     }
 }
 
+/// Picks the RPC used for leader-schedule lookups (shred signer validation).
+///
+/// Alpenglow mode must never fall back to the mainnet-beta default here: mainnet's leader
+/// schedule wouldn't match the Alpenglow cluster's shreds at all, so an invalid alpenglow
+/// RPC config is a hard failure, not a silent fallback to the wrong network.
 fn leader_schedule_rpc(block_confirmation: Option<&BlockConfirmationConfig>) -> SolanaRpcClient {
-    let rpc_http = block_confirmation.and_then(|block_confirmation| {
-        let rpc_http = match block_confirmation.mode {
-            BlockConfirmationMode::Alpenglow => block_confirmation.alpenglow_rpc_http(),
-            BlockConfirmationMode::Rpc => block_confirmation
-                .rpc_http
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("`block_confirmation.rpc_http` is unset")),
-        };
-        rpc_http
-            .inspect_err(|e| log::warn!("invalid block confirmation rpc url for leader schedule: {e}"))
-            .ok()
-    });
+    let Some(block_confirmation) = block_confirmation else {
+        return SolanaRpcClient::default();
+    };
 
-    rpc_http
-        .map(|rpc_http| SolanaRpcClient::new(rpc_http.to_string()))
-        .unwrap_or_default()
+    let rpc_http = match block_confirmation.mode {
+        BlockConfirmationMode::Alpenglow => block_confirmation
+            .alpenglow_rpc_http()
+            .expect("invalid alpenglow block confirmation config"),
+        BlockConfirmationMode::Rpc => match block_confirmation.rpc_http.clone() {
+            Some(rpc_http) => rpc_http,
+            None => return SolanaRpcClient::default(),
+        },
+    };
+
+    SolanaRpcClient::new(rpc_http.to_string())
 }
 
 fn main() {

@@ -32,7 +32,8 @@ token_file = "/run/secrets/influxdb-admin-token"
 # against the BLS rank map for its epoch. The rank map is read from a snapshot manifest
 # auto-discovered under rpc_http (incremental preferred, full snapshot as fallback);
 # snapshot_source overrides where that manifest is fetched from if it differs from rpc_http
-# (e.g. a dedicated snapshot mirror).
+# (e.g. a dedicated snapshot mirror). rpc_http defaults to "https://rpc.ag.validator1.net"
+# when unset.
 # [block_confirmation]
 # mode = "alpenglow"
 # rpc_http = "http://localhost:8899"

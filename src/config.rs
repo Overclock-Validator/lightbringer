@@ -15,6 +15,7 @@ use serde_with::{DisplayFromStr, serde_as};
 use solana_net_utils::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH;
 
 const QUIC_PORT_OFFSET: u16 = 6;
+const DEFAULT_ALPENGLOW_RPC_HTTP: &str = "https://rpc.ag.validator1.net";
 
 #[derive(Serialize, Deserialize)]
 struct InfluxDbConfigRaw {
@@ -133,9 +134,12 @@ impl BlockConfirmationConfig {
     }
 
     pub fn alpenglow_rpc_http(&self) -> anyhow::Result<Uri> {
-        self.rpc_http.clone().ok_or_else(|| {
-            anyhow!("`block_confirmation.rpc_http` is required in alpenglow mode")
-        })
+        match &self.rpc_http {
+            Some(rpc_http) => Ok(rpc_http.clone()),
+            None => DEFAULT_ALPENGLOW_RPC_HTTP
+                .parse()
+                .map_err(|e| anyhow!("invalid default alpenglow rpc url: {e}")),
+        }
     }
 
     pub fn alpenglow_snapshot_source(&self) -> anyhow::Result<Uri> {
