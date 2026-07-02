@@ -24,8 +24,18 @@ token_file = "/run/secrets/influxdb-admin-token"
 
 # Enable only when a local RPC node is available.
 # [block_confirmation]
+# mode = "rpc"
 # rpc_http = "http://localhost:8900"
 # rpc_websocket = "ws://localhost:8900"
+#
+# Alpenglow mode streams a slot as confirmed once its finalization certificate verifies
+# against the BLS rank map for its epoch. The rank map is read from an incremental snapshot
+# manifest served by rpc_http; snapshot_source overrides where that manifest is fetched from
+# if it differs from rpc_http (e.g. a dedicated snapshot mirror).
+# [block_confirmation]
+# mode = "alpenglow"
+# rpc_http = "http://localhost:8899"
+# snapshot_source = "http://localhost:8899"
 
 # Suppress info/debug logs.
 [log]

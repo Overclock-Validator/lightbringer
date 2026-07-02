@@ -1,3 +1,4 @@
+mod alpenglow;
 mod block_conf;
 #[cfg(test)]
 mod coding;
@@ -34,10 +35,12 @@ use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
 use crate::{
+    alpenglow::snapshot::SnapshotSource,
     block_conf::BlockConfStream,
-    config::{Config, InfluxDbConfig, LogConfig},
+    config::{BlockConfirmationConfig, BlockConfirmationMode, Config, InfluxDbConfig, LogConfig},
     grpc_slot_stream::shred_source::{
-        ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
+        ConfirmedSlotShreds, SlotMetaShreds, alpenglow_confirmed_slot_shreds_glommio_runner,
+        confirmed_slot_shreds_glommio_runner,
     },
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
@@ -123,10 +126,30 @@ fn load_or_create_keypair() -> anyhow::Result<Keypair> {
     }
 }
 
+fn leader_schedule_rpc(block_confirmation: Option<&BlockConfirmationConfig>) -> SolanaRpcClient {
+    let rpc_http = block_confirmation.and_then(|block_confirmation| {
+        let rpc_http = match block_confirmation.mode {
+            BlockConfirmationMode::Alpenglow => block_confirmation.alpenglow_rpc_http(),
+            BlockConfirmationMode::Rpc => block_confirmation
+                .rpc_http
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("`block_confirmation.rpc_http` is unset")),
+        };
+        rpc_http
+            .inspect_err(|e| log::warn!("invalid block confirmation rpc url for leader schedule: {e}"))
+            .ok()
+    });
+
+    rpc_http
+        .map(|rpc_http| SolanaRpcClient::new(rpc_http.to_string()))
+        .unwrap_or_default()
+}
+
 fn main() {
     let conf = Config::parse();
 
     init_logger(conf.log.as_ref()).unwrap();
+    let leader_schedule_rpc = leader_schedule_rpc(conf.block_confirmation.as_ref());
 
     let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
     let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
@@ -168,7 +191,9 @@ fn main() {
     }));
 
     // Shred filter
-    threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
+    threadpool.spawn(move |exit| {
+        packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync(), leader_schedule_rpc)
+    });
 
     // Slot repair
     let (repair_tx, repair_rx) = kanal::bounded_async(10000);
@@ -239,17 +264,54 @@ fn main() {
     let grpc_shred_store = shred_store.clone();
     let grpc_thread = if let Some(block_conf_config) = conf.block_confirmation {
         let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
-        threadpool.spawn(enclose!((shred_store) async move |exit| {
-            let rpc = SolanaRpcClient::new(block_conf_config.rpc_http.to_string());
-            let block_conf = match BlockConfStream::new(rpc, block_conf_config.rpc_websocket).await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    log::error!("failed to create block confirmation stream: {e}");
-                    return;
-                }
-            };
-            confirmed_slot_shreds_glommio_runner(block_conf, grpc_slot_meta_rx, shred_store, grpc_tx, exit).await;
-        }));
+        match block_conf_config.mode {
+            BlockConfirmationMode::Rpc => {
+                threadpool.spawn(enclose!((shred_store) async move |exit| {
+                    let (rpc_http, rpc_websocket) = match block_conf_config.rpc_urls() {
+                        Ok(urls) => urls,
+                        Err(e) => {
+                            log::error!("invalid block confirmation config: {e}");
+                            return;
+                        }
+                    };
+                    let rpc = SolanaRpcClient::new(rpc_http.to_string());
+                    let block_conf = match BlockConfStream::new(rpc, rpc_websocket).await {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            log::error!("failed to create block confirmation stream: {e}");
+                            return;
+                        }
+                    };
+                    confirmed_slot_shreds_glommio_runner(
+                        block_conf,
+                        grpc_slot_meta_rx,
+                        shred_store,
+                        grpc_tx,
+                        exit,
+                    )
+                    .await;
+                }));
+            }
+            BlockConfirmationMode::Alpenglow => {
+                let rpc_http = block_conf_config
+                    .alpenglow_rpc_http()
+                    .expect("invalid alpenglow block confirmation config");
+                let snapshot_source = block_conf_config
+                    .alpenglow_snapshot_source()
+                    .expect("invalid alpenglow block confirmation config");
+                let rpc = SolanaRpcClient::new(rpc_http.to_string());
+                let snapshot_source = SnapshotSource::new(snapshot_source.to_string());
+                threadpool.spawn(move |exit| {
+                    alpenglow_confirmed_slot_shreds_glommio_runner(
+                        grpc_slot_meta_rx,
+                        rpc,
+                        snapshot_source,
+                        grpc_tx,
+                        exit,
+                    )
+                });
+            }
+        }
 
         std::thread::spawn(move || {
             grpc_slot_stream::start_grpc_server(

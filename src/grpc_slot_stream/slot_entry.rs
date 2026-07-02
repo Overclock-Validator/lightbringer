@@ -76,6 +76,26 @@ impl From<VersionedMessage> for versioned_transaction::Message {
                     .map(|tbl| tbl.into())
                     .collect(),
             }),
+            VersionedMessage::V1(msg) => Self::MessageV1(VersionedMessageV1 {
+                header: Some(msg.header.into()),
+                config: Some(TransactionConfig {
+                    priority_fee: msg.config.priority_fee,
+                    compute_unit_limit: msg.config.compute_unit_limit,
+                    loaded_accounts_data_size_limit: msg.config.loaded_accounts_data_size_limit,
+                    heap_size: msg.config.heap_size,
+                }),
+                lifetime_specifier: msg.lifetime_specifier.to_bytes().to_vec(),
+                account_keys: msg
+                    .account_keys
+                    .into_iter()
+                    .map(|k| k.as_array().to_vec())
+                    .collect(),
+                instructions: msg
+                    .instructions
+                    .into_iter()
+                    .map(|instr| instr.into())
+                    .collect(),
+            }),
         }
     }
 }

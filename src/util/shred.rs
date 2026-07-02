@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use solana_entry::entry::Entry;
-use solana_ledger::shred::{self, ReedSolomonCache, Shred, ShredType, Shredder};
+use solana_ledger::shred::{self, ReedSolomonCache, Shred, ShredType, Shredder, merkle};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,7 +26,7 @@ fn recover_shreds_and_group_by_completion(
     for shred_batch in shreds_by_fec_set_index.into_values() {
         let last = data_shreds_partitioned_by_completion.last_mut().unwrap();
         if shred_batch.data_cnt < 32 {
-            let recovered = shred::recover(shred_batch.shreds.clone(), &rs_cache)
+            let recovered = recover_shreds(shred_batch.shreds.clone(), &rs_cache)
                 .map_err(CodingError::ShredRecovery)?;
             for shred in recovered {
                 let shred = shred.map_err(CodingError::ShredRecovery)?;
@@ -49,6 +49,17 @@ fn recover_shreds_and_group_by_completion(
     data_shreds_partitioned_by_completion.pop();
 
     Ok(data_shreds_partitioned_by_completion.into_iter())
+}
+
+pub fn recover_shreds<T: IntoIterator<Item = Shred>>(
+    shreds: T,
+    reed_solomon_cache: &ReedSolomonCache,
+) -> Result<impl Iterator<Item = Result<Shred, shred::Error>> + use<T>, shred::Error> {
+    let shreds = shreds
+        .into_iter()
+        .map(merkle::Shred::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(merkle::recover(shreds, reed_solomon_cache)?.map(|shred| shred.map(Shred::from)))
 }
 
 pub fn deshred_to_entries<'a>(

@@ -40,12 +40,30 @@ message VersionedMessageV0 {
     repeated MessageAddressTableLookup address_table_lookups = 5;
 }
 
+message TransactionConfig {
+    optional uint64 priority_fee = 1;
+    optional uint32 compute_unit_limit = 2;
+    optional uint32 loaded_accounts_data_size_limit = 3;
+    optional uint32 heap_size = 4;
+}
+
+message VersionedMessageV1 {
+    MessageHeader header = 1;
+    TransactionConfig config = 2;
+    // 32 byte lifetime specifier hash
+    bytes lifetime_specifier = 3;
+    // Each key is a 32 bytes pubkey
+    repeated bytes account_keys = 4;
+    repeated CompiledInstruction instructions = 5;
+}
+
 message VersionedTransaction {
     // Each signature is 64 bytes
     repeated bytes signatures = 1;
     oneof message {
         VersionedMessageLegacy message_legacy = 2;
         VersionedMessageV0 message_v0 = 3;
+        VersionedMessageV1 message_v1 = 4;
     }
 }
 

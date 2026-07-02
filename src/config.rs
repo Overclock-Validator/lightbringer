@@ -97,12 +97,53 @@ impl TryFrom<InfluxDbConfigRaw> for InfluxDbConfig {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BlockConfirmationConfig {
-    #[serde_as(as = "DisplayFromStr")]
-    pub rpc_websocket: Uri,
-    #[serde_as(as = "DisplayFromStr")]
-    pub rpc_http: Uri,
+    #[serde(default)]
+    pub mode: BlockConfirmationMode,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub rpc_websocket: Option<Uri>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub rpc_http: Option<Uri>,
+    /// Alpenglow only: where snapshot manifests (for BLS rank maps) are fetched from.
+    /// Defaults to `rpc_http`.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub snapshot_source: Option<Uri>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockConfirmationMode {
+    #[default]
+    Rpc,
+    Alpenglow,
+}
+
+impl BlockConfirmationConfig {
+    pub fn rpc_urls(&self) -> anyhow::Result<(Uri, Uri)> {
+        let rpc_http = self
+            .rpc_http
+            .clone()
+            .ok_or_else(|| anyhow!("`block_confirmation.rpc_http` is required in rpc mode"))?;
+        let rpc_websocket = self
+            .rpc_websocket
+            .clone()
+            .ok_or_else(|| anyhow!("`block_confirmation.rpc_websocket` is required in rpc mode"))?;
+        Ok((rpc_http, rpc_websocket))
+    }
+
+    pub fn alpenglow_rpc_http(&self) -> anyhow::Result<Uri> {
+        self.rpc_http.clone().ok_or_else(|| {
+            anyhow!("`block_confirmation.rpc_http` is required in alpenglow mode")
+        })
+    }
+
+    pub fn alpenglow_snapshot_source(&self) -> anyhow::Result<Uri> {
+        match &self.snapshot_source {
+            Some(uri) => Ok(uri.clone()),
+            None => self.alpenglow_rpc_http(),
+        }
+    }
 }
 
 fn default_gossip_port() -> u16 {

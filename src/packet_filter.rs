@@ -5,8 +5,8 @@ use solana_ledger::shred::{self};
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 
 use crate::{
-    leader_schedule::LeaderScheduleSync, repair::repair_nonce, thread_manager::CancelRx,
-    types::PacketInfo,
+    leader_schedule::LeaderScheduleSync, repair::repair_nonce, solana_rpc::SolanaRpcClient,
+    thread_manager::CancelRx, types::PacketInfo,
 };
 
 type SigCacheKey = (Signature, Pubkey, [u8; 32]);
@@ -118,8 +118,9 @@ pub async fn packet_filter_loop(
     exit: CancelRx,
     rx: kanal::AsyncReceiver<PacketInfo>,
     meta_tx: kanal::Sender<PacketInfo>,
+    rpc: SolanaRpcClient,
 ) {
-    let leader_schedule = LeaderScheduleSync::new_synced()
+    let leader_schedule = LeaderScheduleSync::new_synced(rpc)
         .await
         .expect("failed to initialize leader schedule");
     let task = spawn_local(async move {

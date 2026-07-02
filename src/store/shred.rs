@@ -11,13 +11,14 @@ use fjall::compaction::filter::{
 };
 use glommio::{enclose, executor, spawn_local, timer::sleep};
 use kanal::AsyncReceiver;
-use solana_ledger::shred::{self, ReedSolomonCache, Shred};
+use solana_ledger::shred::{ReedSolomonCache, Shred};
 
 use solana_gossip::cluster_info::ClusterInfo;
 
 use crate::{
     thread_manager::CancelRx,
     types::{PacketInfo, ShredInfoView},
+    util::shred::recover_shreds,
 };
 
 pub const SHRED_KEYSPACE: &str = "shred_store";
@@ -182,7 +183,7 @@ impl ShredStore {
 
         // Recover missing data shreds from coding shreds.
         if data_count < 32
-            && let Ok(recovered) = shred::recover(deserialized.clone(), &rs_cache)
+            && let Ok(recovered) = recover_shreds(deserialized.clone(), &rs_cache)
         {
             for r in recovered.into_iter().flatten() {
                 if r.is_data()

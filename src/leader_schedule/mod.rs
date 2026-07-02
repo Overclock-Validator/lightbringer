@@ -50,9 +50,8 @@ pub struct LeaderScheduleSync {
 }
 
 impl LeaderScheduleSync {
-    pub async fn new_synced() -> anyhow::Result<Self> {
+    pub async fn new_synced(rpc: SolanaRpcClient) -> anyhow::Result<Self> {
         let mut store = LeaderScheduleStore::default();
-        let rpc = SolanaRpcClient::default();
         let schedule = rpc
             .get_leader_schedule(None)
             .await?
