@@ -9,7 +9,7 @@ use solana_runtime::{
     serde_snapshot::fields_from_stream,
 };
 
-use crate::alpenglow::snapshot::fetch::fetch_incremental_snapshot_manifest;
+use crate::alpenglow::snapshot::fetch::discover_and_fetch_snapshot_manifest;
 
 /// A frozen `epoch_stakes[epoch]` rank map, read out of a snapshot bank manifest.
 pub struct EpochRankMap {
@@ -32,11 +32,12 @@ impl SnapshotSource {
         Self { rpc_http }
     }
 
-    /// Blocking: fetches a fresh incremental snapshot and reads every epoch's rank map
-    /// out of its bank manifest. Downloads only the manifest (~ a few MB), never the
-    /// accounts. Intended to run on a dedicated thread, not the async executor.
+    /// Blocking: discovers a fresh snapshot (incremental preferred, full as fallback) and
+    /// reads every epoch's rank map out of its bank manifest. Downloads only the manifest
+    /// (~ a few MB), never the accounts. Intended to run on a dedicated thread, not the
+    /// async executor.
     pub fn fetch_epoch_rank_maps(&self) -> Result<BTreeMap<Epoch, EpochRankMap>> {
-        let manifest = fetch_incremental_snapshot_manifest(&self.rpc_http)?;
+        let manifest = discover_and_fetch_snapshot_manifest(&self.rpc_http)?;
         let mut reader = BufReader::new(&manifest[..]);
         let fields =
             fields_from_stream(&mut reader).map_err(|e| anyhow!("failed to deserialize snapshot manifest: {e}"))?;

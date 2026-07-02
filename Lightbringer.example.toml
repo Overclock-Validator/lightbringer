@@ -29,9 +29,10 @@ token_file = "/run/secrets/influxdb-admin-token"
 # rpc_websocket = "ws://localhost:8900"
 #
 # Alpenglow mode streams a slot as confirmed once its finalization certificate verifies
-# against the BLS rank map for its epoch. The rank map is read from an incremental snapshot
-# manifest served by rpc_http; snapshot_source overrides where that manifest is fetched from
-# if it differs from rpc_http (e.g. a dedicated snapshot mirror).
+# against the BLS rank map for its epoch. The rank map is read from a snapshot manifest
+# auto-discovered under rpc_http (incremental preferred, full snapshot as fallback);
+# snapshot_source overrides where that manifest is fetched from if it differs from rpc_http
+# (e.g. a dedicated snapshot mirror).
 # [block_confirmation]
 # mode = "alpenglow"
 # rpc_http = "http://localhost:8899"
