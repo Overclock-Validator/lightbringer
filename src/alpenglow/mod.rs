@@ -170,7 +170,7 @@ mod tests {
             return;
         };
 
-        futures::executor::block_on(async {
+        glommio::LocalExecutor::default().run(async {
             let rpc = SolanaRpcClient::new(verify_rpc.clone());
             let epoch_schedule = rpc
                 .get_epoch_schedule()
@@ -250,7 +250,7 @@ mod tests {
         let slots = stored_slots(&shred_keyspace, start, end);
         assert!(!slots.is_empty(), "synced shred store has no tested slots");
 
-        futures::executor::block_on(async {
+        glommio::LocalExecutor::default().run(async {
             let rpc = SolanaRpcClient::new(verify_rpc.clone());
             let snapshot_source = SnapshotSource::new(verify_rpc);
             let mut verifier = AlpenglowCertificateVerifier::new(rpc, snapshot_source);

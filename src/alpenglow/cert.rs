@@ -148,19 +148,20 @@ impl AlpenglowCertificateVerifier {
     /// Ensures `rank_maps` has an entry for `cert_epoch`, fetching a fresh snapshot only
     /// when it's missing. Every snapshot carries the current and next epoch's stakes, so
     /// this only does network work once per epoch boundary.
+    ///
+    /// The fetch itself (HTTP GET, zstd decode, tar walk, bincode deserialize) is
+    /// synchronous end-to-end - `zstd`/`tar` only expose blocking `Read`-based APIs, so
+    /// there's no async path through them regardless of the HTTP client. `spawn_blocking`
+    /// runs it on glommio's blocking thread pool instead of the reactor thread.
     async fn ensure_rank_map(&mut self, cert_epoch: Epoch) -> Result<()> {
         if self.rank_maps.contains_key(&cert_epoch) {
             return Ok(());
         }
 
         let snapshot_source = self.snapshot_source.clone();
-        let (result_tx, result_rx) = oneshot::channel();
-        std::thread::spawn(move || {
-            _ = result_tx.send(snapshot_source.fetch_epoch_rank_maps());
-        });
-        let fetched = result_rx
-            .await
-            .map_err(|_| anyhow!("alpenglow snapshot fetch thread did not respond"))??;
+        let fetched = glommio::executor()
+            .spawn_blocking(move || snapshot_source.fetch_epoch_rank_maps())
+            .await?;
 
         for (epoch, entry) in fetched {
             self.rank_maps.insert(
