@@ -15,6 +15,7 @@ use serde_with::{DisplayFromStr, serde_as};
 use solana_net_utils::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH;
 
 const QUIC_PORT_OFFSET: u16 = 6;
+const DEFAULT_ALPENGLOW_RPC_HTTP: &str = "https://rpc.ag.validator1.net";
 
 #[derive(Serialize, Deserialize)]
 struct InfluxDbConfigRaw {
@@ -97,12 +98,56 @@ impl TryFrom<InfluxDbConfigRaw> for InfluxDbConfig {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BlockConfirmationConfig {
-    #[serde_as(as = "DisplayFromStr")]
-    pub rpc_websocket: Uri,
-    #[serde_as(as = "DisplayFromStr")]
-    pub rpc_http: Uri,
+    #[serde(default)]
+    pub mode: BlockConfirmationMode,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub rpc_websocket: Option<Uri>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub rpc_http: Option<Uri>,
+    /// Alpenglow only: where snapshot manifests (for BLS rank maps) are fetched from.
+    /// Defaults to `rpc_http`.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub snapshot_source: Option<Uri>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockConfirmationMode {
+    #[default]
+    Rpc,
+    Alpenglow,
+}
+
+impl BlockConfirmationConfig {
+    pub fn rpc_urls(&self) -> anyhow::Result<(Uri, Uri)> {
+        let rpc_http = self
+            .rpc_http
+            .clone()
+            .ok_or_else(|| anyhow!("`block_confirmation.rpc_http` is required in rpc mode"))?;
+        let rpc_websocket = self
+            .rpc_websocket
+            .clone()
+            .ok_or_else(|| anyhow!("`block_confirmation.rpc_websocket` is required in rpc mode"))?;
+        Ok((rpc_http, rpc_websocket))
+    }
+
+    pub fn alpenglow_rpc_http(&self) -> anyhow::Result<Uri> {
+        match &self.rpc_http {
+            Some(rpc_http) => Ok(rpc_http.clone()),
+            None => DEFAULT_ALPENGLOW_RPC_HTTP
+                .parse()
+                .map_err(|e| anyhow!("invalid default alpenglow rpc url: {e}")),
+        }
+    }
+
+    pub fn alpenglow_snapshot_source(&self) -> anyhow::Result<Uri> {
+        match &self.snapshot_source {
+            Some(uri) => Ok(uri.clone()),
+            None => self.alpenglow_rpc_http(),
+        }
+    }
 }
 
 fn default_gossip_port() -> u16 {
@@ -184,7 +229,7 @@ impl Default for ConfigRaw {
 pub struct Config {
     pub gossip_entrypoint: SocketAddr,
     pub storage: PathBuf,
-    pub rpc_addr: SocketAddr,
+    //pub rpc_addr: SocketAddr,
     pub grpc_addr: SocketAddr,
     pub gossip: GossipConfig,
     pub influxdb: Option<InfluxDbConfig>,
@@ -207,10 +252,10 @@ impl TryFrom<ConfigRaw> for Config {
 
         let storage = PathBuf::from(value.storage);
 
-        let rpc_addr: SocketAddr = value
-            .rpc_addr
-            .parse()
-            .map_err(|e| anyhow!("invalid `rpc_addr`: {e}"))?;
+        // let rpc_addr: SocketAddr = value
+        //     .rpc_addr
+        //     .parse()
+        //     .map_err(|e| anyhow!("invalid `rpc_addr`: {e}"))?;
 
         let grpc_addr: SocketAddr = value
             .grpc_addr
@@ -261,7 +306,7 @@ impl TryFrom<ConfigRaw> for Config {
         Ok(Self {
             gossip_entrypoint,
             storage,
-            rpc_addr,
+            //rpc_addr,
             grpc_addr,
             gossip: value.gossip,
             influxdb,

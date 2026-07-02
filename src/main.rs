@@ -1,3 +1,4 @@
+mod alpenglow;
 mod block_conf;
 #[cfg(test)]
 mod coding;
@@ -9,7 +10,7 @@ mod metrics;
 mod packet_filter;
 mod repair;
 mod repair_delivery;
-mod rpc;
+//mod rpc;
 mod solana_rpc;
 mod store;
 mod thread_manager;
@@ -34,16 +35,17 @@ use thread_manager::ThreadManager;
 use turbine_manager::start_turbine_manager;
 
 use crate::{
+    alpenglow::snapshot::SnapshotSource,
     block_conf::BlockConfStream,
-    config::{Config, InfluxDbConfig, LogConfig},
+    config::{BlockConfirmationConfig, BlockConfirmationMode, Config, InfluxDbConfig, LogConfig},
     grpc_slot_stream::shred_source::{
-        ConfirmedSlotShreds, SlotMetaShreds, confirmed_slot_shreds_glommio_runner,
+        ConfirmedSlotShreds, SlotMetaShreds, alpenglow_confirmed_slot_shreds_glommio_runner,
+        confirmed_slot_shreds_glommio_runner,
     },
     metrics::{MetricsSender, start_metrics_thread},
     packet_filter::packet_filter_loop,
     repair::socket::start_repair_socket_runner,
     repair_delivery::start_serve_repair,
-    rpc::DebugRpcInit,
     solana_rpc::SolanaRpcClient,
     util::std_to_glommio_socket,
 };
@@ -124,10 +126,34 @@ fn load_or_create_keypair() -> anyhow::Result<Keypair> {
     }
 }
 
+/// Picks the RPC used for leader-schedule lookups (shred signer validation).
+///
+/// Alpenglow mode must never fall back to the mainnet-beta default here: mainnet's leader
+/// schedule wouldn't match the Alpenglow cluster's shreds at all, so an invalid alpenglow
+/// RPC config is a hard failure, not a silent fallback to the wrong network.
+fn leader_schedule_rpc(block_confirmation: Option<&BlockConfirmationConfig>) -> SolanaRpcClient {
+    let Some(block_confirmation) = block_confirmation else {
+        return SolanaRpcClient::default();
+    };
+
+    let rpc_http = match block_confirmation.mode {
+        BlockConfirmationMode::Alpenglow => block_confirmation
+            .alpenglow_rpc_http()
+            .expect("invalid alpenglow block confirmation config"),
+        BlockConfirmationMode::Rpc => match block_confirmation.rpc_http.clone() {
+            Some(rpc_http) => rpc_http,
+            None => return SolanaRpcClient::default(),
+        },
+    };
+
+    SolanaRpcClient::new(rpc_http.to_string())
+}
+
 fn main() {
     let conf = Config::parse();
 
     init_logger(conf.log.as_ref()).unwrap();
+    let leader_schedule_rpc = leader_schedule_rpc(conf.block_confirmation.as_ref());
 
     let shred_cutoff_slot = Arc::new(AtomicU64::new(0));
     let lsm_ks = init_fjall(conf.storage, shred_cutoff_slot.clone()).unwrap();
@@ -169,7 +195,9 @@ fn main() {
     }));
 
     // Shred filter
-    threadpool.spawn(move |exit| packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync()));
+    threadpool.spawn(move |exit| {
+        packet_filter_loop(exit, filter_rx, slot_meta_tx.to_sync(), leader_schedule_rpc)
+    });
 
     // Slot repair
     let (repair_tx, repair_rx) = kanal::bounded_async(10000);
@@ -240,17 +268,54 @@ fn main() {
     let grpc_shred_store = shred_store.clone();
     let grpc_thread = if let Some(block_conf_config) = conf.block_confirmation {
         let (grpc_tx, grpc_rx) = kanal::bounded_async(1000);
-        threadpool.spawn(enclose!((shred_store) async move |exit| {
-            let rpc = SolanaRpcClient::new(block_conf_config.rpc_http.to_string());
-            let block_conf = match BlockConfStream::new(rpc, block_conf_config.rpc_websocket).await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    log::error!("failed to create block confirmation stream: {e}");
-                    return;
-                }
-            };
-            confirmed_slot_shreds_glommio_runner(block_conf, grpc_slot_meta_rx, shred_store, grpc_tx, exit).await;
-        }));
+        match block_conf_config.mode {
+            BlockConfirmationMode::Rpc => {
+                threadpool.spawn(enclose!((shred_store) async move |exit| {
+                    let (rpc_http, rpc_websocket) = match block_conf_config.rpc_urls() {
+                        Ok(urls) => urls,
+                        Err(e) => {
+                            log::error!("invalid block confirmation config: {e}");
+                            return;
+                        }
+                    };
+                    let rpc = SolanaRpcClient::new(rpc_http.to_string());
+                    let block_conf = match BlockConfStream::new(rpc, rpc_websocket).await {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            log::error!("failed to create block confirmation stream: {e}");
+                            return;
+                        }
+                    };
+                    confirmed_slot_shreds_glommio_runner(
+                        block_conf,
+                        grpc_slot_meta_rx,
+                        shred_store,
+                        grpc_tx,
+                        exit,
+                    )
+                    .await;
+                }));
+            }
+            BlockConfirmationMode::Alpenglow => {
+                let rpc_http = block_conf_config
+                    .alpenglow_rpc_http()
+                    .expect("invalid alpenglow block confirmation config");
+                let snapshot_source = block_conf_config
+                    .alpenglow_snapshot_source()
+                    .expect("invalid alpenglow block confirmation config");
+                let rpc = SolanaRpcClient::new(rpc_http.to_string());
+                let snapshot_source = SnapshotSource::new(snapshot_source.to_string());
+                threadpool.spawn(move |exit| {
+                    alpenglow_confirmed_slot_shreds_glommio_runner(
+                        grpc_slot_meta_rx,
+                        rpc,
+                        snapshot_source,
+                        grpc_tx,
+                        exit,
+                    )
+                });
+            }
+        }
 
         std::thread::spawn(move || {
             grpc_slot_stream::start_grpc_server(
@@ -271,20 +336,14 @@ fn main() {
         })
     };
 
-    threadpool.spawn_rpc_with_cancel_handler(
-        DebugRpcInit {
-            listen_addr: conf.rpc_addr,
-            shred_store,
-        },
-        move || {
-            if let Err(e) = gossip.stop() {
-                log::warn!("failed to stop gossip service {e}");
-            }
-            _ = grpc_cancel_tx.send(());
-            _ = metrics_exit_tx.send(());
-            if let Err(e) = grpc_thread.join() {
-                log::warn!("failed to stop grpc thread {e:?}");
-            }
-        },
-    );
+    threadpool.join_with_cancel_handler(move || {
+        if let Err(e) = gossip.stop() {
+            log::warn!("failed to stop gossip service {e}");
+        }
+        _ = grpc_cancel_tx.send(());
+        _ = metrics_exit_tx.send(());
+        if let Err(e) = grpc_thread.join() {
+            log::warn!("failed to stop grpc thread {e:?}");
+        }
+    });
 }

@@ -17,8 +17,9 @@ use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
-    grpc_slot_stream::shred_source::ShredSource, rpc::RpcError, store::shred::ShredStore,
-    util::shred::get_slot_entries_and_parent_slot_from_raw_shreds,
+    grpc_slot_stream::shred_source::ShredSource,
+    store::shred::ShredStore,
+    util::shred::{CodingError, get_slot_entries_and_parent_slot_from_raw_shreds},
 };
 use slot_entry::Entry;
 use std::{net::SocketAddr, pin::Pin};
@@ -121,7 +122,7 @@ impl SlotStreamTrait for SlotStreamService {
                                     )
                                 },
                             )?;
-                        Ok::<_, RpcError>(SlotResponse {
+                        Ok::<_, CodingError>(SlotResponse {
                             entries,
                             slot,
                             parent_slot,

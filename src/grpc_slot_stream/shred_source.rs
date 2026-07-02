@@ -10,7 +10,9 @@ use kanal::{AsyncReceiver, AsyncSender};
 use uluru::LRUCache;
 
 use crate::{
-    block_conf::{BlockConfStream, BlockConfUpdate},
+    alpenglow::{cert::AlpenglowCertificateVerifier, snapshot::SnapshotSource},
+    block_conf::{BlockConfStream, BlockConfUpdate, alpenglow::AlpenglowBlockConfStream},
+    solana_rpc::SolanaRpcClient,
     store::shred::{ShredStore, SlotRaw},
     thread_manager::CancelRx,
     types::{PacketInfo, ShredInfoView},
@@ -208,6 +210,44 @@ pub async fn confirmed_slot_shreds_glommio_runner(
         store,
         tx,
     ));
+    exit.await;
+    handle.cancel().await;
+}
+
+pub async fn alpenglow_confirmed_slot_shreds_glommio_runner(
+    slot_meta_stream: AsyncReceiver<SlotRaw>,
+    rpc: SolanaRpcClient,
+    snapshot_source: SnapshotSource,
+    tx: AsyncSender<SlotForGrpc<ShredInfoView>>,
+    exit: CancelRx,
+) {
+    let handle = spawn_local(async move {
+        let verifier = AlpenglowCertificateVerifier::new(rpc, snapshot_source);
+        let mut conf_stream = AlpenglowBlockConfStream::new(slot_meta_stream, verifier);
+        while let Some(update) = conf_stream.next().await {
+            log::info!(
+                "recv alpenglow conf slot notif: slot {}",
+                update.update.slot
+            );
+            let shreds = update
+                .slot
+                .shreds
+                .into_iter()
+                .map(|s| Slice::from(s.as_slice()))
+                .collect();
+            if tx
+                .send(SlotForGrpc {
+                    slot: update.update.slot,
+                    shreds,
+                    expected_blockhash: None,
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
     exit.await;
     handle.cancel().await;
 }

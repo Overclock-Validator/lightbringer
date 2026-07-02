@@ -3,6 +3,7 @@ use jsonrpc_types::{MethodCall, Params};
 use serde::de::DeserializeOwned;
 use solana_commitment_config::CommitmentConfig;
 use solana_epoch_info::EpochInfo;
+use solana_epoch_schedule::EpochSchedule;
 use solana_rpc_client_types::{
     config::{RpcBlockConfig, RpcContextConfig, RpcLeaderScheduleConfig},
     request::RpcRequest,
@@ -128,5 +129,22 @@ impl SolanaRpcClient {
             Params::Array(vec![commitment_config_val]),
         )
         .await
+    }
+
+    pub async fn get_epoch_schedule(&self) -> Result<EpochSchedule, SolanaRpcError> {
+        self.send(RpcRequest::GetEpochSchedule, Params::Array(vec![]))
+            .await
+    }
+
+    /// Debug RPC on a patched Alpenglow node only; the oracle used to validate that a
+    /// snapshot-derived rank map matches the node's own `epoch_stakes_from_slot`. Never call
+    /// this in production - see `crate::alpenglow::snapshot`.
+    #[cfg(test)]
+    pub async fn get_alpenglow_rank_map(
+        &self,
+        slot: u64,
+    ) -> Result<solana_rpc_client_types::response::RpcAlpenglowRankMap, SolanaRpcError> {
+        self.send(RpcRequest::GetAlpenglowRankMap, Params::Array(vec![slot.into()]))
+            .await
     }
 }
