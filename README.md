@@ -69,6 +69,90 @@ Typical deployment options include:
 
 ---
 
+## Running via Docker
+
+The repo ships a top-level `Dockerfile` for Lightbringer itself and a `docker-compose.yml` that wires it up alongside its observability stack (InfluxDB 3 + Grafana). Compose splits this into three pieces:
+
+* **Observability stack** (`influxdb3`, `influxdb3-init`, `grafana`) — started by default.
+* **Lightbringer** — gated behind the `lightbringer` Compose profile, since it needs `Lightbringer.toml` configured first and runs with `network_mode: host` to reach Turbine/gossip/repair UDP ports.
+* **Cloudflare Tunnel** for remote Grafana access — gated behind the `grafana-tunnel` profile.
+
+Prerequisite: Docker Engine with the Compose v2 plugin (`docker compose version`).
+
+### 1. Configure secrets and config
+
+`secrets/.gitignore` keeps everything out of git except `*.example`/`*.example.*` files, so copy each one and fill in real values:
+
+```bash
+cp secrets/influxdb-admin-token.example.json secrets/influxdb-admin-token.json
+cp secrets/grafana-admin-password.example secrets/grafana-admin-password
+```
+
+Generate an InfluxDB 3 admin token (it must start with `apiv3_`) into the token file:
+
+```bash
+printf '{"token": "apiv3_%s", "name": "admin", "description": "Admin token for local Lightbringer observability"}\n' \
+  "$(openssl rand -hex 32)" > secrets/influxdb-admin-token.json
+```
+
+Put a long random password in `secrets/grafana-admin-password` — this becomes the Grafana `admin` login password:
+
+```bash
+openssl rand -base64 24 > secrets/grafana-admin-password
+```
+
+Both files must stay readable by the (non-root) containers — `chmod 644` each file and keep the `secrets/` directory itself private with `chmod 700`. The `secrets-preflight` service checks this on every `docker compose up` and fails fast if it's wrong.
+
+If you're also running Lightbringer via Compose (step 3), copy the app config too:
+
+```bash
+cp Lightbringer.example.toml Lightbringer.toml
+```
+
+and set at least `gossip_entrypoint` to a real Solana gossip entrypoint address (see Configuration above). The example's `[influxdb]` block is already pointed at the compose stack.
+
+If you plan to expose Grafana externally, also provide a Cloudflare Tunnel token:
+
+```bash
+cp secrets/cloudflare-tunnel-token.example secrets/cloudflare-tunnel-token
+```
+
+### 2. Start the observability stack
+
+```bash
+docker compose up -d
+```
+
+This brings up `influxdb3` (bound to `127.0.0.1:18181`), creates the `lightbringer` database and its tables via `influxdb3-init`, and starts `grafana` (bound to `127.0.0.1:3300`).
+
+### 3. Start Lightbringer
+
+```bash
+docker compose --profile lightbringer up -d
+```
+
+This builds the image from the top-level `Dockerfile`, mounts `Lightbringer.toml` read-only into the container, and persists shred storage in the `lightbringer-data` volume.
+
+### 4. (Optional) Expose Grafana via Cloudflare Tunnel
+
+```bash
+docker compose --profile grafana-tunnel up -d
+```
+
+Tear things down with `docker compose down` (add `--profile lightbringer --profile grafana-tunnel` to also stop those services, or `-v` to drop volumes too).
+
+### Where the Grafana monitor lives
+
+Grafana runs as the `grafana` service, published on the Docker host at:
+
+```
+http://127.0.0.1:3300
+```
+
+Log in as `admin` with the password from `secrets/grafana-admin-password`. It's pre-provisioned (via `docker/grafana/provisioning`) with an InfluxDB datasource and the dashboards under `docker/grafana/dashboards/` — aggregate stats, memory, repair timing, and slot completion timing. With the `grafana-tunnel` profile enabled, Grafana is also reachable at whatever hostname your Cloudflare Tunnel token routes to.
+
+---
+
 ## Current Status
 
 ### Milestone 1: Core Turbine / Repair Pipeline
