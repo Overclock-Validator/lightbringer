@@ -9,29 +9,29 @@ name = "lightbringer-grpc-client"
 path = "src/grpc_client.rs"
 
 [dependencies]
-solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
+solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
 solana-sdk = "4.0.1"
 solana-transaction = "4.1.1"
 solana-message = "4.2.0"
-solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
-solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
-solana-entry = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
-solana-net-utils = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
-solana-rpc-client-types = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0" }
+solana-streamer = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
+solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
+solana-entry = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
+solana-net-utils = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
+solana-rpc-client-types = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079" }
 solana-epoch-info = "3.1.0"
 solana-epoch-schedule = "3.1.0"
 solana-clock = "3.0.1"
-solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
-solana-runtime = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api", "dev-context-only-utils"] }
+solana-core = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
+solana-runtime = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-packet = "4.1.0"
 solana-commitment-config = "3.1.1"
-solana-transaction-error = "=3.2.0"
-solana-transaction-status-client-types = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
+solana-transaction-error = "=3.3.0"
+solana-transaction-status-client-types = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
 solana-hash = "4.3.0"
 solana-sha256-hasher = "3.1.0"
 solana-bls-signatures = { version = "3.3.0", features = ["serde"] }
-agave-bls-cert-verify = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
-agave-votor-messages = { git = "https://github.com/Overclock-Validator/agave.git", rev = "f7698f4833a05fd224058c4047c39704203758c0", features = ["agave-unstable-api"] }
+agave-bls-cert-verify = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
+agave-votor-messages = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
 zstd = "0.13"
 tar = "0.4"
 

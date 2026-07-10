@@ -310,6 +310,7 @@ fn main() {
                         grpc_slot_meta_rx,
                         rpc,
                         snapshot_source,
+                        version,
                         grpc_tx,
                         exit,
                     )

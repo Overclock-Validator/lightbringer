@@ -147,4 +147,22 @@ impl SolanaRpcClient {
         self.send(RpcRequest::GetAlpenglowRankMap, Params::Array(vec![slot.into()]))
             .await
     }
+
+    /// Test-only: production gets the cluster's shred version for free from the gossip
+    /// service it already runs. Tests don't run gossip, so this looks it up via RPC instead
+    /// (every node in a cluster reports the same shred version).
+    #[cfg(test)]
+    pub async fn get_shred_version(&self) -> Result<u16, SolanaRpcError> {
+        let identity: solana_rpc_client_types::response::RpcIdentity =
+            self.send(RpcRequest::GetIdentity, Params::Array(vec![])).await?;
+        let nodes: Vec<solana_rpc_client_types::response::RpcContactInfo> =
+            self.send(RpcRequest::GetClusterNodes, Params::Array(vec![])).await?;
+        nodes
+            .into_iter()
+            .find(|node| node.pubkey == identity.identity)
+            .and_then(|node| node.shred_version)
+            .ok_or_else(|| {
+                jsonrpc_types::Error::invalid_params("node did not report a shred version").into()
+            })
+    }
 }

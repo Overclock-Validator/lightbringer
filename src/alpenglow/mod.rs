@@ -215,7 +215,8 @@ mod tests {
                         .unwrap_or_else(|| panic!("epoch {epoch}: local rank map missing rank {rank}"));
                     assert_eq!(oracle_entry.rank as usize, rank);
                     assert_eq!(
-                        oracle_entry.stake, local_entry.stake,
+                        oracle_entry.stake,
+                        local_entry.stake.get(),
                         "epoch {epoch} rank {rank}: stake mismatch"
                     );
                     let local_compressed =
@@ -252,8 +253,13 @@ mod tests {
 
         glommio::LocalExecutor::default().run(async {
             let rpc = SolanaRpcClient::new(verify_rpc.clone());
+            let shred_version = rpc
+                .get_shred_version()
+                .await
+                .expect("get_shred_version failed");
             let snapshot_source = SnapshotSource::new(verify_rpc);
-            let mut verifier = AlpenglowCertificateVerifier::new(rpc, snapshot_source);
+            let mut verifier =
+                AlpenglowCertificateVerifier::new(rpc, snapshot_source, shred_version);
 
             let mut verified_count = 0usize;
             let mut failed_count = 0usize;

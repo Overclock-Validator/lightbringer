@@ -73,6 +73,7 @@ impl GossipManager {
             None,
             node.sockets.gossip,
             None,
+            None,
             false,
             None,
             exit.clone(),

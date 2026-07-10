@@ -2,14 +2,14 @@ use std::{collections::BTreeMap, num::NonZeroU64, sync::Arc};
 
 use agave_bls_cert_verify::cert_verify::verify_certificate;
 use agave_votor_messages::{
-    certificate::{Certificate, CertificateType},
-    fraction::Fraction,
+    certificate::CertificateType, consensus_message::Block,
+    unverified_vote_message::UnverifiedCertificate,
 };
 use anyhow::{Result, anyhow, bail};
 use solana_bls_signatures::pubkey::{PopVerified, PubkeyAffine as BlsPubkeyAffine};
 use solana_clock::Epoch;
 use solana_entry::block_component::{
-    BlockComponent, FinalCertificate, VersionedBlockFooter, VersionedBlockMarker,
+    BlockComponent, BlockFinalizationCert, VersionedBlockFooter, VersionedBlockMarker,
 };
 use solana_epoch_schedule::EpochSchedule;
 use solana_ledger::shred::{Shred, ShredType};
@@ -32,11 +32,11 @@ pub struct VerifiedFinalization {
 
 struct RankMap {
     rank_map: Arc<BLSPubkeyToRankMap>,
-    total_stake: u64,
+    total_stake: NonZeroU64,
 }
 
 impl RankMap {
-    fn get(&self, rank: usize) -> Option<(u64, PopVerified<BlsPubkeyAffine>)> {
+    fn get(&self, rank: usize) -> Option<(NonZeroU64, PopVerified<BlsPubkeyAffine>)> {
         self.rank_map
             .get_pubkey_stake_entry(rank)
             .map(|entry| (entry.stake, entry.bls_pubkey))
@@ -56,21 +56,25 @@ pub struct AlpenglowCertificateVerifier {
     snapshot_source: SnapshotSource,
     epoch_schedule: Option<EpochSchedule>,
     rank_maps: BTreeMap<Epoch, RankMap>,
+    /// Mixed into the signed vote payload (`VotePayloadToSign`); must match the target
+    /// cluster's shred version or every signature check fails regardless of the rank map.
+    shred_version: u16,
 }
 
 impl AlpenglowCertificateVerifier {
-    pub fn new(rpc: SolanaRpcClient, snapshot_source: SnapshotSource) -> Self {
+    pub fn new(rpc: SolanaRpcClient, snapshot_source: SnapshotSource, shred_version: u16) -> Self {
         Self {
             rpc,
             snapshot_source,
             epoch_schedule: None,
             rank_maps: BTreeMap::new(),
+            shred_version,
         }
     }
 
     pub async fn verify_final_certificate(
         &mut self,
-        final_cert: FinalCertificate,
+        final_cert: BlockFinalizationCert,
     ) -> Result<VerifiedFinalization> {
         let cert_epoch = self.epoch_for_slot(final_cert.slot).await?;
         self.ensure_rank_map(cert_epoch).await?;
@@ -81,35 +85,39 @@ impl AlpenglowCertificateVerifier {
 
         let slot = final_cert.slot;
         let block_id = final_cert.block_id;
+        let block = Block { slot, block_id };
         if let Some(notar_aggregate) = final_cert.notar_aggregate {
-            let notarize_cert = Certificate {
-                cert_type: CertificateType::Notarize(slot, block_id),
+            let notarize_cert = UnverifiedCertificate {
+                cert_type: CertificateType::Notarize(block),
                 signature: notar_aggregate
                     .uncompress_signature()
                     .map_err(|e| anyhow!("invalid notarize BLS signature: {e:?}"))?,
                 bitmap: notar_aggregate.into_bitmap(),
+                shred_version: self.shred_version,
             };
-            let finalize_cert = Certificate {
+            let finalize_cert = UnverifiedCertificate {
                 cert_type: CertificateType::Finalize(slot),
                 signature: final_cert
                     .final_aggregate
                     .uncompress_signature()
                     .map_err(|e| anyhow!("invalid finalize BLS signature: {e:?}"))?,
                 bitmap: final_cert.final_aggregate.into_bitmap(),
+                shred_version: self.shred_version,
             };
 
-            Self::verify_certificate_stake(rank_map, &notarize_cert)?;
-            Self::verify_certificate_stake(rank_map, &finalize_cert)?;
+            Self::verify(rank_map, notarize_cert)?;
+            Self::verify(rank_map, finalize_cert)?;
         } else {
-            let cert = Certificate {
-                cert_type: CertificateType::FinalizeFast(slot, block_id),
+            let cert = UnverifiedCertificate {
+                cert_type: CertificateType::FinalizeFast(block),
                 signature: final_cert
                     .final_aggregate
                     .uncompress_signature()
                     .map_err(|e| anyhow!("invalid fast-finalize BLS signature: {e:?}"))?,
                 bitmap: final_cert.final_aggregate.into_bitmap(),
+                shred_version: self.shred_version,
             };
-            Self::verify_certificate_stake(rank_map, &cert)?;
+            Self::verify(rank_map, cert)?;
         }
 
         Ok(VerifiedFinalization {
@@ -118,19 +126,13 @@ impl AlpenglowCertificateVerifier {
         })
     }
 
-    fn verify_certificate_stake(rank_map: &RankMap, cert: &Certificate) -> Result<()> {
-        let signed_stake = verify_certificate(cert, rank_map.len(), |rank| rank_map.get(rank))
-            .map_err(|e| anyhow!("failed to verify {:?}: {e}", cert.cert_type))?;
-        let total_stake = NonZeroU64::new(rank_map.total_stake)
-            .ok_or_else(|| anyhow!("alpenglow rank map has zero total stake"))?;
-        let signed_fraction = Fraction::new(signed_stake, total_stake);
-        let threshold = cert.cert_type.limits_and_vote_types().0;
-        if signed_fraction < threshold {
-            bail!(
-                "certificate {:?} has {signed_fraction} stake, below {threshold}",
-                cert.cert_type
-            );
-        }
+    /// Signature and stake-threshold verification are both handled by `verify_certificate`.
+    fn verify(rank_map: &RankMap, cert: UnverifiedCertificate) -> Result<()> {
+        let cert_type = cert.cert_type;
+        verify_certificate(cert, rank_map.len(), rank_map.total_stake, |rank| {
+            rank_map.get(rank)
+        })
+        .map_err(|e| anyhow!("failed to verify {cert_type:?}: {e}"))?;
         Ok(())
     }
 
@@ -164,11 +166,15 @@ impl AlpenglowCertificateVerifier {
             .await?;
 
         for (epoch, entry) in fetched {
+            let Some(total_stake) = NonZeroU64::new(entry.total_stake) else {
+                log::warn!("alpenglow snapshot rank map for epoch {epoch} has zero total stake");
+                continue;
+            };
             self.rank_maps.insert(
                 epoch,
                 RankMap {
                     rank_map: entry.rank_map,
-                    total_stake: entry.total_stake,
+                    total_stake,
                 },
             );
         }
@@ -187,7 +193,7 @@ impl AlpenglowCertificateVerifier {
     }
 }
 
-pub fn parse_final_certificates(shreds: &[PacketInfo]) -> Vec<FinalCertificate> {
+pub fn parse_final_certificates(shreds: &[PacketInfo]) -> Vec<BlockFinalizationCert> {
     shreds
         .iter()
         .filter_map(|raw_shred| {
@@ -200,7 +206,7 @@ pub fn parse_final_certificates(shreds: &[PacketInfo]) -> Vec<FinalCertificate> 
         .collect()
 }
 
-fn parse_final_certificate(shred: &Shred) -> Option<FinalCertificate> {
+fn parse_final_certificate(shred: &Shred) -> Option<BlockFinalizationCert> {
     let payload = get_data(shred)?;
     if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
         return None;
@@ -208,5 +214,5 @@ fn parse_final_certificate(shred: &Shred) -> Option<FinalCertificate> {
     let component: BlockComponent = wincode::deserialize(payload).ok()?;
     let VersionedBlockMarker::V1(marker) = component.as_marker()?;
     let VersionedBlockFooter::V1(footer) = marker.as_block_footer()?;
-    footer.final_cert.clone()
+    footer.block_final_cert.clone()
 }

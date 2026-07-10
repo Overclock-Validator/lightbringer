@@ -218,11 +218,12 @@ pub async fn alpenglow_confirmed_slot_shreds_glommio_runner(
     slot_meta_stream: AsyncReceiver<SlotRaw>,
     rpc: SolanaRpcClient,
     snapshot_source: SnapshotSource,
+    shred_version: u16,
     tx: AsyncSender<SlotForGrpc<ShredInfoView>>,
     exit: CancelRx,
 ) {
     let handle = spawn_local(async move {
-        let verifier = AlpenglowCertificateVerifier::new(rpc, snapshot_source);
+        let verifier = AlpenglowCertificateVerifier::new(rpc, snapshot_source, shred_version);
         let mut conf_stream = AlpenglowBlockConfStream::new(slot_meta_stream, verifier);
         while let Some(update) = conf_stream.next().await {
             log::info!(
