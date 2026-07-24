@@ -92,3 +92,5 @@ tonic-prost-build = "0.14"
 
 [features]
 debug = []
+# Deterministic overlay simulator (docs/overlay/nat-traversal.md §6.9).
+sim = []

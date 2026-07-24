@@ -1,4 +1,5 @@
 mod config;
+mod driver_glommio;
 mod env;
 mod gossip;
 mod identity;
@@ -8,7 +9,7 @@ mod transport;
 mod turbine;
 
 pub use config::{OverlayConfig, OverlayMode};
+pub use driver_glommio::start_overlay_runner;
 pub use gossip::OverlayPeer;
 pub use identity::OverlayIdentity;
-pub use service::start_overlay_runner;
 pub use turbine::TurbineTree;

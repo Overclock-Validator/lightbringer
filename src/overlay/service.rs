@@ -1,27 +1,24 @@
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
 use arrayvec::ArrayVec;
-use glommio::spawn_local;
+use solana_sdk::pubkey::Pubkey;
 
-use crate::{
-    thread_manager::CancelRx,
-    types::{PacketInfo, PacketView},
-};
-use solana_sdk::signature::Keypair;
+use crate::types::{PacketInfo, PacketView};
 
 use super::{
-    OverlayConfig, OverlayIdentity, OverlayMode, OverlayPeer, TurbineTree,
-    gossip::LightbringerGossip, packet::OverlayFrame, transport::OverlayQuicTransport,
+    OverlayConfig, OverlayMode, OverlayPeer, TurbineTree,
+    env::{OverlayEnv, SocketId},
+    gossip::LightbringerGossip,
+    packet::OverlayFrame,
+    transport::{OverlayTransport, TransportEvent},
 };
 
-const SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
-const RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const ADVERT_INTERVAL: Duration = Duration::from_secs(10);
+const MAX_CORE_EVENTS: usize = 8192;
 
 fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
@@ -30,40 +27,40 @@ fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     ArrayVec::try_from(payload.as_slice()).ok()
 }
 
-async fn send_frame(transport: &mut OverlayQuicTransport, peer: SocketAddr, frame: &OverlayFrame) {
-    let raw = match frame.encode() {
-        Ok(raw) => raw,
-        Err(e) => {
-            log::warn!("overlay: failed to encode frame for {peer}: {e}");
-            return;
-        }
-    };
-    if let Err(e) = transport.send_to(raw, peer).await {
-        log::warn!("overlay: failed to send frame to {peer}: {e}");
-    }
+/// Application-level outputs of the core, drained by the driver after every
+/// event (the glommio driver forwards shreds into the packet filter channel;
+/// the simulator records them).
+#[derive(Clone, Debug)]
+pub enum CoreEvent {
+    ShredForFilter(PacketInfo),
+    PeerConnected {
+        peer: SocketAddr,
+        pubkey: Option<Pubkey>,
+    },
+    PeerDisconnected {
+        peer: SocketAddr,
+        reason: String,
+    },
 }
 
-struct OverlayRunner {
+/// Sans-IO overlay state machine (nat-traversal.md §6.9): inbound datagrams
+/// and timer expiries arrive as `on_*` events from a driver, outbound
+/// datagrams leave through `OverlayEnv::send`, and everything else is polled.
+/// No socket, clock, or RNG access happens outside the seams.
+pub struct OverlayCore<T> {
     mode: OverlayMode,
     advertised_addr: SocketAddr,
-    source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
-    filter_tx: kanal::AsyncSender<PacketInfo>,
-    transport: OverlayQuicTransport,
+    transport: T,
     gossip: LightbringerGossip,
     tree: TurbineTree,
     local_peer: OverlayPeer,
     next_advert: Instant,
+    events: VecDeque<CoreEvent>,
 }
 
-impl OverlayRunner {
-    fn new(
-        identity: &OverlayIdentity,
-        config: OverlayConfig,
-        source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
-        filter_tx: kanal::AsyncSender<PacketInfo>,
-    ) -> Result<Self> {
+impl<T: OverlayTransport> OverlayCore<T> {
+    pub fn new(transport: T, config: &OverlayConfig, now: Instant) -> Self {
         let advertised_addr = config.advertised_addr.unwrap_or(config.bind_addr);
-        let now = Instant::now();
         let mut gossip = LightbringerGossip::new(config.peer_ttl());
         for peer in config.static_peers.iter().copied() {
             gossip.observe(
@@ -78,69 +75,96 @@ impl OverlayRunner {
             gossip.observe_repair(advertised_addr, repair_addr, now);
         }
 
-        Ok(Self {
+        Self {
             mode: config.mode,
             advertised_addr,
-            source_rx,
-            filter_tx,
-            transport: OverlayQuicTransport::bind(config.bind_addr, identity)?,
+            transport,
             gossip,
             tree: TurbineTree::new(advertised_addr, config.fanout),
             local_peer: OverlayPeer {
                 overlay_addr: advertised_addr,
                 repair_addr: config.repair_addr,
             },
-            next_advert: Instant::now() + ADVERT_INTERVAL,
-        })
-    }
-
-    async fn run(&mut self) {
-        loop {
-            self.poll_source().await;
-            self.poll_inbound().await;
-            self.poll_advert().await;
-            if let Err(e) = self.transport.poll().await {
-                log::warn!("overlay: transport poll failed: {e}");
-            }
+            next_advert: now + ADVERT_INTERVAL,
+            events: VecDeque::new(),
         }
     }
 
-    async fn poll_source(&mut self) {
-        let Some(source_rx) = &self.source_rx else {
-            return;
-        };
+    pub fn on_datagram(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
+        from: SocketAddr,
+        datagram: &[u8],
+    ) {
+        self.transport.on_datagram(env, socket, from, datagram);
+        self.pump(env);
+    }
+
+    /// Fire due deadlines. Safe to call early; deadlines are re-checked.
+    pub fn on_timer(&mut self, env: &mut dyn OverlayEnv) {
+        self.transport.on_timer(env);
+        let now = env.now();
+        if now >= self.next_advert {
+            self.next_advert = now + ADVERT_INTERVAL;
+            self.gossip.prune_expired(now);
+            self.advertise_except(env, None);
+        }
+        self.pump(env);
+    }
+
+    pub fn on_source_packet(&mut self, env: &mut dyn OverlayEnv, packet: PacketInfo) {
         if self.mode != OverlayMode::Source {
             return;
         }
-
-        match source_rx.try_recv() {
-            Ok(Some(packet)) => self.handle_source_packet(packet).await,
-            Ok(None) => glommio::timer::sleep(SOURCE_POLL_INTERVAL).await,
-            Err(e) => log::warn!("overlay: source shred channel closed: {e}"),
-        }
-    }
-
-    async fn handle_source_packet(&mut self, packet: PacketInfo) {
-        let peers = self.gossip.peers(Instant::now());
+        let now = env.now();
+        let peers = self.gossip.peers(now);
         let peer_addrs = peers
             .iter()
             .map(|peer| peer.overlay_addr)
             .collect::<Vec<_>>();
         let frame = OverlayFrame::shred(self.advertised_addr, packet.to_vec());
         for peer in self.tree.retransmit_peers(packet.as_slice(), &peer_addrs) {
-            send_frame(&mut self.transport, peer, &frame).await;
+            self.send_frame(env, peer, &frame);
+        }
+        self.pump(env);
+    }
+
+    pub fn poll_timeout(&mut self) -> Option<Instant> {
+        let deadline = match self.transport.poll_timeout() {
+            Some(transport_deadline) => transport_deadline.min(self.next_advert),
+            None => self.next_advert,
+        };
+        Some(deadline)
+    }
+
+    pub fn poll_event(&mut self) -> Option<CoreEvent> {
+        self.events.pop_front()
+    }
+
+    #[cfg_attr(not(feature = "sim"), allow(dead_code))]
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    fn pump(&mut self, env: &mut dyn OverlayEnv) {
+        while let Some(event) = self.transport.poll_event() {
+            let event = match event {
+                TransportEvent::Connected { peer, pubkey } => {
+                    CoreEvent::PeerConnected { peer, pubkey }
+                }
+                TransportEvent::Disconnected { peer, reason } => {
+                    CoreEvent::PeerDisconnected { peer, reason }
+                }
+            };
+            self.push_event(event);
+        }
+        while let Some((from, raw)) = self.transport.poll_inbound() {
+            self.handle_frame(env, from, raw);
         }
     }
 
-    async fn poll_inbound(&mut self) {
-        match self.transport.recv_for(RECEIVE_POLL_INTERVAL).await {
-            Ok(Some((from, raw))) => self.handle_frame(from, raw).await,
-            Ok(None) => {}
-            Err(e) => log::warn!("overlay: receive failed: {e}"),
-        }
-    }
-
-    async fn handle_frame(&mut self, from: SocketAddr, raw: Vec<u8>) {
+    fn handle_frame(&mut self, env: &mut dyn OverlayEnv, from: SocketAddr, raw: Vec<u8>) {
         let frame = match OverlayFrame::decode(&raw) {
             Ok(frame) => frame,
             Err(e) => {
@@ -149,25 +173,24 @@ impl OverlayRunner {
             }
         };
 
+        let now = env.now();
         self.gossip.observe(
             OverlayPeer {
                 overlay_addr: from,
                 repair_addr: None,
             },
-            Instant::now(),
+            now,
         );
 
         match frame {
             OverlayFrame::Shred {
                 origin, payload, ..
             } => {
-                if let Some(packet) = packet_view(payload.clone())
-                    && let Err(e) = self.filter_tx.send(PacketInfo::new(packet)).await
-                {
-                    log::warn!("overlay: failed to forward shred to filter: {e}");
+                if let Some(packet) = packet_view(payload.clone()) {
+                    self.push_event(CoreEvent::ShredForFilter(PacketInfo::new(packet)));
                 }
 
-                let peers = self.gossip.peers(Instant::now());
+                let peers = self.gossip.peers(now);
                 let peer_addrs = peers
                     .iter()
                     .map(|peer| peer.overlay_addr)
@@ -179,57 +202,44 @@ impl OverlayRunner {
                     _ => unreachable!(),
                 };
                 for peer in self.tree.retransmit_peers(payload, &peer_addrs) {
-                    send_frame(&mut self.transport, peer, &frame).await;
+                    self.send_frame(env, peer, &frame);
                 }
             }
             OverlayFrame::PeerAdvertisement { peer, .. } => {
-                self.gossip.observe(peer, Instant::now());
-                self.advertise_except(Some(from)).await;
+                self.gossip.observe(peer, now);
+                self.advertise_except(env, Some(from));
             }
         }
     }
 
-    async fn poll_advert(&mut self) {
-        if Instant::now() < self.next_advert {
-            return;
-        }
-        self.next_advert = Instant::now() + ADVERT_INTERVAL;
-        self.advertise_except(None).await;
-    }
-
-    async fn advertise_except(&mut self, excluded_peer: Option<SocketAddr>) {
-        let peers = self.gossip.peers(Instant::now());
+    fn advertise_except(&mut self, env: &mut dyn OverlayEnv, excluded_peer: Option<SocketAddr>) {
+        let peers = self.gossip.peers(env.now());
         let advert = OverlayFrame::peer_advertisement(self.local_peer.clone());
         for peer in peers.into_iter().map(|peer| peer.overlay_addr) {
             if Some(peer) != excluded_peer {
-                send_frame(&mut self.transport, peer, &advert).await;
+                self.send_frame(env, peer, &advert);
             }
         }
     }
-}
 
-pub async fn start_overlay_runner(
-    exit: CancelRx,
-    keypair: Arc<Keypair>,
-    config: OverlayConfig,
-    source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
-    filter_tx: kanal::AsyncSender<PacketInfo>,
-) -> anyhow::Result<()> {
-    let identity = OverlayIdentity::from_keypair(&keypair)?;
-    log::info!("overlay identity: {}", identity.pubkey);
-
-    let runner_task = spawn_local(async move {
-        let mut runner = match OverlayRunner::new(&identity, config, source_rx, filter_tx) {
-            Ok(runner) => runner,
+    fn send_frame(&mut self, env: &mut dyn OverlayEnv, peer: SocketAddr, frame: &OverlayFrame) {
+        let raw = match frame.encode() {
+            Ok(raw) => raw,
             Err(e) => {
-                log::error!("overlay: failed to start runner: {e}");
+                log::warn!("overlay: failed to encode frame for {peer}: {e}");
                 return;
             }
         };
-        runner.run().await;
-    });
+        if let Err(e) = self.transport.queue_datagram(env, peer, raw) {
+            log::warn!("overlay: failed to send frame to {peer}: {e}");
+        }
+    }
 
-    exit.await;
-    runner_task.cancel().await;
-    Ok(())
+    fn push_event(&mut self, event: CoreEvent) {
+        if self.events.len() >= MAX_CORE_EVENTS {
+            self.events.pop_front();
+            log::debug!("overlay: core event queue full ({MAX_CORE_EVENTS}); dropping oldest");
+        }
+        self.events.push_back(event);
+    }
 }
