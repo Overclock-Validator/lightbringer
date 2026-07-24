@@ -188,6 +188,10 @@ impl<T: OverlayTransport> OverlayCore<T> {
     }
 
     /// Sends dropped because the target was neither connected nor `Direct`.
+    /// The flood path cannot reach this today — `usable_peers` pre-excludes
+    /// `Coordinated`-only peers, which is §6.7's stricter guarantee — so it
+    /// guards future by-identity callers (P2 repair targeting, P5 punch
+    /// fallback) where the target is chosen before reachability is known.
     #[allow(dead_code)]
     pub fn dropped_unreachable(&self) -> u64 {
         self.dropped_unreachable

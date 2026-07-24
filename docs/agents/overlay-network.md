@@ -20,22 +20,43 @@ before slot metadata can observe it. Sink configs must provide
 
 Current feature scope assumes every peer is Tier 2. `TurbineTree` implements the
 Solana turbine retransmit shape: root sends to the first layer, and non-root
-nodes select the next layer by neighborhood offset and fanout stride. The peer
-ordering is deterministic per shred, but uses the overlay peer socket addresses
-and the parsed shred id as the seed because overlay stake-weighted identity is
-not defined yet.
+nodes select the next layer by neighborhood offset and fanout stride. The
+shuffle is seeded by the parsed shred id and peer *pubkeys*
+(nat-traversal.md §6.7) over the node's usable peer set: established
+connections plus peers advertising `Reachability::Direct`. Locally-originated
+shreds go through `origin_peers` — the source acts as the leader, handing the
+shred to the shuffled root when the shuffle puts the source off-root.
 
 Source mode never disseminates raw turbine input directly. Solana turbine shreds
 first pass through `packet_filter_loop`, which fetches the Solana leader schedule
 over RPC and verifies the shred signature against the scheduled leader. Only
 validated packets are mirrored to the overlay source channel.
 
-Lightbringer gossip is represented by `LightbringerGossip`. It tracks overlay
-addresses plus repair addresses from peer advertisements, prunes stale records by
-TTL, and exposes discovered repair peers for the repair integration that follows.
-`overlay.repair_addr` is mandatory whenever the overlay is enabled. Sink mode
-must not use Solana repair as a fallback; until the overlay repair requester is
-wired, generated sink repair requests are logged rather than sent to Solana.
+Gossip is identity-first (nat-traversal.md §6.1, phase P1).
+`LightbringerGossip` keys peers by Ed25519 pubkey in a bounded
+`LruBTreeMap` — one entry per node no matter how many addresses it is seen
+at. Peer advertisements are `SignedPeerAdvert`s: `PeerAdvert { pubkey,
+advert_seq, ttl_ms, reachability, repair }` signed by the advertised
+identity; receivers verify before accepting or flood-forwarding, and
+`advert_seq` supersession rejects replays. Nodes with an
+operator-configured `advertised_addr` advertise `Reachability::Direct`;
+everyone else advertises `Coordinated` (there is no fallback to
+`bind_addr`). Every send funnels through the core's `send_to_peer` choke
+point: prefer the established connection (the transport keeps a
+pubkey→address index over TLS-verified identities), dial only `Direct`
+peers, otherwise drop and count. Shred retransmit loop suppression is a
+bounded LRU dedup keyed on payload hash — the wire frame carries no origin
+field. `overlay.repair_addr` is mandatory whenever the overlay is enabled
+and is advertised as `RepairEndpoint::Udp`. Sink mode must not use Solana
+repair as a fallback; until the overlay repair requester is wired,
+generated sink repair requests are logged rather than sent to Solana.
+
+The wire format (v1, still unfrozen) is a two-byte header (version, frame
+type) followed by the body: raw shred bytes delimited by the QUIC datagram
+boundary, or a bincode `SignedPeerAdvert`. The path MTU is fixed at 1280
+(`OVERLAY_INITIAL_MTU`, IPv6 minimum; MTU discovery off), giving a
+1242-byte datagram budget — a maximum 1228-byte shred frames to 1230
+bytes. The sim's `tests/mtu.rs` pins the boundary empirically.
 
 The overlay core is sans-IO behind the seams from
 `docs/overlay/nat-traversal.md` §6.9. `OverlayEnv` (`src/overlay/env.rs`) is
@@ -63,6 +84,14 @@ scenarios with `cargo run --bin overlay-sim --features sim -- --seed N`; the
 printed trace hash is the reproducibility witness. Note trace hashes cover
 timing/endpoints/sizes/app payloads, not ciphertext bytes — ring generates
 ECDHE keys from its own entropy outside the rustls SecureRandom seam.
+
+The high-seam tier (`src/overlay/sim/highseam.rs`) swaps the QUIC transport
+for `MemTransport`, an in-memory authenticated fake, so hundreds of
+`OverlayCore`s run gossip/advert/turbine logic in a deterministic
+tick-driven harness (`HighSeamNet`) — this is where the per-phase safety
+oracles run (`sim/tests/gossip_oracles.rs`, `advert_security.rs`). Dev
+builds compile the dalek crypto crates at opt-level 3 (see Cargo.toml
+profile overrides); without that, ed25519 dominates the sim suite ~100x.
 
 Overlay QUIC identity reuses `identity.json`. `OverlayIdentity` follows the same
 pattern as Agave's TLS utilities: the Solana Ed25519 secret is encoded as

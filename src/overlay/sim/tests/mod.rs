@@ -16,7 +16,6 @@ use super::{
     NodeOptions, SimWorld,
     nat::NatConfig,
     net::LinkParams,
-    scenario,
 };
 use crate::overlay::OverlayMode;
 
