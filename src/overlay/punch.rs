@@ -8,6 +8,7 @@
 //! replace a candidate.
 
 use anyhow::{Result, anyhow};
+use arrayvec::ArrayVec;
 use serde::{Deserialize, Serialize};
 use solana_sdk::{
     pubkey::Pubkey,
@@ -33,6 +34,134 @@ pub struct NatProfile {
     /// Current observed external IP. A change is a new NAT generation and
     /// invalidates the peer-pair outcome cache (§6.5.1 rung 4).
     pub generation: Option<std::net::IpAddr>,
+}
+
+/// Candidate capacity matches the advert's `Reachability` bound. Keeping it
+/// in the signed envelope means a via never has to trust or synthesize a
+/// destination address.
+pub const MAX_PUNCH_CANDIDATES: usize = 4;
+
+/// Signed origin envelope for a P5 ConnectRequest. The frame itself travels
+/// over authenticated overlay QUIC, but a `via` forwards it, so the target
+/// must verify the initiator independently.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectRequest {
+    pub nonce: u64,
+    pub origin: Pubkey,
+    pub target: Pubkey,
+    pub candidates: ArrayVec<std::net::SocketAddr, MAX_PUNCH_CANDIDATES>,
+    pub nat_profile: NatProfile,
+    pub signature: Signature,
+}
+
+/// Signed answer from the target. `target` means the initiator to which a via
+/// must route the response; `origin` is the answering peer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectResponse {
+    pub nonce: u64,
+    pub origin: Pubkey,
+    pub target: Pubkey,
+    pub candidates: ArrayVec<std::net::SocketAddr, MAX_PUNCH_CANDIDATES>,
+    pub nat_profile: NatProfile,
+    pub signature: Signature,
+}
+
+fn request_signing_bytes(
+    nonce: u64,
+    origin: Pubkey,
+    target: Pubkey,
+    candidates: &ArrayVec<std::net::SocketAddr, MAX_PUNCH_CANDIDATES>,
+    nat_profile: NatProfile,
+) -> Result<Vec<u8>> {
+    Ok(bincode::serialize(&(nonce, origin, target, candidates, nat_profile))?)
+}
+
+fn response_signing_bytes(
+    nonce: u64,
+    origin: Pubkey,
+    target: Pubkey,
+    candidates: &ArrayVec<std::net::SocketAddr, MAX_PUNCH_CANDIDATES>,
+    nat_profile: NatProfile,
+) -> Result<Vec<u8>> {
+    Ok(bincode::serialize(&(nonce, origin, target, candidates, nat_profile))?)
+}
+
+impl ConnectRequest {
+    pub fn sign(
+        nonce: u64,
+        target: Pubkey,
+        candidates: ArrayVec<std::net::SocketAddr, MAX_PUNCH_CANDIDATES>,
+        nat_profile: NatProfile,
+        keypair: &Keypair,
+    ) -> Result<Self> {
+        let origin = keypair.pubkey();
+        let signature = keypair.sign_message(&request_signing_bytes(
+            nonce,
+            origin,
+            target,
+            &candidates,
+            nat_profile,
+        )?);
+        Ok(Self {
+            nonce,
+            origin,
+            target,
+            candidates,
+            nat_profile,
+            signature,
+        })
+    }
+
+    pub fn verify(&self) -> bool {
+        request_signing_bytes(
+            self.nonce,
+            self.origin,
+            self.target,
+            &self.candidates,
+            self.nat_profile,
+        )
+        .map(|bytes| self.signature.verify(self.origin.as_ref(), &bytes))
+        .unwrap_or(false)
+    }
+}
+
+impl ConnectResponse {
+    pub fn sign(
+        nonce: u64,
+        target: Pubkey,
+        candidates: ArrayVec<std::net::SocketAddr, MAX_PUNCH_CANDIDATES>,
+        nat_profile: NatProfile,
+        keypair: &Keypair,
+    ) -> Result<Self> {
+        let origin = keypair.pubkey();
+        let signature = keypair.sign_message(&response_signing_bytes(
+            nonce,
+            origin,
+            target,
+            &candidates,
+            nat_profile,
+        )?);
+        Ok(Self {
+            nonce,
+            origin,
+            target,
+            candidates,
+            nat_profile,
+            signature,
+        })
+    }
+
+    pub fn verify(&self) -> bool {
+        response_signing_bytes(
+            self.nonce,
+            self.origin,
+            self.target,
+            &self.candidates,
+            self.nat_profile,
+        )
+        .map(|bytes| self.signature.verify(self.origin.as_ref(), &bytes))
+        .unwrap_or(false)
+    }
 }
 
 /// A raw, signed same-socket probe. The nonce is negotiated over authenticated
@@ -117,5 +246,29 @@ mod tests {
         *raw.last_mut().unwrap() ^= 1;
         let decoded = PunchProbe::decode(&raw).unwrap();
         assert!(!decoded.verify());
+    }
+
+    #[test]
+    fn signaling_envelopes_bind_origin_target_candidates_and_profile() {
+        let origin = Keypair::new();
+        let target = Keypair::new().pubkey();
+        let mut candidates = ArrayVec::new();
+        candidates.push("198.51.100.8:51000".parse().unwrap());
+        let request = ConnectRequest::sign(
+            9,
+            target,
+            candidates,
+            NatProfile {
+                class: Some(NatClass::PortDependent),
+                allocator: Some(AllocatorProfile::Sequential { stride: 1 }),
+                generation: Some("198.51.100.8".parse().unwrap()),
+            },
+            &origin,
+        )
+        .unwrap();
+        assert!(request.verify());
+        let mut tampered = request;
+        tampered.target = Keypair::new().pubkey();
+        assert!(!tampered.verify());
     }
 }

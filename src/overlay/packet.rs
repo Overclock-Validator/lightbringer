@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow};
 
-use super::gossip::SignedPeerAdvert;
+use super::{
+    gossip::SignedPeerAdvert,
+    punch::{ConnectRequest, ConnectResponse},
+};
 
 /// v1 is not frozen; this layout replaces the earlier bincode envelope. A
 /// fixed two-byte header (version, frame type) precedes a type-specific
@@ -22,6 +25,8 @@ const FRAME_PEER_ADVERTISEMENT: u8 = 1;
 const FRAME_ADDRESS_OBSERVATION: u8 = 2;
 const FRAME_DIALBACK_REQUEST: u8 = 3;
 const FRAME_DIALBACK_RESULT: u8 = 4;
+const FRAME_CONNECT_REQUEST: u8 = 5;
+const FRAME_CONNECT_RESPONSE: u8 = 6;
 
 #[derive(Clone, Debug)]
 pub enum OverlayFrame {
@@ -46,6 +51,10 @@ pub enum OverlayFrame {
     /// The helper's verdict: `ok` iff the fresh-source handshake completed
     /// with the requester's expected identity.
     DialBackResult { nonce: u64, ok: bool },
+    /// P5 §6.5: signed end-origin request relayed by a connected shared peer.
+    ConnectRequest { request: ConnectRequest },
+    /// P5 §6.5: signed target response routed back through the same relay.
+    ConnectResponse { response: ConnectResponse },
 }
 
 impl OverlayFrame {
@@ -67,6 +76,14 @@ impl OverlayFrame {
 
     pub fn dialback_result(nonce: u64, ok: bool) -> Self {
         Self::DialBackResult { nonce, ok }
+    }
+
+    pub fn connect_request(request: ConnectRequest) -> Self {
+        Self::ConnectRequest { request }
+    }
+
+    pub fn connect_response(response: ConnectResponse) -> Self {
+        Self::ConnectResponse { response }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -98,6 +115,16 @@ impl OverlayFrame {
                 bincode::serialize_into(&mut out, &(nonce, ok))?;
                 Ok(out)
             }
+            Self::ConnectRequest { request } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_CONNECT_REQUEST];
+                bincode::serialize_into(&mut out, request)?;
+                Ok(out)
+            }
+            Self::ConnectResponse { response } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_CONNECT_RESPONSE];
+                bincode::serialize_into(&mut out, response)?;
+                Ok(out)
+            }
         }
     }
 
@@ -126,6 +153,12 @@ impl OverlayFrame {
                 let (nonce, ok) = bincode::deserialize(body)?;
                 Ok(Self::DialBackResult { nonce, ok })
             }
+            FRAME_CONNECT_REQUEST => Ok(Self::ConnectRequest {
+                request: bincode::deserialize(body)?,
+            }),
+            FRAME_CONNECT_RESPONSE => Ok(Self::ConnectResponse {
+                response: bincode::deserialize(body)?,
+            }),
             other => Err(anyhow!("unknown overlay frame type {other}")),
         }
     }

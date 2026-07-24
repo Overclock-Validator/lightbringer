@@ -23,12 +23,14 @@ use super::{
     nat::{AllocatorProfile, NatClass},
     packet::OverlayFrame,
     portmap::{PortMapConfig, PortMapper},
+    punch::{ConnectRequest, ConnectResponse, MAX_PUNCH_CANDIDATES, NatProfile, PunchProbe},
     repair::{
         self, MAX_REPAIR_REQ_WIRE, MAX_REPAIR_REQUESTS_PER_SECOND, MAX_REPAIR_RESP_WIRE,
         RepairPeerEntry, RepairRateLimiter, RepairReq,
     },
     transport::{
-        OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, StreamEvent, TransportEvent,
+        OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, PunchProbeEvent, StreamEvent,
+        TransportEvent,
     },
 };
 
@@ -62,6 +64,15 @@ const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 /// Quarantined lying-advert identities. Bounded; a superseding advert lifts
 /// the quarantine so an honestly-moved node can re-confirm.
 const MAX_QUARANTINE: usize = 4096;
+/// P5 is strictly demand-driven; this caps all local live exchanges, so a
+/// gossip flood cannot turn into a socket/probe flood.
+const MAX_PUNCH_SESSIONS: usize = 128;
+const MAX_PUNCH_FORWARDS: usize = 512;
+const PUNCH_TIMEOUT: Duration = Duration::from_secs(5);
+const PUNCH_PROBE_INTERVAL: Duration = Duration::from_millis(100);
+/// The via's independent initiator and target limits (§9). A small value is
+/// enough because outcomes are cached after one attempt (rung 4).
+const MAX_PUNCH_SIGNALS_PER_SECOND: u32 = 4;
 
 fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
@@ -164,6 +175,30 @@ struct ConfirmDial {
     deadline: Instant,
 }
 
+/// One active P5 exchange. Candidate addresses are only bootstrap hints; an
+/// authenticated raw probe source is retained separately as the freshest
+/// peer-reflexive address (§6.5).
+struct PunchSession {
+    peer: Pubkey,
+    nonce: u64,
+    via: Pubkey,
+    candidates: ArrayVec<SocketAddr, MAX_PUNCH_CANDIDATES>,
+    freshest: Option<SocketAddr>,
+    remote_profile: NatProfile,
+    awaiting_response: bool,
+    dial_started: bool,
+    payload: Option<Vec<u8>>,
+    deadline: Instant,
+    next_probe: Instant,
+}
+
+/// Bounded relay state: a `via` only routes a response for a request it
+/// personally forwarded over authenticated connections.
+struct PunchForward {
+    target: Pubkey,
+    deadline: Instant,
+}
+
 struct InboundRepair {
     peer: Pubkey,
     buf: Vec<u8>,
@@ -234,6 +269,11 @@ pub struct OverlayCore<T> {
     /// (§6.2.3 F8). Address-keyed so an innocent node that happens to answer
     /// at the lied-about address is never fanned to either.
     quarantined: LruBTreeMap<SocketAddr, ()>,
+    punch_sessions: BTreeMap<u64, PunchSession>,
+    punch_forwards: BTreeMap<(Pubkey, u64), PunchForward>,
+    punch_initiator_rate: RepairRateLimiter,
+    punch_target_rate: RepairRateLimiter,
+    punch_refused: u64,
     dropped_unreachable: u64,
     invalid_adverts: u64,
     repairs_refused: u64,
@@ -293,6 +333,11 @@ impl<T: OverlayTransport> OverlayCore<T> {
             dialback_rate: RepairRateLimiter::new(MAX_DIALBACK_PER_SECOND),
             confirming: BTreeMap::new(),
             quarantined: LruBTreeMap::new(MAX_QUARANTINE),
+            punch_sessions: BTreeMap::new(),
+            punch_forwards: BTreeMap::new(),
+            punch_initiator_rate: RepairRateLimiter::new(MAX_PUNCH_SIGNALS_PER_SECOND),
+            punch_target_rate: RepairRateLimiter::new(MAX_PUNCH_SIGNALS_PER_SECOND),
+            punch_refused: 0,
             dropped_unreachable: 0,
             invalid_adverts: 0,
             repairs_refused: 0,
@@ -348,6 +393,8 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.expire_repairs(env, now);
         self.expire_dialbacks(env, now);
         self.expire_confirms(now);
+        self.advance_punches(env, now);
+        self.expire_punch_forwards(now);
         self.pump(env);
     }
 
@@ -423,6 +470,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
         for confirm in self.confirming.values() {
             deadline = deadline.min(confirm.deadline);
         }
+        for session in self.punch_sessions.values() {
+            deadline = deadline.min(session.deadline).min(session.next_probe);
+        }
+        for forward in self.punch_forwards.values() {
+            deadline = deadline.min(forward.deadline);
+        }
         Some(deadline)
     }
 
@@ -487,6 +540,28 @@ impl<T: OverlayTransport> OverlayCore<T> {
     #[allow(dead_code)]
     pub fn repairs_malformed(&self) -> u64 {
         self.repairs_malformed
+    }
+
+    /// P5 oracle surface: in-flight demand-driven exchanges. This must stay
+    /// bounded and, crucially, is never populated merely by gossip receipt.
+    #[allow(dead_code)]
+    pub fn active_punch_sessions(&self) -> usize {
+        self.punch_sessions.len()
+    }
+
+    /// P5 oracle surface: relayed requests refused for signature, visibility,
+    /// authenticated-route, capacity, or per-identity rate-limit reasons.
+    #[allow(dead_code)]
+    pub fn punch_refused(&self) -> u64 {
+        self.punch_refused
+    }
+
+    /// Explicit targeted reach-upgrade API. It intentionally does not alter
+    /// the normal turbine or repair candidate sets: callers must name the
+    /// Coordinated peer they want to reach (§6.5 trigger policy).
+    #[allow(dead_code)]
+    pub fn request_direct_path(&mut self, env: &mut dyn OverlayEnv, peer: Pubkey) -> bool {
+        self.begin_punch(env, peer, None)
     }
 
     /// The repair peer view a requester samples (§6.4): every live gossip
@@ -594,6 +669,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             // it authenticates as the advertised identity; a mismatch drops it
             // and quarantines the liar.
             if self.resolve_confirm(env, peer_addr, pubkey) {
+                self.complete_punch(env, pubkey);
                 // §6.2 step 1: tell the peer the address we see it at, so it
                 // can classify its own NAT from our vantage point.
                 self.send_address_observation(env, &pubkey, peer_addr);
@@ -607,6 +683,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
         while let Some(event) = self.transport.poll_probe_event() {
             self.on_probe_event(env, event);
+        }
+        while let Some(event) = self.transport.poll_punch_probe() {
+            self.handle_punch_probe(env, event);
         }
     }
 
@@ -804,6 +883,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
             OverlayFrame::DialBackResult { nonce, ok } => {
                 self.handle_dialback_result(nonce, ok);
             }
+            OverlayFrame::ConnectRequest { request } => {
+                self.handle_connect_request(env, from, request);
+            }
+            OverlayFrame::ConnectResponse { response } => {
+                self.handle_connect_response(env, from, response);
+            }
         }
     }
 
@@ -841,6 +926,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
             .or_else(|| usable.iter().find(|addr| !addr.is_ipv6()))
             .copied();
         let Some(addr) = dial_addr else {
+            // P5 trigger policy: this is the ONLY automatic trigger. It is
+            // reached from an already-targeted send, never advert receipt,
+            // fan-out membership, repair sampling, or a gossip sweep.
+            if self.begin_punch(env, pubkey, Some(raw)) {
+                return;
+            }
             self.dropped_unreachable += 1;
             log::debug!("overlay: no route to {pubkey}; dropped");
             return;
@@ -860,6 +951,388 @@ impl<T: OverlayTransport> OverlayCore<T> {
             expected: pubkey,
             deadline: env.now() + CONFIRM_TIMEOUT,
         });
+    }
+
+    fn local_nat_profile(&mut self) -> NatProfile {
+        NatProfile {
+            class: self.discovery.classify(),
+            allocator: self.discovery.calibrate(),
+            generation: self.discovery.external_ip(),
+        }
+    }
+
+    /// Local candidates for a signed request/response. They are aiming hints,
+    /// not Direct authority: the raw probe and QUIC certificate still prove
+    /// the actual path. IPv6 is included only when it was independently
+    /// confirmed (or operator-configured), preserving P4's v6 invariant.
+    fn local_punch_candidates(&self) -> ArrayVec<SocketAddr, MAX_PUNCH_CANDIDATES> {
+        let mut candidates = ArrayVec::new();
+        let mut add = |addr: Option<SocketAddr>| {
+            if let Some(addr) = addr
+                && !candidates.contains(&addr)
+            {
+                let _ = candidates.try_push(addr);
+            }
+        };
+        add(self.advertised_addr);
+        add(self.confirmed_direct);
+        add(self.confirmed_portmap);
+        add(self.advertised_addr_v6);
+        add(self.confirmed_v6);
+        for hint in self.discovery.observed_hints() {
+            add(Some(hint.mapping));
+        }
+        if let Some(discovery_v6) = &self.discovery_v6 {
+            for hint in discovery_v6.observed_hints() {
+                add(Some(hint.mapping));
+            }
+        }
+        candidates
+    }
+
+    /// Begin a single targeted P5 exchange. This intentionally does nothing
+    /// for a `Direct` peer or a Coordinated advert without an *already
+    /// connected* shared via: no eager gossip meshing and no relay fallback.
+    fn begin_punch(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        peer: Pubkey,
+        payload: Option<Vec<u8>>,
+    ) -> bool {
+        if self.transport.connection_addr(&peer).is_some() {
+            return true;
+        }
+        if let Some(session) = self.punch_sessions.values_mut().find(|s| s.peer == peer) {
+            if session.payload.is_none() {
+                session.payload = payload;
+            }
+            return true;
+        }
+        if self.punch_sessions.len() >= MAX_PUNCH_SESSIONS {
+            return false;
+        }
+        let via = self
+            .gossip
+            .get(&peer, env.now())
+            .and_then(|advert| match &advert.reachability {
+                Reachability::Coordinated { via, .. } => via
+                    .iter()
+                    .copied()
+                    .find(|candidate| self.transport.connection_addr(candidate).is_some()),
+                Reachability::Direct(_) => None,
+            });
+        let Some(via) = via else {
+            return false;
+        };
+        let mut nonce = env.rng().next_u64();
+        while self.punch_sessions.contains_key(&nonce) {
+            nonce = env.rng().next_u64();
+        }
+        let request = match ConnectRequest::sign(
+            nonce,
+            peer,
+            self.local_punch_candidates(),
+            self.local_nat_profile(),
+            self.keypair.as_ref(),
+        ) {
+            Ok(request) => request,
+            Err(e) => {
+                log::warn!("overlay: could not sign punch request for {peer}: {e}");
+                return false;
+            }
+        };
+        let raw = match OverlayFrame::connect_request(request).encode() {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::warn!("overlay: could not encode punch request for {peer}: {e}");
+                return false;
+            }
+        };
+        if !self.transport.queue_datagram_to_peer(env, &via, raw) {
+            return false;
+        }
+        let now = env.now();
+        self.punch_sessions.insert(
+            nonce,
+            PunchSession {
+                peer,
+                nonce,
+                via,
+                candidates: ArrayVec::new(),
+                freshest: None,
+                remote_profile: NatProfile::default(),
+                awaiting_response: true,
+                dial_started: false,
+                payload,
+                deadline: now + PUNCH_TIMEOUT,
+                next_probe: now + PUNCH_PROBE_INTERVAL,
+            },
+        );
+        true
+    }
+
+    fn refuse_punch(&mut self, why: &str) {
+        self.punch_refused += 1;
+        log::debug!("overlay: refused punch signaling: {why}");
+    }
+
+    fn handle_connect_request(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        request: ConnectRequest,
+    ) {
+        let sender = self.transport.peer_identity(from);
+        if !request.verify() || request.origin == self.local_pubkey {
+            self.refuse_punch("bad request signature or self origin");
+            return;
+        }
+        if request.target == self.local_pubkey {
+            // Endpoint B only probes candidates supplied by an independently
+            // signed request from an origin it can currently see in gossip.
+            let Some(via) = sender else {
+                self.refuse_punch("target received request off an authenticated connection");
+                return;
+            };
+            if self.gossip.get(&request.origin, env.now()).is_none() {
+                self.refuse_punch("request origin is not gossip-visible");
+                return;
+            }
+            if self.punch_sessions.len() >= MAX_PUNCH_SESSIONS
+                && !self.punch_sessions.contains_key(&request.nonce)
+            {
+                self.refuse_punch("session cap");
+                return;
+            }
+            let now = env.now();
+            self.punch_sessions.entry(request.nonce).or_insert(PunchSession {
+                peer: request.origin,
+                nonce: request.nonce,
+                via,
+                candidates: request.candidates.clone(),
+                freshest: None,
+                remote_profile: request.nat_profile,
+                awaiting_response: false,
+                dial_started: false,
+                payload: None,
+                deadline: now + PUNCH_TIMEOUT,
+                next_probe: now,
+            });
+            let response = match ConnectResponse::sign(
+                request.nonce,
+                request.origin,
+                self.local_punch_candidates(),
+                self.local_nat_profile(),
+                self.keypair.as_ref(),
+            ) {
+                Ok(response) => response,
+                Err(e) => {
+                    log::warn!("overlay: could not sign punch response: {e}");
+                    return;
+                }
+            };
+            if let Ok(raw) = OverlayFrame::connect_response(response).encode() {
+                self.transport.queue_datagram_to_peer(env, &via, raw);
+            }
+            self.advance_punches(env, now);
+            return;
+        }
+
+        // We are the shared via. The initiating connection and the target
+        // connection must both already be authenticated; no blind forwarding
+        // or connection establishment is permitted here (§9).
+        if sender != Some(request.origin)
+            || self.transport.connection_addr(&request.target).is_none()
+            || self.gossip.get(&request.target, env.now()).is_none()
+        {
+            self.refuse_punch("via route is not authenticated and gossip-visible");
+            return;
+        }
+        if self.punch_forwards.len() >= MAX_PUNCH_FORWARDS
+            || !self.punch_initiator_rate.check_and_increment(request.origin, env.now())
+            || !self.punch_target_rate.check_and_increment(request.target, env.now())
+        {
+            self.refuse_punch("via rate or forwarding-state cap");
+            return;
+        }
+        let key = (request.origin, request.nonce);
+        if self.punch_forwards.contains_key(&key) {
+            return;
+        }
+        let raw = match OverlayFrame::connect_request(request.clone()).encode() {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::debug!("overlay: malformed connect request cannot forward: {e}");
+                return;
+            }
+        };
+        if self
+            .transport
+            .queue_datagram_to_peer(env, &request.target, raw)
+        {
+            self.punch_forwards.insert(
+                key,
+                PunchForward {
+                    target: request.target,
+                    deadline: env.now() + PUNCH_TIMEOUT,
+                },
+            );
+        }
+    }
+
+    fn handle_connect_response(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        response: ConnectResponse,
+    ) {
+        let sender = self.transport.peer_identity(from);
+        if !response.verify() {
+            self.refuse_punch("bad response signature");
+            return;
+        }
+        if response.target == self.local_pubkey {
+            let Some(session) = self.punch_sessions.get_mut(&response.nonce) else {
+                self.refuse_punch("response has no local session");
+                return;
+            };
+            if !session.awaiting_response
+                || session.peer != response.origin
+                || sender != Some(session.via)
+                || self.gossip.get(&response.origin, env.now()).is_none()
+            {
+                self.refuse_punch("response route or origin mismatch");
+                return;
+            }
+            session.candidates = response.candidates;
+            session.remote_profile = response.nat_profile;
+            session.awaiting_response = false;
+            let now = env.now();
+            session.next_probe = now;
+            self.advance_punches(env, now);
+            return;
+        }
+
+        // Relay response only if it matches a bounded request state that this
+        // node created. The target is the original initiator.
+        if sender != Some(response.origin) {
+            self.refuse_punch("response was not sent by its signed origin");
+            return;
+        }
+        let key = (response.target, response.nonce);
+        let Some(forward) = self.punch_forwards.remove(&key) else {
+            self.refuse_punch("response has no matching via state");
+            return;
+        };
+        if forward.target != response.origin {
+            self.refuse_punch("response target differs from forwarded request");
+            return;
+        }
+        if let Ok(raw) = OverlayFrame::connect_response(response).encode() {
+            if !self
+                .transport
+                .queue_datagram_to_peer(env, &key.0, raw)
+            {
+                self.refuse_punch("initiator disconnected before response");
+            }
+        }
+    }
+
+    fn advance_punches(&mut self, env: &mut dyn OverlayEnv, now: Instant) {
+        let expired: Vec<u64> = self
+            .punch_sessions
+            .iter()
+            .filter(|(_, session)| now >= session.deadline)
+            .map(|(&nonce, _)| nonce)
+            .collect();
+        for nonce in expired {
+            self.punch_sessions.remove(&nonce);
+        }
+
+        let mut sends: Vec<(SocketAddr, PunchProbe)> = Vec::new();
+        for session in self.punch_sessions.values_mut() {
+            if session.awaiting_response || now < session.next_probe {
+                continue;
+            }
+            session.next_probe = now + PUNCH_PROBE_INTERVAL;
+            let probe = PunchProbe::sign(session.nonce, self.keypair.as_ref());
+            if let Some(addr) = session.freshest {
+                sends.push((addr, probe.clone()));
+            }
+            for &candidate in &session.candidates {
+                if Some(candidate) != session.freshest {
+                    sends.push((candidate, probe.clone()));
+                }
+            }
+        }
+        for (to, probe) in sends {
+            if let Err(e) = self.transport.send_punch_probe(env, to, probe) {
+                log::debug!("overlay: raw punch probe to {to} failed: {e}");
+            }
+        }
+    }
+
+    fn handle_punch_probe(&mut self, env: &mut dyn OverlayEnv, event: PunchProbeEvent) {
+        if !event.probe.verify() {
+            self.refuse_punch("invalid raw probe signature");
+            return;
+        }
+        let Some(session) = self.punch_sessions.get_mut(&event.probe.nonce) else {
+            return;
+        };
+        if session.peer != event.probe.origin || session.awaiting_response {
+            return;
+        }
+        session.freshest = Some(event.from);
+        session.next_probe = env.now();
+        let peer = session.peer;
+        let deadline = session.deadline;
+        let should_dial = self.local_pubkey < peer && !session.dial_started;
+        let payload = if should_dial {
+            session.dial_started = true;
+            session.payload.take()
+        } else {
+            None
+        };
+        // Reply immediately from our overlay socket. This opens both filters
+        // even if the lower-pubkey QUIC dial below races the response.
+        let reply = PunchProbe::sign(event.probe.nonce, self.keypair.as_ref());
+        let _ = self.transport.send_punch_probe(env, event.from, reply);
+        if !should_dial {
+            return;
+        }
+        let result = match payload {
+            Some(payload) => self
+                .transport
+                .queue_datagram_expecting(env, event.from, peer, payload),
+            None => self.transport.dial_expecting(env, event.from, peer),
+        };
+        if result.is_ok() {
+            self.confirming.entry(event.from).or_insert(ConfirmDial {
+                expected: peer,
+                deadline,
+            });
+        }
+    }
+
+    fn complete_punch(&mut self, env: &mut dyn OverlayEnv, peer: Pubkey) {
+        let complete: Vec<u64> = self
+            .punch_sessions
+            .iter()
+            .filter(|(_, session)| session.peer == peer)
+            .map(|(&nonce, _)| nonce)
+            .collect();
+        for nonce in complete {
+            if let Some(session) = self.punch_sessions.remove(&nonce)
+                && let Some(payload) = session.payload
+            {
+                self.transport.queue_datagram_to_peer(env, &peer, payload);
+            }
+        }
+    }
+
+    fn expire_punch_forwards(&mut self, now: Instant) {
+        self.punch_forwards.retain(|_, forward| now < forward.deadline);
     }
 
     fn is_quarantined(&self, addr: &SocketAddr) -> bool {
