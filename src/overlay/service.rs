@@ -1,30 +1,46 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
+    hash::{Hash, Hasher},
     net::SocketAddr,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use arrayvec::ArrayVec;
-use solana_sdk::pubkey::Pubkey;
+use lrumap::LruBTreeMap;
+use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 
 use crate::types::{PacketInfo, PacketView};
 
 use super::{
-    OverlayConfig, OverlayMode, OverlayPeer, TurbineTree,
+    OverlayConfig, OverlayMode, TurbineTree,
     env::{OverlayEnv, SocketId},
-    gossip::LightbringerGossip,
+    gossip::{
+        AdvertOutcome, LightbringerGossip, MAX_ADVERT_VIA, PeerAdvert, Reachability,
+        RepairEndpoint, SignedPeerAdvert,
+    },
     packet::OverlayFrame,
     transport::{OverlayTransport, TransportEvent},
 };
 
 const ADVERT_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_CORE_EVENTS: usize = 8192;
+/// Recently seen shreds, for retransmit loop suppression: the v1 frame
+/// carries no origin field, so a shred returning to a node that already
+/// flooded it must be recognized and dropped here.
+const SEEN_SHREDS_CAPACITY: usize = 32_768;
 
 fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
         return None;
     }
     ArrayVec::try_from(payload.as_slice()).ok()
+}
+
+fn shred_dedup_key(payload: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    payload.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Application-level outputs of the core, drained by the driver after every
@@ -46,46 +62,54 @@ pub enum CoreEvent {
 /// Sans-IO overlay state machine (nat-traversal.md §6.9): inbound datagrams
 /// and timer expiries arrive as `on_*` events from a driver, outbound
 /// datagrams leave through `OverlayEnv::send`, and everything else is polled.
-/// No socket, clock, or RNG access happens outside the seams.
+///
+/// Peers are identities (§6.1): gossip is keyed by pubkey, the turbine tree
+/// shuffles pubkeys, and every send funnels through [`Self::send_to_peer`] —
+/// prefer the established connection, dial only peers advertising
+/// `Reachability::Direct`, otherwise drop and count. A node with no
+/// operator-configured `advertised_addr` advertises `Coordinated` instead of
+/// a useless bind address (fixes F1/F2).
 pub struct OverlayCore<T> {
     mode: OverlayMode,
-    advertised_addr: SocketAddr,
     transport: T,
+    keypair: Arc<Keypair>,
+    local_pubkey: Pubkey,
     gossip: LightbringerGossip,
     tree: TurbineTree,
-    local_peer: OverlayPeer,
+    static_peers: Vec<SocketAddr>,
+    advertised_addr: Option<SocketAddr>,
+    repair: RepairEndpoint,
+    advert_ttl_ms: u32,
+    advert_seq: u64,
     next_advert: Instant,
+    seen_shreds: LruBTreeMap<u64, ()>,
+    dropped_unreachable: u64,
+    invalid_adverts: u64,
     events: VecDeque<CoreEvent>,
 }
 
 impl<T: OverlayTransport> OverlayCore<T> {
-    pub fn new(transport: T, config: &OverlayConfig, now: Instant) -> Self {
-        let advertised_addr = config.advertised_addr.unwrap_or(config.bind_addr);
-        let mut gossip = LightbringerGossip::new(config.peer_ttl());
-        for peer in config.static_peers.iter().copied() {
-            gossip.observe(
-                OverlayPeer {
-                    overlay_addr: peer,
-                    repair_addr: None,
-                },
-                now,
-            );
-        }
-        if let Some(repair_addr) = config.repair_addr {
-            gossip.observe_repair(advertised_addr, repair_addr, now);
-        }
-
+    pub fn new(transport: T, config: &OverlayConfig, keypair: Arc<Keypair>, now: Instant) -> Self {
+        let local_pubkey = keypair.pubkey();
         Self {
             mode: config.mode,
-            advertised_addr,
             transport,
-            gossip,
-            tree: TurbineTree::new(advertised_addr, config.fanout),
-            local_peer: OverlayPeer {
-                overlay_addr: advertised_addr,
-                repair_addr: config.repair_addr,
-            },
+            local_pubkey,
+            keypair,
+            gossip: LightbringerGossip::new(config.peer_ttl()),
+            tree: TurbineTree::new(local_pubkey, config.fanout),
+            static_peers: config.static_peers.clone(),
+            advertised_addr: config.advertised_addr,
+            repair: config
+                .repair_addr
+                .map(RepairEndpoint::Udp)
+                .unwrap_or(RepairEndpoint::InConnection),
+            advert_ttl_ms: config.peer_ttl().as_millis().min(u128::from(u32::MAX)) as u32,
+            advert_seq: 0,
             next_advert: now + ADVERT_INTERVAL,
+            seen_shreds: LruBTreeMap::new(SEEN_SHREDS_CAPACITY),
+            dropped_unreachable: 0,
+            invalid_adverts: 0,
             events: VecDeque::new(),
         }
     }
@@ -107,8 +131,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
         let now = env.now();
         if now >= self.next_advert {
             self.next_advert = now + ADVERT_INTERVAL;
-            self.gossip.prune_expired(now);
-            self.advertise_except(env, None);
+            self.advertise(env);
         }
         self.pump(env);
     }
@@ -117,15 +140,19 @@ impl<T: OverlayTransport> OverlayCore<T> {
         if self.mode != OverlayMode::Source {
             return;
         }
-        let now = env.now();
-        let peers = self.gossip.peers(now);
-        let peer_addrs = peers
-            .iter()
-            .map(|peer| peer.overlay_addr)
-            .collect::<Vec<_>>();
-        let frame = OverlayFrame::shred(self.advertised_addr, packet.to_vec());
-        for peer in self.tree.origin_peers(packet.as_slice(), &peer_addrs) {
-            self.send_frame(env, peer, &frame);
+        // Mark (not check) seen: repeated source injections still flood,
+        // but our own shred coming back over the mesh is dropped.
+        self.seen_shreds.push(shred_dedup_key(packet.as_slice()), ());
+        let raw = match OverlayFrame::shred(packet.to_vec()).encode() {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::warn!("overlay: failed to encode source shred frame: {e}");
+                return;
+            }
+        };
+        let peers = self.usable_peers(env.now(), None);
+        for target in self.tree.origin_peers(packet.as_slice(), &peers) {
+            self.send_to_peer(env, target, raw.clone());
         }
         self.pump(env);
     }
@@ -145,6 +172,23 @@ impl<T: OverlayTransport> OverlayCore<T> {
     #[allow(dead_code)]
     pub fn transport(&self) -> &T {
         &self.transport
+    }
+
+    /// Sends dropped because the target was neither connected nor `Direct`.
+    #[allow(dead_code)]
+    pub fn dropped_unreachable(&self) -> u64 {
+        self.dropped_unreachable
+    }
+
+    /// Adverts rejected for a bad signature.
+    #[allow(dead_code)]
+    pub fn invalid_adverts(&self) -> u64 {
+        self.invalid_adverts
+    }
+
+    #[allow(dead_code)]
+    pub fn gossip_len(&self) -> usize {
+        self.gossip.len()
     }
 
     fn pump(&mut self, env: &mut dyn OverlayEnv) {
@@ -173,65 +217,158 @@ impl<T: OverlayTransport> OverlayCore<T> {
             }
         };
 
-        let now = env.now();
-        self.gossip.observe(
-            OverlayPeer {
-                overlay_addr: from,
-                repair_addr: None,
-            },
-            now,
-        );
-
         match frame {
-            OverlayFrame::Shred {
-                origin, payload, ..
-            } => {
+            OverlayFrame::Shred { payload } => {
+                let key = shred_dedup_key(&payload);
+                if self.seen_shreds.get(&key).is_some() {
+                    return;
+                }
+                self.seen_shreds.push(key, ());
+
                 if let Some(packet) = packet_view(payload.clone()) {
                     self.push_event(CoreEvent::ShredForFilter(PacketInfo::new(packet)));
                 }
 
-                let peers = self.gossip.peers(now);
-                let peer_addrs = peers
-                    .iter()
-                    .map(|peer| peer.overlay_addr)
-                    .filter(|peer| *peer != from && *peer != origin)
-                    .collect::<Vec<_>>();
-                let frame = OverlayFrame::shred(origin, payload);
-                let payload = match &frame {
-                    OverlayFrame::Shred { payload, .. } => payload.as_slice(),
-                    _ => unreachable!(),
-                };
-                for peer in self.tree.retransmit_peers(payload, &peer_addrs) {
-                    self.send_frame(env, peer, &frame);
+                let sender = self.transport.peer_identity(from);
+                let peers = self.usable_peers(env.now(), sender);
+                // The received bytes are already a valid shred frame;
+                // retransmit them verbatim.
+                for target in self.tree.retransmit_peers(&payload, &peers) {
+                    self.send_to_peer(env, target, raw.clone());
                 }
             }
-            OverlayFrame::PeerAdvertisement { peer, .. } => {
-                self.gossip.observe(peer, now);
-                self.advertise_except(env, Some(from));
+            OverlayFrame::PeerAdvertisement { advert: signed } => {
+                if signed.advert.pubkey == self.local_pubkey {
+                    return;
+                }
+                if !signed.verify() {
+                    self.invalid_adverts += 1;
+                    log::warn!(
+                        "overlay: dropped advert from {from} with invalid signature for {}",
+                        signed.advert.pubkey
+                    );
+                    return;
+                }
+                let origin = signed.advert.pubkey;
+                let outcome = self.gossip.upsert(signed.advert, env.now());
+                if outcome != AdvertOutcome::Accepted {
+                    return;
+                }
+                // Flood-forward the verified advert to connected peers,
+                // skipping the sender and the advert's own origin.
+                let sender = self.transport.peer_identity(from);
+                for pubkey in self.transport.connected_peers() {
+                    if pubkey == self.local_pubkey
+                        || pubkey == origin
+                        || Some(pubkey) == sender
+                    {
+                        continue;
+                    }
+                    self.transport
+                        .queue_datagram_to_peer(env, &pubkey, raw.clone());
+                }
             }
         }
     }
 
-    fn advertise_except(&mut self, env: &mut dyn OverlayEnv, excluded_peer: Option<SocketAddr>) {
-        let peers = self.gossip.peers(env.now());
-        let advert = OverlayFrame::peer_advertisement(self.local_peer.clone());
-        for peer in peers.into_iter().map(|peer| peer.overlay_addr) {
-            if Some(peer) != excluded_peer {
-                self.send_frame(env, peer, &advert);
+    /// §6.1's single send choke point: an existing connection is always
+    /// preferred; otherwise only `Reachability::Direct` peers are dialed;
+    /// everything else is dropped and counted. Nothing in the overlay dials
+    /// an address that was not either configured or advertised as dialable.
+    fn send_to_peer(&mut self, env: &mut dyn OverlayEnv, pubkey: Pubkey, raw: Vec<u8>) {
+        if self.transport.connection_addr(&pubkey).is_some() {
+            self.transport.queue_datagram_to_peer(env, &pubkey, raw);
+            return;
+        }
+        let dial_addr = self
+            .gossip
+            .get(&pubkey, env.now())
+            .and_then(|advert| advert.direct_addrs().first().copied());
+        match dial_addr {
+            Some(addr) => {
+                if let Err(e) = self.transport.queue_datagram(env, addr, raw) {
+                    log::warn!("overlay: failed to dial {pubkey} at {addr}: {e}");
+                }
+            }
+            None => {
+                self.dropped_unreachable += 1;
+                log::debug!("overlay: no route to {pubkey}; dropped");
             }
         }
     }
 
-    fn send_frame(&mut self, env: &mut dyn OverlayEnv, peer: SocketAddr, frame: &OverlayFrame) {
-        let raw = match frame.encode() {
-            Ok(raw) => raw,
+    /// The node's usable peer set (§6.7): established connections plus
+    /// `Direct` peers dialable on demand. `Coordinated` peers without a
+    /// standing connection are excluded from this node's fan-out.
+    fn usable_peers(&mut self, now: Instant, exclude: Option<Pubkey>) -> Vec<Pubkey> {
+        let mut set: BTreeSet<Pubkey> = self.transport.connected_peers().into_iter().collect();
+        for (pubkey, _) in self.gossip.direct_peers(now) {
+            set.insert(pubkey);
+        }
+        set.remove(&self.local_pubkey);
+        if let Some(exclude) = exclude {
+            set.remove(&exclude);
+        }
+        set.into_iter().collect()
+    }
+
+    fn advertise(&mut self, env: &mut dyn OverlayEnv) {
+        self.advert_seq += 1;
+        let reachability = match self.advertised_addr {
+            Some(addr) => {
+                let mut addrs = ArrayVec::new();
+                addrs.push(addr);
+                Reachability::Direct(addrs)
+            }
+            None => {
+                let mut via = ArrayVec::new();
+                for pubkey in self.transport.connected_peers() {
+                    if pubkey != self.local_pubkey && via.len() < MAX_ADVERT_VIA {
+                        via.push(pubkey);
+                    }
+                }
+                Reachability::Coordinated {
+                    observed: ArrayVec::new(),
+                    via,
+                }
+            }
+        };
+        let advert = PeerAdvert {
+            pubkey: self.local_pubkey,
+            advert_seq: self.advert_seq,
+            ttl_ms: self.advert_ttl_ms,
+            reachability,
+            repair: self.repair,
+        };
+        let signed = match SignedPeerAdvert::sign(advert, &self.keypair) {
+            Ok(signed) => signed,
             Err(e) => {
-                log::warn!("overlay: failed to encode frame for {peer}: {e}");
+                log::warn!("overlay: failed to sign advert: {e}");
                 return;
             }
         };
-        if let Err(e) = self.transport.queue_datagram(env, peer, raw) {
-            log::warn!("overlay: failed to send frame to {peer}: {e}");
+        let raw = match OverlayFrame::peer_advertisement(signed).encode() {
+            Ok(raw) => raw,
+            Err(e) => {
+                log::warn!("overlay: failed to encode advert: {e}");
+                return;
+            }
+        };
+
+        for pubkey in self.transport.connected_peers() {
+            if pubkey != self.local_pubkey {
+                self.transport
+                    .queue_datagram_to_peer(env, &pubkey, raw.clone());
+            }
+        }
+        // Bootstrap: static peers are dialed by address until the handshake
+        // yields their identity (§6.2: static peers must be Direct nodes).
+        for addr in self.static_peers.clone() {
+            if self.transport.peer_identity(addr).is_none()
+                && let Err(e) = self.transport.queue_datagram(env, addr, raw.clone())
+            {
+                log::warn!("overlay: failed to reach static peer {addr}: {e}");
+            }
         }
     }
 

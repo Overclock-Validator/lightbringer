@@ -12,6 +12,5 @@ mod turbine;
 
 pub use config::{OverlayConfig, OverlayMode};
 pub use driver_glommio::start_overlay_runner;
-pub use gossip::OverlayPeer;
 pub use identity::OverlayIdentity;
 pub use turbine::TurbineTree;

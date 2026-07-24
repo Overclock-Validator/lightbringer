@@ -5,6 +5,7 @@
 mod convergence;
 mod determinism;
 mod keepalive;
+mod mtu;
 mod nat_matrix;
 
 use std::time::Duration;
@@ -57,15 +58,9 @@ fn smoke_natted_node_connects_to_public_node() {
 #[test]
 fn bare_transport_burst_delivers_everything() {
     let mut world = SimWorld::new(3);
-    let a = world.add_transport_node(NodeOptions {
-        initial_mtu: Some(scenario::SHRED_CAPABLE_MTU),
-        ..NodeOptions::default()
-    });
+    let a = world.add_transport_node(NodeOptions::default());
     let a_addr = world.public_addr(a);
-    let b = world.add_transport_node(NodeOptions {
-        initial_mtu: Some(scenario::SHRED_CAPABLE_MTU),
-        ..NodeOptions::default()
-    });
+    let b = world.add_transport_node(NodeOptions::default());
 
     for round in 0..5u8 {
         for i in 0..32u8 {

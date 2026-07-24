@@ -1,54 +1,126 @@
-use std::net::SocketAddr;
-
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 
-use super::gossip::OverlayPeer;
+use super::gossip::SignedPeerAdvert;
 
-pub const OVERLAY_PROTOCOL_VERSION: u16 = 1;
+/// v1 is not frozen; this layout replaces the earlier bincode envelope. A
+/// fixed two-byte header (version, frame type) precedes a type-specific
+/// body. Shred bodies are the raw shred bytes running to the end of the
+/// datagram — the QUIC datagram boundary already delimits them, so no
+/// length prefix — which keeps a maximum 1228-byte shred frame at 1230
+/// bytes, inside the 1242-byte datagram budget at the 1280 path MTU
+/// (`transport::OVERLAY_INITIAL_MTU`). There is no origin field; retransmit
+/// loop suppression is the core's bounded shred dedup.
+pub const OVERLAY_PROTOCOL_VERSION: u8 = 1;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Bytes of framing prepended to a shred payload.
+pub const SHRED_FRAME_OVERHEAD: usize = 2;
+
+const FRAME_SHRED: u8 = 0;
+const FRAME_PEER_ADVERTISEMENT: u8 = 1;
+
+#[derive(Clone, Debug)]
 pub enum OverlayFrame {
-    Shred {
-        version: u16,
-        origin: SocketAddr,
-        payload: Vec<u8>,
-    },
-    PeerAdvertisement {
-        version: u16,
-        peer: OverlayPeer,
-    },
+    Shred { payload: Vec<u8> },
+    PeerAdvertisement { advert: SignedPeerAdvert },
 }
 
 impl OverlayFrame {
-    pub fn shred(origin: SocketAddr, payload: Vec<u8>) -> Self {
-        Self::Shred {
-            version: OVERLAY_PROTOCOL_VERSION,
-            origin,
-            payload,
-        }
+    pub fn shred(payload: Vec<u8>) -> Self {
+        Self::Shred { payload }
     }
 
-    pub fn peer_advertisement(peer: OverlayPeer) -> Self {
-        Self::PeerAdvertisement {
-            version: OVERLAY_PROTOCOL_VERSION,
-            peer,
-        }
+    pub fn peer_advertisement(advert: SignedPeerAdvert) -> Self {
+        Self::PeerAdvertisement { advert }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(Into::into)
+        match self {
+            Self::Shred { payload } => {
+                let mut out = Vec::with_capacity(SHRED_FRAME_OVERHEAD + payload.len());
+                out.push(OVERLAY_PROTOCOL_VERSION);
+                out.push(FRAME_SHRED);
+                out.extend_from_slice(payload);
+                Ok(out)
+            }
+            Self::PeerAdvertisement { advert } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_PEER_ADVERTISEMENT];
+                bincode::serialize_into(&mut out, advert)?;
+                Ok(out)
+            }
+        }
     }
 
     pub fn decode(raw: &[u8]) -> Result<Self> {
-        let frame = bincode::deserialize::<Self>(raw)?;
-        let version = match &frame {
-            Self::Shred { version, .. } => *version,
-            Self::PeerAdvertisement { version, .. } => *version,
+        let [version, frame_type, body @ ..] = raw else {
+            return Err(anyhow!("truncated overlay frame ({} bytes)", raw.len()));
         };
-        if version != OVERLAY_PROTOCOL_VERSION {
+        if *version != OVERLAY_PROTOCOL_VERSION {
             return Err(anyhow!("unsupported overlay protocol version {version}"));
         }
-        Ok(frame)
+        match *frame_type {
+            FRAME_SHRED => Ok(Self::Shred {
+                payload: body.to_vec(),
+            }),
+            FRAME_PEER_ADVERTISEMENT => Ok(Self::PeerAdvertisement {
+                advert: bincode::deserialize(body)?,
+            }),
+            other => Err(anyhow!("unknown overlay frame type {other}")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrayvec::ArrayVec;
+    use solana_sdk::{signature::Keypair, signer::Signer};
+
+    use super::*;
+    use crate::overlay::gossip::{PeerAdvert, Reachability, RepairEndpoint};
+
+    #[test]
+    fn shred_frame_overhead_is_two_bytes() {
+        let payload = vec![7u8; 1228];
+        let raw = OverlayFrame::shred(payload.clone()).encode().unwrap();
+        assert_eq!(raw.len(), payload.len() + SHRED_FRAME_OVERHEAD);
+        match OverlayFrame::decode(&raw).unwrap() {
+            OverlayFrame::Shred { payload: got } => assert_eq!(got, payload),
+            other => panic!("decoded wrong frame: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn advert_roundtrips_and_stays_small() {
+        let keypair = Keypair::new();
+        let mut addrs = ArrayVec::new();
+        addrs.push("203.0.113.7:65410".parse().unwrap());
+        let advert = PeerAdvert {
+            pubkey: keypair.pubkey(),
+            advert_seq: 42,
+            ttl_ms: 30_000,
+            reachability: Reachability::Direct(addrs),
+            repair: RepairEndpoint::Udp("203.0.113.7:65411".parse().unwrap()),
+        };
+        let signed = SignedPeerAdvert::sign(advert.clone(), &keypair).unwrap();
+        let raw = OverlayFrame::peer_advertisement(signed).encode().unwrap();
+        assert!(raw.len() < 300, "advert frame unexpectedly large: {}", raw.len());
+        match OverlayFrame::decode(&raw).unwrap() {
+            OverlayFrame::PeerAdvertisement { advert: got } => {
+                assert!(got.verify());
+                assert_eq!(got.advert, advert);
+            }
+            other => panic!("decoded wrong frame: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_version_unknown_type_and_truncation() {
+        let mut raw = OverlayFrame::shred(vec![1, 2, 3]).encode().unwrap();
+        raw[0] = OVERLAY_PROTOCOL_VERSION + 1;
+        assert!(OverlayFrame::decode(&raw).is_err());
+        raw[0] = OVERLAY_PROTOCOL_VERSION;
+        raw[1] = 200;
+        assert!(OverlayFrame::decode(&raw).is_err());
+        assert!(OverlayFrame::decode(&[OVERLAY_PROTOCOL_VERSION]).is_err());
+        assert!(OverlayFrame::decode(&[]).is_err());
     }
 }

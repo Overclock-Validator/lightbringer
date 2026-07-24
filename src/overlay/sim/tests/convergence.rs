@@ -12,7 +12,7 @@ use crate::overlay::sim::{
     NodeOptions, SimWorld,
     crypto::make_signed_shreds,
     net::LinkParams,
-    scenario::{self, SHRED_CAPABLE_MTU},
+    scenario,
 };
 
 fn shred_set(shreds: &[Vec<u8>]) -> BTreeSet<Vec<u8>> {
@@ -46,14 +46,12 @@ fn two_public_nodes_converge_under_harsh_link() {
     let mut world = SimWorld::new(seed);
     let a = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
-        initial_mtu: Some(SHRED_CAPABLE_MTU),
         ..NodeOptions::default()
     });
     let a_addr = world.public_addr(a);
     let b = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
         static_peers: vec![a_addr],
-        initial_mtu: Some(SHRED_CAPABLE_MTU),
         ..NodeOptions::default()
     });
     world.set_default_link(
@@ -100,12 +98,14 @@ fn two_public_nodes_converge_under_harsh_link() {
     );
 }
 
-/// F1/F3 regression (nat-traversal.md §2.2): behind a NAT the sink converges
-/// outbound but its inbound set stays partial. Passes while that failure
-/// signature holds; it is the reminder to update once identity-keyed gossip
-/// lands. See `scenario::two_node_nat_sink`.
+/// F1–F4 regression (nat-traversal.md §2.2, §6.1, §6.7): with
+/// identity-keyed gossip, `Coordinated` reachability, and the send_to_peer
+/// choke point, a NATed sink converges fully over its single outbound
+/// connection — the pre-P1 address-keyed protocol deterministically lost
+/// every shred whose tree shuffle rooted at the sink's useless LAN
+/// advertised address. See `scenario::two_node_nat_sink`.
 #[test]
-fn nat_sink_failure_signature_holds() {
+fn nat_sink_converges_like_public_peer() {
     for seed in [1u64, 7] {
         let outcome = scenario::two_node_nat_sink(seed, false);
         assert!(
@@ -127,14 +127,12 @@ fn partition_blocks_then_reconnect_delivers() {
     let mut world = SimWorld::new(seed);
     let a = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
-        initial_mtu: Some(SHRED_CAPABLE_MTU),
         ..NodeOptions::default()
     });
     let a_addr = world.public_addr(a);
     let b = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
         static_peers: vec![a_addr],
-        initial_mtu: Some(SHRED_CAPABLE_MTU),
         ..NodeOptions::default()
     });
     let healthy = LinkParams::default().delay(Duration::from_millis(10), Duration::from_millis(30));

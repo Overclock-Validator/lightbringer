@@ -33,6 +33,13 @@ const UDP_BUFFER_SIZE: usize = 65_535;
 const OVERLAY_SERVER_NAME: &str = "localhost";
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Fixed QUIC path MTU (MTU discovery is disabled): the IPv6 minimum, safe
+/// on any path. The resulting datagram budget is 1280 − 38 (QUIC 1-RTT +
+/// datagram-frame overhead) = 1242 B, which carries a merkle *data* shred
+/// (1203 B payload → 1227 B v1 frame) but NOT the 1228 B shred maximum
+/// (coding shreds → 1252 B frame; those need ≥1290). See nat-traversal.md
+/// §8 and the sim MTU regression tests.
+pub const OVERLAY_INITIAL_MTU: u16 = 1280;
 const MAX_CONNECTIONS: usize = 1024;
 const MAX_PENDING_DATAGRAMS: usize = 1024;
 const MAX_INBOUND_FRAMES: usize = 8192;
@@ -48,9 +55,8 @@ pub struct TransportOptions {
     /// participation) alive. See nat-traversal.md §6.6 (fixes F7).
     pub keep_alive_interval: Option<Duration>,
     pub max_idle_timeout: Option<Duration>,
-    /// Fixed path MTU (MTU discovery is disabled). `None` keeps quinn's
-    /// 1200-byte default, which cannot carry a full-size shred datagram —
-    /// the known limitation tracked in nat-traversal.md §8.
+    /// Fixed path MTU (MTU discovery is disabled). Defaults to
+    /// [`OVERLAY_INITIAL_MTU`]; `None` keeps quinn's 1200-byte default.
     pub initial_mtu: Option<u16>,
     /// Seeds quinn's endpoint-internal RNG.
     pub rng_seed: Option<[u8; 32]>,
@@ -67,7 +73,7 @@ impl Default for TransportOptions {
         Self {
             keep_alive_interval: Some(KEEP_ALIVE_INTERVAL),
             max_idle_timeout: Some(MAX_IDLE_TIMEOUT),
-            initial_mtu: None,
+            initial_mtu: Some(OVERLAY_INITIAL_MTU),
             rng_seed: None,
             cid_seed: None,
             reset_key: None,
@@ -111,9 +117,21 @@ pub trait OverlayTransport {
     fn poll_inbound(&mut self) -> Option<(SocketAddr, Vec<u8>)>;
     fn poll_event(&mut self) -> Option<TransportEvent>;
     /// TLS-verified Ed25519 identity bound to the connection with `peer`.
-    /// Consumed by identity-keyed gossip from P1.
-    #[allow(dead_code)]
     fn peer_identity(&self, peer: SocketAddr) -> Option<Pubkey>;
+    /// Queue a datagram on the established connection with `pubkey`.
+    /// Returns false (without dialing) when no such connection exists —
+    /// dialing is the caller's decision, gated on `Reachability::Direct`
+    /// (the §6.1 send_to_peer choke point lives in the core).
+    fn queue_datagram_to_peer(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        pubkey: &Pubkey,
+        payload: Vec<u8>,
+    ) -> bool;
+    /// Address of the established connection with `pubkey`, if any.
+    fn connection_addr(&self, pubkey: &Pubkey) -> Option<SocketAddr>;
+    /// TLS-verified identities of all established connections.
+    fn connected_peers(&self) -> Vec<Pubkey>;
 }
 
 pub struct OverlayQuicTransport {
@@ -121,6 +139,9 @@ pub struct OverlayQuicTransport {
     endpoint: Endpoint,
     client_config: QuicClientConfig,
     connections: BTreeMap<SocketAddr, QuicConnection>,
+    /// Established connections indexed by TLS-verified identity; ordered so
+    /// peer walks are deterministic under simulation.
+    by_pubkey: BTreeMap<Pubkey, SocketAddr>,
     handles: HashMap<ConnectionHandle, SocketAddr>,
     inbound_frames: VecDeque<(SocketAddr, Vec<u8>)>,
     events: VecDeque<TransportEvent>,
@@ -156,6 +177,7 @@ impl OverlayQuicTransport {
             ),
             client_config,
             connections: BTreeMap::new(),
+            by_pubkey: BTreeMap::new(),
             handles: HashMap::new(),
             inbound_frames: VecDeque::new(),
             events: VecDeque::new(),
@@ -298,6 +320,9 @@ impl OverlayQuicTransport {
                         "overlay: QUIC peer {peer} connected, identity {:?}",
                         connection.peer_pubkey
                     );
+                    if let Some(pubkey) = connection.peer_pubkey {
+                        self.by_pubkey.insert(pubkey, peer);
+                    }
                     push_bounded(
                         &mut self.events,
                         TransportEvent::Connected {
@@ -340,6 +365,11 @@ impl OverlayQuicTransport {
 
         if remove && let Some(connection) = self.connections.remove(&peer) {
             self.handles.remove(&connection.handle);
+            if let Some(pubkey) = connection.peer_pubkey
+                && self.by_pubkey.get(&pubkey) == Some(&peer)
+            {
+                self.by_pubkey.remove(&pubkey);
+            }
         }
     }
 
@@ -456,6 +486,36 @@ impl OverlayTransport for OverlayQuicTransport {
 
     fn peer_identity(&self, peer: SocketAddr) -> Option<Pubkey> {
         self.connections.get(&peer)?.peer_pubkey
+    }
+
+    fn queue_datagram_to_peer(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        pubkey: &Pubkey,
+        payload: Vec<u8>,
+    ) -> bool {
+        let Some(&addr) = self.by_pubkey.get(pubkey) else {
+            return false;
+        };
+        let Some(connection) = self.connections.get_mut(&addr) else {
+            return false;
+        };
+        push_bounded(
+            &mut connection.pending,
+            payload,
+            MAX_PENDING_DATAGRAMS,
+            "pending datagrams",
+        );
+        self.drive(env);
+        true
+    }
+
+    fn connection_addr(&self, pubkey: &Pubkey) -> Option<SocketAddr> {
+        self.by_pubkey.get(pubkey).copied()
+    }
+
+    fn connected_peers(&self) -> Vec<Pubkey> {
+        self.by_pubkey.keys().copied().collect()
     }
 }
 

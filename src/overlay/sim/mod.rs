@@ -36,7 +36,10 @@ use super::{
     env::{OverlayEnv, SocketId},
     identity::OverlayIdentity,
     service::{CoreEvent, OverlayCore},
-    transport::{OverlayQuicTransport, OverlayTransport, TransportEvent, TransportOptions},
+    transport::{
+        OVERLAY_INITIAL_MTU, OverlayQuicTransport, OverlayTransport, TransportEvent,
+        TransportOptions,
+    },
 };
 
 use nat::{NatBox, NatConfig, NatStats};
@@ -60,6 +63,10 @@ pub struct NodeOptions {
     pub static_peers: Vec<SocketAddr>,
     /// NAT chain, innermost first; empty = publicly routable host.
     pub nat: Vec<NatConfig>,
+    /// Operator-claimed public address. `None` = derive: public hosts
+    /// advertise their bind address (`Reachability::Direct`), NATed hosts
+    /// advertise `Coordinated`. Set explicitly to model misconfiguration.
+    pub advertised_addr: Option<SocketAddr>,
     pub bind_port: u16,
     pub fanout: usize,
     pub peer_ttl: Duration,
@@ -76,13 +83,14 @@ impl Default for NodeOptions {
             mode: OverlayMode::Sink,
             static_peers: Vec::new(),
             nat: Vec::new(),
+            advertised_addr: None,
             bind_port: 65_410,
             fanout: 8,
             peer_ttl: Duration::from_secs(30),
             shred_version: 0,
             keep_alive_interval: Some(Duration::from_secs(10)),
             max_idle_timeout: Some(Duration::from_secs(30)),
-            initial_mtu: None,
+            initial_mtu: Some(OVERLAY_INITIAL_MTU),
         }
     }
 }
@@ -151,7 +159,7 @@ impl OverlayEnv for SimEnv<'_> {
 
 struct OverlayNode {
     core: OverlayCore<OverlayQuicTransport>,
-    keypair: Keypair,
+    keypair: Arc<Keypair>,
     pubkey: Pubkey,
     config: OverlayConfig,
     options: NodeOptions,
@@ -344,11 +352,14 @@ impl SimWorld {
             options.bind_port - 1
         };
 
+        let advertised_addr = options
+            .advertised_addr
+            .or_else(|| options.nat.is_empty().then_some(bind_addr));
         let config = OverlayConfig {
             enabled: true,
             mode: options.mode,
             bind_addr,
-            advertised_addr: None,
+            advertised_addr,
             static_peers: options.static_peers.clone(),
             fanout: options.fanout,
             repair_addr: Some(SocketAddr::new(host_ip, repair_port)),
@@ -356,14 +367,14 @@ impl SimWorld {
             peer_ttl_ms: options.peer_ttl.as_millis() as u64,
         };
 
-        let keypair = crypto::derive_keypair(self.seed, id);
+        let keypair = Arc::new(crypto::derive_keypair(self.seed, id));
         let identity =
             OverlayIdentity::from_keypair(&keypair).expect("sim identity always derivable");
         let transport_options = Self::transport_options(self.seed, id, &options);
         let transport =
             OverlayQuicTransport::new(SocketId::PRIMARY, &identity, &transport_options)
                 .expect("sim transport construction is infallible");
-        let core = OverlayCore::new(transport, &config, self.virtual_now());
+        let core = OverlayCore::new(transport, &config, keypair.clone(), self.virtual_now());
 
         let host = Host {
             up: true,
@@ -589,7 +600,7 @@ impl SimWorld {
             let transport =
                 OverlayQuicTransport::new(SocketId::PRIMARY, &identity, &transport_options)
                     .expect("sim transport construction is infallible");
-            node.core = OverlayCore::new(transport, &node.config, now);
+            node.core = OverlayCore::new(transport, &node.config, node.keypair.clone(), now);
             node.delivered.clear();
             entry.up = true;
         }

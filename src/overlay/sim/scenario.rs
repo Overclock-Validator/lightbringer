@@ -12,10 +12,6 @@ use super::{
 };
 use crate::overlay::OverlayMode;
 
-/// Path MTU large enough for full-size shred datagrams (the default 1200
-/// cannot carry them — nat-traversal.md §8).
-pub const SHRED_CAPABLE_MTU: u16 = 1472;
-
 pub const SCENARIOS: &[&str] = &[
     "two-node-lossy",
     "two-node-nat-sink",
@@ -63,7 +59,6 @@ fn two_node_exchange(seed: u64, verbose: bool, sink_nat: Vec<NatConfig>) -> Exch
     let mut world = SimWorld::with_trace(seed, verbose);
     let source = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
-        initial_mtu: Some(SHRED_CAPABLE_MTU),
         ..NodeOptions::default()
     });
     let source_addr = world.public_addr(source);
@@ -71,7 +66,6 @@ fn two_node_exchange(seed: u64, verbose: bool, sink_nat: Vec<NatConfig>) -> Exch
         mode: OverlayMode::Source,
         nat: sink_nat,
         static_peers: vec![source_addr],
-        initial_mtu: Some(SHRED_CAPABLE_MTU),
         ..NodeOptions::default()
     });
     world.set_default_link(
@@ -136,14 +130,14 @@ pub fn two_node_lossy(seed: u64, verbose: bool) -> ScenarioOutcome {
     }
 }
 
-/// Named regression for failures F1/F3 (nat-traversal.md §2.2), which P1
-/// fixes: a NATed sink floods its useless LAN `advertised_addr`, the
-/// source's gossip grows a second unroutable entry for the same node, and
-/// every shred whose turbine shuffle roots at that entry deterministically
-/// dies. The NATed side still converges outward (its outbound path is
-/// fine); the inbound set stays partial. This scenario passes when that
-/// failure signature is present — it starts failing the day identity-keyed
-/// gossip lands, which is the reminder to update it.
+/// Guards the P1 fixes for F1–F4 (nat-traversal.md §2.2, §6.1, §6.7):
+/// under the pre-P1 address-keyed protocol, the NATed sink flooded its
+/// useless LAN bind address and the source's gossip grew a dead entry that
+/// deterministically ate every shred whose turbine shuffle rooted there.
+/// With identity-keyed gossip, `Coordinated` reachability, and the
+/// send_to_peer choke point, the NATed sink is a first-class participant
+/// over its single outbound connection (§5): both sides must now converge
+/// fully, exactly like the public-public exchange.
 pub fn two_node_nat_sink(seed: u64, verbose: bool) -> ScenarioOutcome {
     let result = two_node_exchange(seed, verbose, vec![NatConfig::port_restricted_cone()]);
     ScenarioOutcome {
@@ -151,7 +145,7 @@ pub fn two_node_nat_sink(seed: u64, verbose: bool) -> ScenarioOutcome {
         seed,
         trace_hash: result.world.trace_hash(),
         events: result.world.trace.events(),
-        ok: result.source_converged && result.sink_got > 0 && !result.sink_converged,
+        ok: result.sink_converged && result.source_converged,
         summary: exchange_summary(&result),
     }
 }

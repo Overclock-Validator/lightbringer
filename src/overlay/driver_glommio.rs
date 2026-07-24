@@ -84,6 +84,7 @@ impl OverlayEnv for GlommioEnv {
 
 async fn run_driver(
     identity: &OverlayIdentity,
+    keypair: Arc<Keypair>,
     config: OverlayConfig,
     source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
     filter_tx: kanal::AsyncSender<PacketInfo>,
@@ -92,7 +93,7 @@ async fn run_driver(
     let transport =
         OverlayQuicTransport::new(SocketId::PRIMARY, identity, &TransportOptions::default())?;
     let source_mode = config.mode == OverlayMode::Source && source_rx.is_some();
-    let mut core = OverlayCore::new(transport, &config, Instant::now());
+    let mut core = OverlayCore::new(transport, &config, keypair, Instant::now());
     let mut buffer = vec![0u8; UDP_BUFFER_SIZE];
 
     loop {
@@ -166,7 +167,7 @@ pub async fn start_overlay_runner(
     log::info!("overlay identity: {}", identity.pubkey);
 
     let runner_task = spawn_local(async move {
-        if let Err(e) = run_driver(&identity, config, source_rx, filter_tx).await {
+        if let Err(e) = run_driver(&identity, keypair, config, source_rx, filter_tx).await {
             log::error!("overlay: driver stopped: {e}");
         }
     });

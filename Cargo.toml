@@ -44,7 +44,7 @@ glommio = "0.10.0"
 kanal = "0.1.1"
 log = "0.4.27"
 simple_logger = "5.0.0"
-arrayvec = "0.7.6"
+arrayvec = { version = "0.7.6", features = ["serde"] }
 ctrlc = "3.4.6"
 anyhow = "1.0.98"
 futures = { version = "0.3.31", features = ["write-all-vectored"] }

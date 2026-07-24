@@ -1,26 +1,29 @@
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    net::SocketAddr,
 };
 
 use solana_ledger::shred::Shred;
+use solana_sdk::pubkey::Pubkey;
 
+/// Deterministic retransmit-peer selection seeded by (shred id, pubkey) —
+/// identities, not socket addresses, per nat-traversal.md §6.7: a NATed
+/// node has no unique stable address, its pubkey is the only stable name.
 #[derive(Clone, Debug)]
 pub struct TurbineTree {
-    local_addr: SocketAddr,
+    local: Pubkey,
     fanout: usize,
 }
 
 impl TurbineTree {
-    pub fn new(local_addr: SocketAddr, fanout: usize) -> Self {
+    pub fn new(local: Pubkey, fanout: usize) -> Self {
         Self {
-            local_addr,
+            local,
             fanout: fanout.max(1),
         }
     }
 
-    pub fn retransmit_peers(&self, payload: &[u8], peers: &[SocketAddr]) -> Vec<SocketAddr> {
+    pub fn retransmit_peers(&self, payload: &[u8], peers: &[Pubkey]) -> Vec<Pubkey> {
         let Some(indexed) = self.indexed_tree(payload, peers) else {
             return Vec::new();
         };
@@ -36,7 +39,7 @@ impl TurbineTree {
     /// root (which then retransmits through `retransmit_peers`). Reusing
     /// the child fan-out here would silently drop every shred whose
     /// shuffle placed the origin off-root.
-    pub fn origin_peers(&self, payload: &[u8], peers: &[SocketAddr]) -> Vec<SocketAddr> {
+    pub fn origin_peers(&self, payload: &[u8], peers: &[Pubkey]) -> Vec<Pubkey> {
         let Some((local_index, shuffled)) = self.indexed_tree(payload, peers) else {
             return Vec::new();
         };
@@ -49,31 +52,22 @@ impl TurbineTree {
         }
     }
 
-    fn indexed_tree(
-        &self,
-        payload: &[u8],
-        peers: &[SocketAddr],
-    ) -> Option<(usize, Vec<SocketAddr>)> {
+    fn indexed_tree(&self, payload: &[u8], peers: &[Pubkey]) -> Option<(usize, Vec<Pubkey>)> {
         let mut nodes = Vec::with_capacity(peers.len() + 1);
-        nodes.push(self.local_addr);
-        nodes.extend(
-            peers
-                .iter()
-                .copied()
-                .filter(|peer| *peer != self.local_addr),
-        );
+        nodes.push(self.local);
+        nodes.extend(peers.iter().copied().filter(|peer| *peer != self.local));
         nodes.sort_unstable();
         nodes.dedup();
 
         let seed = shred_seed(payload);
-        nodes.sort_by_key(|addr| {
+        nodes.sort_by_key(|pubkey| {
             let mut hasher = DefaultHasher::new();
             seed.hash(&mut hasher);
-            addr.hash(&mut hasher);
+            pubkey.hash(&mut hasher);
             hasher.finish()
         });
 
-        let local_index = nodes.iter().position(|addr| *addr == self.local_addr)?;
+        let local_index = nodes.iter().position(|pubkey| *pubkey == self.local)?;
         Some((local_index, nodes))
     }
 }
@@ -123,8 +117,8 @@ mod tests {
 
     #[test]
     fn origin_always_emits_somewhere() {
-        let local: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let peer: SocketAddr = "127.0.0.1:2".parse().unwrap();
+        let local = Pubkey::new_unique();
+        let peer = Pubkey::new_unique();
         let tree = TurbineTree::new(local, 8);
         // Whatever position the shuffle assigns, an originated shred must
         // leave the source when at least one peer exists.
@@ -133,5 +127,21 @@ mod tests {
             let got = tree.origin_peers(&payload, &[peer]);
             assert_eq!(got, vec![peer], "payload seed {byte}");
         }
+    }
+
+    #[test]
+    fn shuffle_is_identity_seeded_and_deterministic() {
+        let local = Pubkey::new_unique();
+        let peers: Vec<Pubkey> = (0..8).map(|_| Pubkey::new_unique()).collect();
+        let tree = TurbineTree::new(local, 3);
+        let payload = vec![9u8; 128];
+        let first = tree.retransmit_peers(&payload, &peers);
+        let second = tree.retransmit_peers(&payload, &peers);
+        assert_eq!(first, second);
+        // Duplicate peer entries collapse: same node listed twice must not
+        // occupy two tree slots.
+        let mut doubled = peers.clone();
+        doubled.extend_from_slice(&peers);
+        assert_eq!(tree.retransmit_peers(&payload, &doubled), first);
     }
 }

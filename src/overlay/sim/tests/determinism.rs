@@ -11,7 +11,7 @@ use crate::overlay::sim::{
     crypto::make_signed_shreds,
     nat::NatConfig,
     net::LinkParams,
-    scenario::{self, SHRED_CAPABLE_MTU},
+    scenario,
 };
 
 /// Seeds replayed for the per-scenario reproducibility sweep.
@@ -64,7 +64,6 @@ fn hand_built_world_is_reproducible() {
         let mut world = SimWorld::new(seed);
         let public = world.add_node(NodeOptions {
             mode: OverlayMode::Source,
-            initial_mtu: Some(SHRED_CAPABLE_MTU),
             ..NodeOptions::default()
         });
         let public_addr = world.public_addr(public);
@@ -72,7 +71,6 @@ fn hand_built_world_is_reproducible() {
             mode: OverlayMode::Source,
             nat: vec![NatConfig::port_restricted_cone()],
             static_peers: vec![public_addr],
-            initial_mtu: Some(SHRED_CAPABLE_MTU),
             ..NodeOptions::default()
         });
         world.set_default_link(
