@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use super::{
     NodeOptions, SimWorld,
-    nat::NatConfig,
+    nat::{NatClass, NatConfig},
     net::LinkParams,
 };
 use crate::overlay::OverlayMode;
@@ -90,6 +90,30 @@ fn smoke_highseam_advert_flood_reaches_everyone() {
             NODES - 1
         );
     }
+}
+
+/// High-seam smoke: real cores exchange `AddressObservation` frames on
+/// connect (§6.2 step 1). A public node connected to two peers on distinct
+/// IPs, each reporting its bind address, classifies itself `Public` in-core.
+#[test]
+fn smoke_highseam_observation_classifies_public() {
+    use super::highseam::{HighSeamNet, HighSeamNodeOptions};
+
+    let mut net = HighSeamNet::new(303);
+    let a = net.add_node(HighSeamNodeOptions::default());
+    let b = net.add_node(HighSeamNodeOptions::default());
+    let c = net.add_node(HighSeamNodeOptions::default());
+    net.connect(a, b);
+    net.connect(a, c);
+    // Connect events fire on the next timer; observations then travel one
+    // tick and are recorded on the tick after.
+    net.run_ticks(3);
+
+    assert_eq!(
+        net.core(a).nat_class(),
+        Some(NatClass::Public),
+        "a public node observed at its bind address by two peers classifies Public",
+    );
 }
 
 /// Bursts of full-size datagrams over a clean FIFO link arrive completely

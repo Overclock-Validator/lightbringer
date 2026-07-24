@@ -432,67 +432,8 @@ impl std::fmt::Debug for NatBox {
     }
 }
 
-/// An address observation as §6.2 defines it: what remote endpoint
-/// (`observer`) reported seeing as our public mapping.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TaggedObservation {
-    pub observer: SocketAddr,
-    pub mapping: SocketAddr,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NatClass {
-    Public,
-    /// EIM: punchable with plain hole punching.
-    EndpointIndependent,
-    /// Mapping consistent per observer-port group, differing across groups
-    /// (the field-note flavor).
-    PortDependent,
-    /// Mapping differs within a single observer-port group.
-    Symmetric,
-}
-
-/// Port-tagged aggregation per nat-traversal.md §6.2: observations group by
-/// the observer's inbound port; consistency within and across groups decides
-/// the class. Returns `None` when the observations cannot discriminate
-/// (fewer than two observer IPs, or a single port group for a cross-group
-/// judgement).
-pub fn classify_observations(
-    local: SocketAddr,
-    observations: &[TaggedObservation],
-) -> Option<NatClass> {
-    let observer_ips: BTreeSet<IpAddr> = observations
-        .iter()
-        .map(|observation| observation.observer.ip())
-        .collect();
-    if observer_ips.len() < 2 {
-        return None;
-    }
-
-    let mut groups: BTreeMap<u16, BTreeSet<SocketAddr>> = BTreeMap::new();
-    for observation in observations {
-        groups
-            .entry(observation.observer.port())
-            .or_default()
-            .insert(observation.mapping);
-    }
-
-    if groups.values().any(|mappings| mappings.len() > 1) {
-        return Some(NatClass::Symmetric);
-    }
-
-    let distinct_across: BTreeSet<SocketAddr> = groups
-        .values()
-        .flat_map(|mappings| mappings.iter().copied())
-        .collect();
-    if distinct_across.len() > 1 {
-        return Some(NatClass::PortDependent);
-    }
-
-    let mapping = distinct_across.into_iter().next()?;
-    Some(if mapping == local {
-        NatClass::Public
-    } else {
-        NatClass::EndpointIndependent
-    })
-}
+/// The §6.2 classifier and its observation/class types live in shared
+/// `overlay::nat` so the core and the simulator use one implementation
+/// (nat-traversal.md §6.2/§10 P3). Re-exported here for the sim call sites
+/// that predate the move.
+pub use crate::overlay::nat::{NatClass, TaggedObservation, classify_observations};

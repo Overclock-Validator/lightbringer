@@ -1,8 +1,10 @@
 mod config;
+mod discovery;
 mod driver_glommio;
 mod env;
 mod gossip;
 mod identity;
+mod nat;
 mod packet;
 pub mod repair;
 mod service;

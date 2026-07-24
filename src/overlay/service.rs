@@ -14,11 +14,13 @@ use crate::types::{PacketInfo, PacketView};
 
 use super::{
     OverlayConfig, OverlayMode, TurbineTree,
+    discovery::AddressDiscovery,
     env::{OverlayEnv, SocketId},
     gossip::{
-        AdvertOutcome, LightbringerGossip, MAX_ADVERT_VIA, PeerAdvert, Reachability,
-        RepairEndpoint, SignedPeerAdvert,
+        AdvertOutcome, LightbringerGossip, MAX_ADVERT_ADDRS, MAX_ADVERT_VIA, PeerAdvert,
+        PortTaggedAddr, Reachability, RepairEndpoint, SignedPeerAdvert,
     },
+    nat::{AllocatorProfile, NatClass},
     packet::OverlayFrame,
     repair::{
         self, MAX_REPAIR_REQ_WIRE, MAX_REPAIR_REQUESTS_PER_SECOND, MAX_REPAIR_RESP_WIRE,
@@ -123,6 +125,7 @@ pub struct OverlayCore<T> {
     keypair: Arc<Keypair>,
     local_pubkey: Pubkey,
     gossip: LightbringerGossip,
+    discovery: AddressDiscovery,
     tree: TurbineTree,
     static_peers: Vec<SocketAddr>,
     advertised_addr: Option<SocketAddr>,
@@ -150,6 +153,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             local_pubkey,
             keypair,
             gossip: LightbringerGossip::new(config.peer_ttl()),
+            discovery: AddressDiscovery::new(config.bind_addr),
             tree: TurbineTree::new(local_pubkey, config.fanout),
             static_peers: config.static_peers.clone(),
             advertised_addr: config.advertised_addr,
@@ -190,6 +194,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
         if now >= self.next_advert {
             self.next_advert = now + ADVERT_INTERVAL;
             self.advertise(env);
+            self.broadcast_observations(env);
         }
         self.expire_repairs(env, now);
         self.pump(env);
@@ -406,9 +411,13 @@ impl<T: OverlayTransport> OverlayCore<T> {
     }
 
     fn pump(&mut self, env: &mut dyn OverlayEnv) {
+        let mut connected: Vec<(Pubkey, SocketAddr)> = Vec::new();
         while let Some(event) = self.transport.poll_event() {
             let event = match event {
                 TransportEvent::Connected { peer, pubkey } => {
+                    if let Some(pubkey) = pubkey {
+                        connected.push((pubkey, peer));
+                    }
                     CoreEvent::PeerConnected { peer, pubkey }
                 }
                 TransportEvent::Disconnected { peer, reason } => {
@@ -416,6 +425,11 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 }
             };
             self.push_event(event);
+        }
+        // §6.2 step 1: tell each freshly-connected peer the address we see it
+        // at, so it can classify its own NAT from our vantage point.
+        for (pubkey, peer_addr) in connected {
+            self.send_address_observation(env, &pubkey, peer_addr);
         }
         while let Some((from, raw)) = self.transport.poll_inbound() {
             self.handle_frame(env, from, raw);
@@ -598,6 +612,14 @@ impl<T: OverlayTransport> OverlayCore<T> {
                         .queue_datagram_to_peer(env, &pubkey, raw.clone());
                 }
             }
+            OverlayFrame::AddressObservation { observed } => {
+                // §6.2 step 1: a connected peer reports our public mapping.
+                // Only an authenticated peer's observation is meaningful; the
+                // identity keys the port-tagged store.
+                if let Some(observer) = self.transport.peer_identity(from) {
+                    self.discovery.record(observer, from, observed);
+                }
+            }
         }
     }
 
@@ -640,6 +662,57 @@ impl<T: OverlayTransport> OverlayCore<T> {
             set.remove(&exclude);
         }
         set.into_iter().collect()
+    }
+
+    /// Send peer `pubkey` (seen at `peer_addr`) an `AddressObservation`
+    /// reporting the address we observe it at (§6.2 step 1).
+    fn send_address_observation(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        pubkey: &Pubkey,
+        peer_addr: SocketAddr,
+    ) {
+        match OverlayFrame::address_observation(peer_addr).encode() {
+            Ok(raw) => {
+                self.transport.queue_datagram_to_peer(env, pubkey, raw);
+            }
+            Err(e) => log::warn!("overlay: failed to encode address observation: {e}"),
+        }
+    }
+
+    /// Re-send address observations to every connected peer (§6.2 step 1).
+    /// Observations ride unreliable datagrams, so a periodic refresh covers
+    /// loss and lets a peer that just connected converge its classification.
+    fn broadcast_observations(&mut self, env: &mut dyn OverlayEnv) {
+        for pubkey in self.transport.connected_peers() {
+            if pubkey == self.local_pubkey {
+                continue;
+            }
+            if let Some(addr) = self.transport.connection_addr(&pubkey) {
+                self.send_address_observation(env, &pubkey, addr);
+            }
+        }
+    }
+
+    /// The §6.2 NAT class inferred from peer observations, or `None` while
+    /// observations cannot yet discriminate. Oracle/diagnostic surface.
+    #[allow(dead_code)]
+    pub fn nat_class(&self) -> Option<NatClass> {
+        self.discovery.classify()
+    }
+
+    /// The §6.2 allocator-discipline calibration for the current NAT
+    /// generation (recorded for P5; nothing consumes it in P3).
+    #[allow(dead_code)]
+    pub fn calibrated_allocator(&mut self) -> Option<AllocatorProfile> {
+        self.discovery.calibrate()
+    }
+
+    /// The port-tagged `observed` hints this node would advertise in a
+    /// `Coordinated` reachability (§6.1/§12-Q3). Oracle surface.
+    #[allow(dead_code)]
+    pub fn observed_hints(&self) -> ArrayVec<PortTaggedAddr, MAX_ADVERT_ADDRS> {
+        self.discovery.observed_hints()
     }
 
     fn advertise(&mut self, env: &mut dyn OverlayEnv) {

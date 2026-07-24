@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use anyhow::{Result, anyhow};
 
 use super::gossip::SignedPeerAdvert;
@@ -17,11 +19,18 @@ pub const SHRED_FRAME_OVERHEAD: usize = 2;
 
 const FRAME_SHRED: u8 = 0;
 const FRAME_PEER_ADVERTISEMENT: u8 = 1;
+const FRAME_ADDRESS_OBSERVATION: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub enum OverlayFrame {
     Shred { payload: Vec<u8> },
     PeerAdvertisement { advert: SignedPeerAdvert },
+    /// nat-traversal.md §6.2 step 1: "I see your public mapping as
+    /// `observed`." Sent over an established connection; the receiver tags it
+    /// with the sending peer's identity/address to classify its own NAT. No
+    /// signature — the QUIC connection already authenticates the observer,
+    /// and a lie only misinforms the observed node about its own address.
+    AddressObservation { observed: SocketAddr },
 }
 
 impl OverlayFrame {
@@ -31,6 +40,10 @@ impl OverlayFrame {
 
     pub fn peer_advertisement(advert: SignedPeerAdvert) -> Self {
         Self::PeerAdvertisement { advert }
+    }
+
+    pub fn address_observation(observed: SocketAddr) -> Self {
+        Self::AddressObservation { observed }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -45,6 +58,11 @@ impl OverlayFrame {
             Self::PeerAdvertisement { advert } => {
                 let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_PEER_ADVERTISEMENT];
                 bincode::serialize_into(&mut out, advert)?;
+                Ok(out)
+            }
+            Self::AddressObservation { observed } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_ADDRESS_OBSERVATION];
+                bincode::serialize_into(&mut out, observed)?;
                 Ok(out)
             }
         }
@@ -63,6 +81,9 @@ impl OverlayFrame {
             }),
             FRAME_PEER_ADVERTISEMENT => Ok(Self::PeerAdvertisement {
                 advert: bincode::deserialize(body)?,
+            }),
+            FRAME_ADDRESS_OBSERVATION => Ok(Self::AddressObservation {
+                observed: bincode::deserialize(body)?,
             }),
             other => Err(anyhow!("unknown overlay frame type {other}")),
         }
