@@ -41,6 +41,10 @@ pub const SCENARIOS: &[&str] = &[
     "portmap-matrix",
     "portmap-lease",
     "ipv6-dual-advert",
+    "punch-reachability-matrix",
+    "punch-v6",
+    "prflx-retarget",
+    "punch-lazy-no-regression",
 ];
 
 #[derive(Debug)]
@@ -73,6 +77,10 @@ pub fn run(name: &str, seed: u64, verbose: bool) -> Option<ScenarioOutcome> {
         "portmap-matrix" => Some(portmap_matrix(seed, verbose)),
         "portmap-lease" => Some(portmap_lease(seed, verbose)),
         "ipv6-dual-advert" => Some(ipv6_dual_advert(seed, verbose)),
+        "punch-reachability-matrix" => Some(punch_reachability_matrix(seed, verbose)),
+        "punch-v6" => Some(punch_v6(seed, verbose)),
+        "prflx-retarget" => Some(prflx_retarget(seed, verbose)),
+        "punch-lazy-no-regression" => Some(punch_lazy_no_regression(seed, verbose)),
         _ => None,
     }
 }
@@ -1574,5 +1582,344 @@ pub fn ipv6_dual_advert(seed: u64, verbose: bool) -> ScenarioOutcome {
         } else {
             failures.join("; ")
         },
+    }
+}
+
+/// Small full-stack P5 fixture. Three public observers give the initiator a
+/// real §6.2 profile; the target's first observer is also its shared via.
+/// The explicit `request_direct_path` is deliberately the only trigger.
+fn run_punch_case(
+    seed: u64,
+    verbose: bool,
+    a_nat: Option<NatConfig>,
+    b_nat: Option<NatConfig>,
+    birthday: bool,
+    ipv6: bool,
+    warmup: Duration,
+    settle: Duration,
+) -> (String, u64, bool, bool, bool, bool) {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+    let v1 = world.add_node(NodeOptions {
+        bind_port: 3478,
+        ..NodeOptions::default()
+    });
+    let v2 = world.add_node(NodeOptions {
+        bind_port: 3478,
+        ..NodeOptions::default()
+    });
+    let v3 = world.add_node(NodeOptions {
+        bind_port: 5321,
+        ..NodeOptions::default()
+    });
+    let vias = vec![world.public_addr(v1), world.public_addr(v2), world.public_addr(v3)];
+    let a = world.add_node(NodeOptions {
+        mode: OverlayMode::Source,
+        nat: a_nat.into_iter().collect(),
+        static_peers: vias.clone(),
+        bind_port: SUBJECT_BIND_PORT,
+        zero_config: true,
+        birthday_punch: birthday,
+        ipv6,
+        ..NodeOptions::default()
+    });
+    let b = world.add_node(NodeOptions {
+        nat: b_nat.into_iter().collect(),
+        // P5 profile selection needs two observer IPs sharing a port plus a
+        // heterogeneous-port observation, so use all three public helpers.
+        // `vias[0]` remains their deterministically shared signaling peer.
+        static_peers: vias,
+        bind_port: SUBJECT_BIND_PORT + 1,
+        zero_config: true,
+        birthday_punch: birthday,
+        ipv6,
+        ..NodeOptions::default()
+    });
+    let a_pk = world.overlay_pubkey(a);
+    let b_pk = world.overlay_pubkey(b);
+    // Static links form at t=10. The t=20 advert carries the authenticated
+    // shared-via route plus the profile learned from initial observations;
+    // begin P5 before a later P3 dial-back upgrade can turn this deliberately
+    // coordinated fixture into a one-sided normal direct dial. IPv6 has its
+    // own longer warmup for P4's confirmation path.
+    world.run_for(warmup);
+    let started = world.request_direct_path(a, b_pk);
+    world.run_for(settle);
+    let connected = world.peer_connection_addr(a, &b_pk).is_some()
+        && world.peer_connection_addr(b, &a_pk).is_some();
+    let v6 = world
+        .peer_connection_addr(a, &b_pk)
+        .is_some_and(|addr| addr.is_ipv6());
+    if connected {
+        world.inject_shred(a, &[0xA5; 96]);
+        world.run_for(Duration::from_secs(1));
+    }
+    let traffic = world.delivered_shreds(b).iter().any(|payload| payload == &[0xA5; 96]);
+    (world.trace_hash(), world.trace.events(), started, connected, traffic, v6)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PunchNatPreset {
+    Public,
+    FullCone,
+    Restricted,
+    PortRestricted,
+    FieldNote,
+    SymmetricPreserving,
+    SymmetricSequential,
+    SymmetricRandom,
+}
+
+impl PunchNatPreset {
+    const ALL: [Self; 8] = [
+        Self::Public,
+        Self::FullCone,
+        Self::Restricted,
+        Self::PortRestricted,
+        Self::FieldNote,
+        Self::SymmetricPreserving,
+        Self::SymmetricSequential,
+        Self::SymmetricRandom,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::FullCone => "full-cone",
+            Self::Restricted => "restricted",
+            Self::PortRestricted => "port-restricted",
+            Self::FieldNote => "field-note",
+            Self::SymmetricPreserving => "symmetric-preserving",
+            Self::SymmetricSequential => "symmetric-sequential",
+            Self::SymmetricRandom => "symmetric-random",
+        }
+    }
+
+    fn is_public(self) -> bool {
+        matches!(self, Self::Public)
+    }
+
+    fn config(self) -> Option<NatConfig> {
+        match self {
+            Self::Public => None,
+            Self::FullCone => Some(NatConfig::full_cone()),
+            Self::Restricted => Some(NatConfig::restricted_cone()),
+            Self::PortRestricted => Some(NatConfig::port_restricted_cone()),
+            Self::FieldNote => Some(NatConfig::field_note_fiber()),
+            Self::SymmetricPreserving => Some(NatConfig::symmetric_preserving()),
+            Self::SymmetricSequential => Some(NatConfig::symmetric_sequential(1)),
+            Self::SymmetricRandom => Some(NatConfig::symmetric_random()),
+        }
+    }
+
+    /// An address-restricted (or looser) peer can reply to the random side's
+    /// peer-reflexive source after the first volley. A plain port-restricted
+    /// EIM peer must know that exact source port first, so it needs rung 3.
+    fn requires_birthday_against_random(self) -> bool {
+        matches!(self, Self::PortRestricted | Self::SymmetricPreserving)
+    }
+
+    /// Both presets have port-restricted filtering in the simulator. A
+    /// sequential allocator's exact next-mapping rung is separately covered
+    /// at packet truth with a quiet fixed fixture; the broad matrix keeps
+    /// this compounded filtering case connected-only rather than re-running
+    /// it as a retry on every row.
+    fn strict_filter_eim(self) -> bool {
+        matches!(self, Self::PortRestricted | Self::SymmetricPreserving)
+    }
+
+    /// P5 composes two calibrated sequential allocators exactly. The mixed
+    /// destination-dependent combinations require extra state beyond this
+    /// one-exchange ladder; random↔random is the explicit hard↔hard non-goal.
+    fn destination_dependent(self) -> bool {
+        matches!(self, Self::FieldNote | Self::SymmetricSequential | Self::SymmetricRandom)
+    }
+
+}
+
+/// The §6.5/§6.5.1 prediction, made executable. Preserving symmetric
+/// allocators are EIM-equivalent until a collision; field-note and sequential
+/// mappings punch through their respective rungs against EIM, and two
+/// sequential allocators compose their calibrated next-mapping predictions.
+/// Random↔random remains the explicit hard↔hard non-goal. A single random
+/// side against a port-restricted EIM peer needs the opt-in birthday volley;
+/// public/full-cone/address-restricted peers answer its prflx probe normally.
+fn punch_prediction(a: PunchNatPreset, b: PunchNatPreset, birthday: bool) -> bool {
+    if (a == PunchNatPreset::SymmetricSequential && b.strict_filter_eim())
+        || (b == PunchNatPreset::SymmetricSequential && a.strict_filter_eim())
+    {
+        return false;
+    }
+    if a.destination_dependent()
+        && b.destination_dependent()
+        && !(a == PunchNatPreset::SymmetricSequential
+            && b == PunchNatPreset::SymmetricSequential)
+    {
+        return false;
+    }
+    if a == PunchNatPreset::SymmetricRandom {
+        return if b.is_public() {
+            true
+        } else {
+            b.requires_birthday_against_random() && birthday
+        };
+    }
+    if b == PunchNatPreset::SymmetricRandom {
+        return if a.is_public() {
+            true
+        } else {
+            a.requires_birthday_against_random() && birthday
+        };
+    }
+    true
+}
+
+/// P5 definition-of-done oracle (§6.9): the complete pairwise grid across
+/// every §6.2 preset. Each cell uses the approved lazy trigger, carries real
+/// traffic after success, and checks the exact rung prediction. Random-hard
+/// cells run twice to prove the default connected-only fallback and the
+/// opt-in birthday upgrade; composed sequential rows prove the double
+/// bracket without treating other unsupported hard↔hard combinations as
+/// retries.
+pub fn punch_reachability_matrix(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut failures = Vec::new();
+    let mut hashes = Vec::new();
+    let mut events = 0;
+    let mut case_index = 0u64;
+    for a in PunchNatPreset::ALL {
+        for b in PunchNatPreset::ALL {
+            let needs_birthday = !(a.destination_dependent() && b.destination_dependent())
+                && ((a == PunchNatPreset::SymmetricRandom
+                    && b.requires_birthday_against_random())
+                    || (b == PunchNatPreset::SymmetricRandom
+                        && a.requires_birthday_against_random()));
+            let birthday_modes: &[bool] = if needs_birthday { &[false, true] } else { &[false] };
+            for &birthday in birthday_modes {
+                case_index += 1;
+                let expected = punch_prediction(a, b, birthday);
+                let (hash, count, started, connected, traffic, _) = run_punch_case(
+                    seed ^ (case_index << 32),
+                    verbose,
+                    a.config(),
+                    b.config(),
+                    birthday,
+                    false,
+                    Duration::from_millis(20_100),
+                    Duration::from_secs(8),
+                );
+                hashes.push(hash);
+                events += count;
+                if !started || connected != expected || (expected && !traffic) {
+                    failures.push(format!(
+                        "{}↔{} birthday={birthday}: started={started} connected={connected} traffic={traffic}, expected={expected}",
+                        a.name(),
+                        b.name(),
+                    ));
+                }
+            }
+        }
+    }
+    ScenarioOutcome {
+        name: "punch-reachability-matrix",
+        seed,
+        // One compact witness still commits to every individual cell's
+        // trace; printing the 68 component hashes made the CLI unusable.
+        trace_hash: solana_sha256_hasher::hashv(&[hashes.join("/").as_bytes()]).to_string(),
+        events,
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            "all 8×8 NAT pairs matched the P5 prediction; random/EIM hard cells proved default connected-only and opt-in birthday behavior".into()
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+/// Two RFC 6092 firewalled dual-stack nodes coordinate their same-socket
+/// volley. The v4 path remains present in the model, but v6 candidates are
+/// listed first and the first authenticated direct connection must be v6.
+pub fn punch_v6(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let (hash, events, started, connected, traffic, v6) = run_punch_case(
+        seed,
+        verbose,
+        Some(NatConfig::port_restricted_cone()),
+        Some(NatConfig::port_restricted_cone()),
+        false,
+        true,
+        Duration::from_secs(45),
+        Duration::from_secs(8),
+    );
+    ScenarioOutcome {
+        name: "punch-v6",
+        seed,
+        trace_hash: hash,
+        events,
+        ok: started && connected && traffic && v6,
+        summary: format!("started={started} connected={connected} traffic={traffic} v6={v6}"),
+    }
+}
+
+/// A field-note EDM advert's normal observation is wrong for the target port;
+/// the helper's raw-probe source becomes the authenticated prflx candidate.
+pub fn prflx_retarget(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let (hash, events, started, connected, traffic, _) = run_punch_case(
+        seed,
+        verbose,
+        Some(NatConfig::field_note_fiber()),
+        Some(NatConfig::restricted_cone()),
+        false,
+        false,
+        Duration::from_millis(20_100),
+        Duration::from_secs(6),
+    );
+    ScenarioOutcome {
+        name: "prflx-retarget",
+        seed,
+        trace_hash: hash,
+        events,
+        ok: started && connected && traffic,
+        summary: format!("started={started} connected={connected} traffic={traffic}"),
+    }
+}
+
+/// Regression for the P3 417s proactive-meshing failure: merely learning a
+/// Coordinated gossip view starts zero punch sessions and changes no topology;
+/// the pre-existing §5 outbound graph continues carrying shreds.
+pub fn punch_lazy_no_regression(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+    let via = world.add_node(NodeOptions::default());
+    let via_addr = world.public_addr(via);
+    let source = world.add_node(NodeOptions {
+        mode: OverlayMode::Source,
+        nat: vec![NatConfig::port_restricted_cone()],
+        static_peers: vec![via_addr],
+        zero_config: true,
+        ..NodeOptions::default()
+    });
+    let leaf = world.add_node(NodeOptions {
+        nat: vec![NatConfig::port_restricted_cone()],
+        static_peers: vec![via_addr],
+        zero_config: true,
+        ..NodeOptions::default()
+    });
+    world.run_for(Duration::from_secs(45));
+    let no_attempts = world.punch_attempts(source) == 0 && world.punch_attempts(leaf) == 0;
+    world.inject_shred(source, &[0x5A; 96]);
+    world.run_for(Duration::from_secs(1));
+    let stable = world.punch_attempts(source) == 0
+        && world.punch_attempts(leaf) == 0
+        && !world.delivered_shreds(leaf).is_empty();
+    ScenarioOutcome {
+        name: "punch-lazy-no-regression",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: no_attempts && stable,
+        summary: format!("no_attempts={no_attempts} stable={stable}"),
     }
 }

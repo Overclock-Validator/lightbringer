@@ -21,7 +21,7 @@ use super::{
         PortTaggedAddr, Reachability, RepairEndpoint, SignedPeerAdvert,
     },
     nat::{AllocatorProfile, NatClass},
-    packet::OverlayFrame,
+    packet::{OverlayFrame, PunchAssistKind},
     portmap::{PortMapConfig, PortMapper},
     punch::{ConnectRequest, ConnectResponse, MAX_PUNCH_CANDIDATES, NatProfile, PunchProbe},
     repair::{
@@ -68,8 +68,21 @@ const MAX_QUARANTINE: usize = 4096;
 /// gossip flood cannot turn into a socket/probe flood.
 const MAX_PUNCH_SESSIONS: usize = 128;
 const MAX_PUNCH_FORWARDS: usize = 512;
+const MAX_PUNCH_HELPERS: usize = 64;
+const MAX_BRACKET_WIDTH: u16 = 32;
+pub(crate) const BIRTHDAY_SOCKET_CAP: usize = 256;
+pub(crate) const BIRTHDAY_SPRAY_CAP: usize = 1024;
+pub(crate) const BIRTHDAY_DURATION: Duration = Duration::from_secs(20);
+const BIRTHDAY_PORT_START: u16 = 40_000;
+const BIRTHDAY_PORT_WIDTH: u16 = 20_000;
+const MAX_PUNCH_OUTCOMES: usize = 4096;
+const PUNCH_OUTCOME_TTL: Duration = Duration::from_secs(10 * 60);
 const PUNCH_TIMEOUT: Duration = Duration::from_secs(5);
 const PUNCH_PROBE_INTERVAL: Duration = Duration::from_millis(100);
+/// §6.5's first-attempt policy: one bootstrap volley plus one prflx/assist
+/// re-aim is enough. Further periodic retries only turn bad NAT pairs into a
+/// sustained probe load and contradict the measured bimodal outcome.
+const MAX_PUNCH_PROBE_ROUNDS: u8 = 2;
 /// The via's independent initiator and target limits (§9). A small value is
 /// enough because outcomes are cached after one attempt (rung 4).
 const MAX_PUNCH_SIGNALS_PER_SECOND: u32 = 4;
@@ -185,18 +198,60 @@ struct PunchSession {
     candidates: ArrayVec<SocketAddr, MAX_PUNCH_CANDIDATES>,
     freshest: Option<SocketAddr>,
     remote_profile: NatProfile,
+    local_profile: NatProfile,
     awaiting_response: bool,
     dial_started: bool,
     payload: Option<Vec<u8>>,
+    birthday_sockets: Vec<SocketId>,
+    birthday_started: bool,
+    birthday_spray_sent: bool,
     deadline: Instant,
     next_probe: Instant,
+    probe_rounds: u8,
+    /// One bounded second volley is reserved for an authenticated helper
+    /// result. It is part of the original exchange, not a retry loop.
+    assist_followup_granted: bool,
+    /// Rung 2's exact next mapping prediction. A sequential helper observes
+    /// the last allocation X, so the reciprocal peer can open its filter
+    /// toward X + stride while creating its own next mapping. When both
+    /// endpoints are sequential, the two predictions compose: each side's
+    /// first packet is addressed to the other's predicted next mapping.
+    sequential_prediction: Option<SocketAddr>,
+    /// Rung-2's receiver-side filter openers. These are separate from the
+    /// four signed bootstrap candidates so a valid k≤32 bracket is never
+    /// silently truncated by that smaller aiming-hint cap.
+    bracket_candidates: ArrayVec<SocketAddr, { MAX_BRACKET_WIDTH as usize }>,
 }
 
 /// Bounded relay state: a `via` only routes a response for a request it
 /// personally forwarded over authenticated connections.
 struct PunchForward {
     target: Pubkey,
+    origin_profile: NatProfile,
+    origin_candidates: ArrayVec<SocketAddr, MAX_PUNCH_CANDIDATES>,
     deadline: Instant,
+}
+
+/// Short-lived helper socket allocated by a public via for rung 1 or 2. It
+/// only ever observes a probe signed by the original initiator and reports
+/// that source to the already-negotiated target; it never probes a third
+/// party itself.
+struct PunchHelper {
+    origin: Pubkey,
+    target: Pubkey,
+    nonce: u64,
+    socket: SocketId,
+    kind: PunchAssistKind,
+    deadline: Instant,
+}
+
+/// Rung-4 cache key. A changed observed external IP is a new NAT generation,
+/// so it naturally misses this key and allows one fresh ladder attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PunchOutcomeKey {
+    peer: Pubkey,
+    local_generation: Option<std::net::IpAddr>,
+    remote_generation: Option<std::net::IpAddr>,
 }
 
 struct InboundRepair {
@@ -231,6 +286,7 @@ pub struct OverlayCore<T> {
     static_peers: Vec<SocketAddr>,
     advertised_addr: Option<SocketAddr>,
     advertised_addr_v6: Option<SocketAddr>,
+    birthday_punch: bool,
     /// The v6 overlay socket's address, when dual-stack (§6.3).
     bind_v6: Option<SocketAddr>,
     repair: RepairEndpoint,
@@ -271,9 +327,13 @@ pub struct OverlayCore<T> {
     quarantined: LruBTreeMap<SocketAddr, ()>,
     punch_sessions: BTreeMap<u64, PunchSession>,
     punch_forwards: BTreeMap<(Pubkey, u64), PunchForward>,
+    punch_helpers: BTreeMap<SocketId, PunchHelper>,
+    punch_outcomes: LruBTreeMap<PunchOutcomeKey, Instant>,
+    last_punch_profiles: LruBTreeMap<Pubkey, NatProfile>,
     punch_initiator_rate: RepairRateLimiter,
     punch_target_rate: RepairRateLimiter,
     punch_refused: u64,
+    punch_attempts: u64,
     dropped_unreachable: u64,
     invalid_adverts: u64,
     repairs_refused: u64,
@@ -311,6 +371,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             static_peers: config.static_peers.clone(),
             advertised_addr: config.advertised_addr,
             advertised_addr_v6: config.advertised_addr_v6,
+            birthday_punch: config.nat.birthday_punch,
             bind_v6: config.bind_addr_v6,
             repair: config
                 .repair_addr
@@ -335,9 +396,13 @@ impl<T: OverlayTransport> OverlayCore<T> {
             quarantined: LruBTreeMap::new(MAX_QUARANTINE),
             punch_sessions: BTreeMap::new(),
             punch_forwards: BTreeMap::new(),
+            punch_helpers: BTreeMap::new(),
+            punch_outcomes: LruBTreeMap::new(MAX_PUNCH_OUTCOMES),
+            last_punch_profiles: LruBTreeMap::new(MAX_PUNCH_OUTCOMES),
             punch_initiator_rate: RepairRateLimiter::new(MAX_PUNCH_SIGNALS_PER_SECOND),
             punch_target_rate: RepairRateLimiter::new(MAX_PUNCH_SIGNALS_PER_SECOND),
             punch_refused: 0,
+            punch_attempts: 0,
             dropped_unreachable: 0,
             invalid_adverts: 0,
             repairs_refused: 0,
@@ -395,6 +460,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.expire_confirms(now);
         self.advance_punches(env, now);
         self.expire_punch_forwards(now);
+        self.expire_punch_helpers(env, now);
         self.pump(env);
     }
 
@@ -476,6 +542,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
         for forward in self.punch_forwards.values() {
             deadline = deadline.min(forward.deadline);
         }
+        for helper in self.punch_helpers.values() {
+            deadline = deadline.min(helper.deadline);
+        }
         Some(deadline)
     }
 
@@ -549,6 +618,16 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.punch_sessions.len()
     }
 
+    #[allow(dead_code)]
+    pub fn active_punch_helpers(&self) -> usize {
+        self.punch_helpers.len()
+    }
+
+    #[allow(dead_code)]
+    pub fn active_punch_forwards(&self) -> usize {
+        self.punch_forwards.len()
+    }
+
     /// P5 oracle surface: relayed requests refused for signature, visibility,
     /// authenticated-route, capacity, or per-identity rate-limit reasons.
     #[allow(dead_code)]
@@ -556,11 +635,38 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.punch_refused
     }
 
+    /// P5 oracle surface: real ladder attempts admitted after the outcome
+    /// cache. Repeated shreds must not make this climb for the same failed
+    /// peer-pair/NAT-generation tuple.
+    #[allow(dead_code)]
+    pub fn punch_attempts(&self) -> u64 {
+        self.punch_attempts
+    }
+
     /// Explicit targeted reach-upgrade API. It intentionally does not alter
     /// the normal turbine or repair candidate sets: callers must name the
     /// Coordinated peer they want to reach (§6.5 trigger policy).
     #[allow(dead_code)]
     pub fn request_direct_path(&mut self, env: &mut dyn OverlayEnv, peer: Pubkey) -> bool {
+        if self.transport.connection_addr(&peer).is_some() {
+            return true;
+        }
+        // Public/dial-back-confirmed peers need no P5 signaling, but exposing
+        // the same explicit API makes the reachability oracle compare a
+        // direct dial and a coordinated punch uniformly.
+        if let Some(addr) = self
+            .gossip
+            .get(&peer, env.now())
+            .and_then(|advert| advert.direct_addrs().first().copied())
+        {
+            if self.transport.dial_expecting(env, addr, peer).is_ok() {
+                self.confirming.entry(addr).or_insert(ConfirmDial {
+                    expected: peer,
+                    deadline: env.now() + CONFIRM_TIMEOUT,
+                });
+                return true;
+            }
+        }
         self.begin_punch(env, peer, None)
     }
 
@@ -889,6 +995,32 @@ impl<T: OverlayTransport> OverlayCore<T> {
             OverlayFrame::ConnectResponse { response } => {
                 self.handle_connect_response(env, from, response);
             }
+            OverlayFrame::PunchAssist {
+                nonce,
+                origin,
+                target,
+                port,
+                kind,
+            } => self.handle_punch_assist(env, from, nonce, origin, target, port, kind),
+            OverlayFrame::PunchObservation {
+                nonce,
+                origin,
+                target,
+                observed,
+            } => self.handle_punch_observation(env, from, nonce, origin, target, observed),
+            OverlayFrame::PunchBracket {
+                nonce,
+                origin,
+                target,
+                ip,
+                start,
+                end,
+            } => self.handle_punch_bracket(env, from, nonce, origin, target, ip, start, end),
+            OverlayFrame::PunchBirthday {
+                nonce,
+                origin,
+                target,
+            } => self.handle_punch_birthday(env, from, nonce, origin, target),
         }
     }
 
@@ -957,6 +1089,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
         NatProfile {
             class: self.discovery.classify(),
             allocator: self.discovery.calibrate(),
+            birthday_punch: self.birthday_punch,
             generation: self.discovery.external_ip(),
         }
     }
@@ -974,18 +1107,25 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 let _ = candidates.try_push(addr);
             }
         };
-        add(self.advertised_addr);
-        add(self.confirmed_direct);
-        add(self.confirmed_portmap);
+        // Preserve P4's preference: a usable v6 path avoids NAT mapping and
+        // the punch merely opens both RFC 6092 firewalls.
         add(self.advertised_addr_v6);
         add(self.confirmed_v6);
-        for hint in self.discovery.observed_hints() {
-            add(Some(hint.mapping));
-        }
+        // Unlike a Direct advert, a P5 aiming hint need only be observed by
+        // an authenticated peer over an established v6 connection. It is
+        // still never accepted from unauthenticated traffic; this is the
+        // confirmation that lets two otherwise default-deny RFC 6092
+        // firewalls perform the coordinated volley (§6.5).
         if let Some(discovery_v6) = &self.discovery_v6 {
             for hint in discovery_v6.observed_hints() {
                 add(Some(hint.mapping));
             }
+        }
+        add(self.advertised_addr);
+        add(self.confirmed_direct);
+        add(self.confirmed_portmap);
+        for hint in self.discovery.observed_hints() {
+            add(Some(hint.mapping));
         }
         candidates
     }
@@ -1011,6 +1151,22 @@ impl<T: OverlayTransport> OverlayCore<T> {
         if self.punch_sessions.len() >= MAX_PUNCH_SESSIONS {
             return false;
         }
+        let local_profile = self.local_nat_profile();
+        if let Some(remote_profile) = self.last_punch_profiles.get_without_update(&peer).copied()
+        {
+            let key = PunchOutcomeKey {
+                peer,
+                local_generation: local_profile.generation,
+                remote_generation: remote_profile.generation,
+            };
+            if self
+                .punch_outcomes
+                .get_without_update(&key)
+                .is_some_and(|expiry| env.now() < *expiry)
+            {
+                return false;
+            }
+        }
         let via = self
             .gossip
             .get(&peer, env.now())
@@ -1032,7 +1188,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             nonce,
             peer,
             self.local_punch_candidates(),
-            self.local_nat_profile(),
+            local_profile,
             self.keypair.as_ref(),
         ) {
             Ok(request) => request,
@@ -1061,13 +1217,22 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 candidates: ArrayVec::new(),
                 freshest: None,
                 remote_profile: NatProfile::default(),
+                local_profile,
                 awaiting_response: true,
                 dial_started: false,
                 payload,
+                birthday_sockets: Vec::new(),
+                birthday_started: false,
+                birthday_spray_sent: false,
                 deadline: now + PUNCH_TIMEOUT,
                 next_probe: now + PUNCH_PROBE_INTERVAL,
+                probe_rounds: 0,
+                assist_followup_granted: false,
+                sequential_prediction: None,
+                bracket_candidates: ArrayVec::new(),
             },
         );
+        self.punch_attempts += 1;
         true
     }
 
@@ -1105,6 +1270,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 return;
             }
             let now = env.now();
+            let local_profile = self.local_nat_profile();
             self.punch_sessions.entry(request.nonce).or_insert(PunchSession {
                 peer: request.origin,
                 nonce: request.nonce,
@@ -1112,12 +1278,30 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 candidates: request.candidates.clone(),
                 freshest: None,
                 remote_profile: request.nat_profile,
+                local_profile,
                 awaiting_response: false,
                 dial_started: false,
                 payload: None,
+                birthday_sockets: Vec::new(),
+                birthday_started: false,
+                birthday_spray_sent: false,
                 deadline: now + PUNCH_TIMEOUT,
                 next_probe: now,
+                probe_rounds: 0,
+                assist_followup_granted: false,
+                sequential_prediction: None,
+                bracket_candidates: ArrayVec::new(),
             });
+            self.last_punch_profiles.push(request.origin, request.nat_profile);
+            let birthday = self.birthday_punch
+                && local_profile.birthday_punch
+                && request.nat_profile.birthday_punch
+                && matches!(local_profile.allocator, Some(AllocatorProfile::Random));
+            if birthday {
+                if let Some(session) = self.punch_sessions.get_mut(&request.nonce) {
+                    session.deadline = now + BIRTHDAY_DURATION;
+                }
+            }
             let response = match ConnectResponse::sign(
                 request.nonce,
                 request.origin,
@@ -1135,6 +1319,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 self.transport.queue_datagram_to_peer(env, &via, raw);
             }
             self.advance_punches(env, now);
+            // Rung 3 belongs to the random-mapping side, which may be B.
+            // Starting only after the signed response is queued preserves the
+            // relay state the ready signal needs on its return path.
+            if birthday {
+                self.start_birthday(env, request.nonce);
+            }
             return;
         }
 
@@ -1174,6 +1364,8 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 key,
                 PunchForward {
                     target: request.target,
+                    origin_profile: request.nat_profile,
+                    origin_candidates: request.candidates,
                     deadline: env.now() + PUNCH_TIMEOUT,
                 },
             );
@@ -1206,10 +1398,21 @@ impl<T: OverlayTransport> OverlayCore<T> {
             }
             session.candidates = response.candidates;
             session.remote_profile = response.nat_profile;
+            self.last_punch_profiles.push(response.origin, response.nat_profile);
             session.awaiting_response = false;
             let now = env.now();
             session.next_probe = now;
+            let birthday = self.birthday_punch
+                && session.local_profile.birthday_punch
+                && matches!(session.local_profile.allocator, Some(AllocatorProfile::Random));
+            if birthday {
+                session.deadline = now + BIRTHDAY_DURATION;
+            }
+            let nonce = session.nonce;
             self.advance_punches(env, now);
+            if birthday {
+                self.start_birthday(env, nonce);
+            }
             return;
         }
 
@@ -1228,6 +1431,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
             self.refuse_punch("response target differs from forwarded request");
             return;
         }
+        let response_profile = response.nat_profile;
+        let response_candidates = response.candidates.clone();
+        let response_origin = response.origin;
         if let Ok(raw) = OverlayFrame::connect_response(response).encode() {
             if !self
                 .transport
@@ -1236,6 +1442,487 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 self.refuse_punch("initiator disconnected before response");
             }
         }
+        self.maybe_start_assist(
+            env,
+            key.0,
+            response_origin,
+            key.1,
+            forward.origin_profile,
+            response_profile,
+            &forward.origin_candidates,
+            &response_candidates,
+        );
+    }
+
+    /// Start the deterministic assisted rungs selected from both signed
+    /// profiles. The observer side is the peer whose destination-sensitive
+    /// mapping we need to create; the recipient gets the authenticated prflx
+    /// observation or bracket. This makes the ladder work regardless of the
+    /// caller's pubkey/initiator role. No helper is allocated for unsolicited
+    /// gossip state.
+    fn maybe_start_assist(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        origin: Pubkey,
+        target: Pubkey,
+        nonce: u64,
+        origin_profile: NatProfile,
+        target_profile: NatProfile,
+        origin_candidates: &ArrayVec<SocketAddr, MAX_PUNCH_CANDIDATES>,
+        target_candidates: &ArrayVec<SocketAddr, MAX_PUNCH_CANDIDATES>,
+    ) {
+        // First observe the initiator against the target's exact candidate;
+        // then mirror the operation for a destination-sensitive target.
+        self.start_assist(
+            env,
+            origin,
+            target,
+            nonce,
+            origin_profile,
+            target_candidates.first().copied(),
+        );
+        self.start_assist(
+            env,
+            target,
+            origin,
+            nonce,
+            target_profile,
+            origin_candidates.first().copied(),
+        );
+    }
+
+    fn start_assist(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        observer: Pubkey,
+        recipient: Pubkey,
+        nonce: u64,
+        profile: NatProfile,
+        exact_candidate: Option<SocketAddr>,
+    ) {
+        if self.punch_helpers.len() >= MAX_PUNCH_HELPERS {
+            return;
+        }
+        let Some(exact_candidate) = exact_candidate else {
+            return;
+        };
+        let family = IpFamily::of(&exact_candidate);
+        let mut kind = match profile.class {
+            Some(NatClass::PortDependent) => PunchAssistKind::SamePortObservation,
+            _ if matches!(profile.allocator, Some(AllocatorProfile::Sequential { .. })) => {
+                PunchAssistKind::SequentialBracket
+            }
+            _ => return,
+        };
+        // Rung 1's defining operation: bind B's public destination port.
+        // Rung 2 uses a random unprivileged helper port; its exact value is
+        // communicated in the authenticated plan below.
+        let mut requested_port = match kind {
+            PunchAssistKind::SamePortObservation => exact_candidate.port(),
+            PunchAssistKind::SequentialBracket => 49_152 + (env.rng().next_u32() % 16_384) as u16,
+        };
+        // Never ask the OS to bind a privileged port on a requester's
+        // behalf. A calibrated sequential profile can still use rung 2;
+        // otherwise the ladder cleanly falls through to its cached outcome.
+        if requested_port < MIN_UNPRIVILEGED_PORT
+            && matches!(kind, PunchAssistKind::SamePortObservation)
+        {
+            if matches!(profile.allocator, Some(AllocatorProfile::Sequential { .. })) {
+                kind = PunchAssistKind::SequentialBracket;
+                requested_port = 49_152 + (env.rng().next_u32() % 16_384) as u16;
+            } else {
+                return;
+            }
+        }
+        let socket = match env.bind(Some(requested_port), family) {
+            Ok(socket) => socket,
+            Err(_) if matches!(kind, PunchAssistKind::SamePortObservation)
+                && matches!(profile.allocator, Some(AllocatorProfile::Sequential { .. })) =>
+            {
+                // Busy/privileged same-port refusals fall to rung 2, never
+                // retrying arbitrary binds (§6.5.1 / §9).
+                kind = PunchAssistKind::SequentialBracket;
+                requested_port = 49_152 + (env.rng().next_u32() % 16_384) as u16;
+                match env.bind(Some(requested_port), family) {
+                    Ok(socket) => socket,
+                    Err(_) => return,
+                }
+            }
+            Err(_) => return,
+        };
+        self.transport.register_punch_socket(socket);
+        self.punch_helpers.insert(
+            socket,
+            PunchHelper {
+                origin: observer,
+                target: recipient,
+                nonce,
+                socket,
+                kind,
+                deadline: env.now() + PUNCH_TIMEOUT,
+            },
+        );
+        if let Ok(raw) = OverlayFrame::punch_assist(
+            nonce,
+            observer,
+            recipient,
+            requested_port,
+            kind,
+        )
+        .encode()
+        {
+            self.transport.queue_datagram_to_peer(env, &observer, raw);
+        }
+    }
+
+    fn add_punch_candidate(session: &mut PunchSession, candidate: SocketAddr) {
+        if !session.candidates.contains(&candidate) {
+            let _ = session.candidates.try_push(candidate);
+        }
+    }
+
+    /// A helper plan/result is authenticated by the negotiated via and
+    /// belongs to the initial P5 exchange. Reserve exactly one fresh probe
+    /// volley for it even if the bootstrap volley already completed; do not
+    /// reset this more than once, so bad paths cannot turn into retries.
+    fn schedule_assisted_followup(session: &mut PunchSession, now: Instant) {
+        if !session.assist_followup_granted {
+            session.assist_followup_granted = true;
+            session.probe_rounds = 0;
+        }
+        session.next_probe = now;
+    }
+
+    fn handle_punch_assist(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        nonce: u64,
+        origin: Pubkey,
+        target: Pubkey,
+        port: u16,
+        _kind: PunchAssistKind,
+    ) {
+        let Some(via) = self.transport.peer_identity(from) else {
+            self.refuse_punch("assist plan arrived unauthenticated");
+            return;
+        };
+        let Some(session) = self.punch_sessions.get_mut(&nonce) else {
+            self.refuse_punch("assist plan has no session");
+            return;
+        };
+        if via != session.via
+            || port < MIN_UNPRIVILEGED_PORT
+        {
+            self.refuse_punch("assist plan does not match negotiated via session");
+            return;
+        }
+        if origin != self.local_pubkey || target != session.peer {
+            self.refuse_punch("assist plan peers do not match negotiated session");
+            return;
+        }
+        let Some(via_addr) = self.transport.connection_addr(&via) else {
+            self.refuse_punch("assist via connection vanished");
+            return;
+        };
+        let helper_addr = SocketAddr::new(via_addr.ip(), port);
+        Self::add_punch_candidate(session, helper_addr);
+        let local_is_sequential = matches!(
+            session.local_profile.allocator,
+            Some(AllocatorProfile::Sequential { .. })
+        );
+        let remote_is_sequential = matches!(
+            session.remote_profile.allocator,
+            Some(AllocatorProfile::Sequential { .. })
+        );
+        if local_is_sequential && !remote_is_sequential
+            && let Some(position) = session
+                .candidates
+                .iter()
+                .position(|candidate| *candidate == helper_addr)
+        {
+            // In the asymmetric rung-2 case, create the helper-observed X
+            // first and the ordinary peer mapping X+stride immediately
+            // after it. The recipient receives the X+stride prediction from
+            // the helper and can open its filter toward a mapping that is
+            // already live. For sequential↔sequential we retain the normal
+            // ordering so the two reciprocal predictions compose instead.
+            let helper_addr = session.candidates.remove(position);
+            session.candidates.insert(0, helper_addr);
+        }
+        let now = env.now();
+        // A helper plan is setup, not the assisted result: it must first
+        // create/observe the special mapping. Preserve one fresh bounded
+        // volley for the later authenticated observation or bracket, rather
+        // than consuming it merely by probing the helper socket.
+        session.probe_rounds = 0;
+        session.next_probe = now;
+        self.advance_punches(env, now);
+    }
+
+    fn handle_punch_observation(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        nonce: u64,
+        origin: Pubkey,
+        target: Pubkey,
+        observed: SocketAddr,
+    ) {
+        let Some(via) = self.transport.peer_identity(from) else {
+            self.refuse_punch("helper observation arrived unauthenticated");
+            return;
+        };
+        let Some(session) = self.punch_sessions.get_mut(&nonce) else {
+            self.refuse_punch("helper observation has no session");
+            return;
+        };
+        if target != self.local_pubkey || session.peer != origin || session.via != via {
+            self.refuse_punch("helper observation mismatches session");
+            return;
+        }
+        Self::add_punch_candidate(session, observed);
+        let now = env.now();
+        Self::schedule_assisted_followup(session, now);
+        self.advance_punches(env, now);
+    }
+
+    fn handle_punch_bracket(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        nonce: u64,
+        origin: Pubkey,
+        target: Pubkey,
+        ip: std::net::IpAddr,
+        start: u16,
+        end: u16,
+    ) {
+        let Some(via) = self.transport.peer_identity(from) else {
+            self.refuse_punch("bracket arrived unauthenticated");
+            return;
+        };
+        let width = end.saturating_sub(start).saturating_add(1);
+        if width == 0 || width > MAX_BRACKET_WIDTH {
+            self.refuse_punch("bracket exceeds hard k<=32 cap");
+            return;
+        }
+        let Some(session) = self.punch_sessions.get_mut(&nonce) else {
+            self.refuse_punch("bracket has no session");
+            return;
+        };
+        if target != self.local_pubkey || session.peer != origin || session.via != via {
+            self.refuse_punch("bracket mismatches session");
+            return;
+        }
+        if let Some(AllocatorProfile::Sequential { stride }) = session.remote_profile.allocator
+            && let Some(predicted_port) = end.checked_add(stride)
+        {
+            // The helper's final observation is allocation X. Opening the
+            // filter at X + stride creates this node's own next mapping; the
+            // peer does the reciprocal calculation from our helper result.
+            // That is the double-bracket composition for sequential↔
+            // sequential without a range guess. Keep a bounded range only
+            // as the conservative fallback when a prediction wraps.
+            session.sequential_prediction = Some(SocketAddr::new(ip, predicted_port));
+            session.bracket_candidates.clear();
+        } else {
+            for port in start..=end {
+                let candidate = SocketAddr::new(ip, port);
+                if !session.bracket_candidates.contains(&candidate) {
+                    let _ = session.bracket_candidates.try_push(candidate);
+                }
+            }
+        }
+        let now = env.now();
+        Self::schedule_assisted_followup(session, now);
+        self.advance_punches(env, now);
+    }
+
+    /// Rung 3: bind exactly the configured cap of short-lived sockets and
+    /// send one signed raw probe from each. Nothing happens unless the local
+    /// operator opted in *and* advertised that opt-in in the signed profile.
+    fn start_birthday(&mut self, env: &mut dyn OverlayEnv, nonce: u64) {
+        let Some(session) = self.punch_sessions.get(&nonce) else {
+            return;
+        };
+        if session.birthday_started
+            || !self.birthday_punch
+            || !session.local_profile.birthday_punch
+            || !matches!(session.local_profile.allocator, Some(AllocatorProfile::Random))
+        {
+            return;
+        }
+        let Some(target) = session.candidates.first().copied() else {
+            return;
+        };
+        let via = session.via;
+        let peer = session.peer;
+        let family = IpFamily::of(&target);
+        let mut sockets = Vec::with_capacity(BIRTHDAY_SOCKET_CAP);
+        for _ in 0..BIRTHDAY_SOCKET_CAP {
+            let Ok(socket) = env.bind(None, family) else {
+                break;
+            };
+            self.transport.register_punch_socket(socket);
+            let probe = PunchProbe::sign(nonce, self.keypair.as_ref());
+            if self
+                .transport
+                .send_punch_probe_from(env, socket, target, probe)
+                .is_ok()
+            {
+                sockets.push(socket);
+            } else {
+                self.transport.unregister_punch_socket(socket);
+                env.close(socket);
+            }
+        }
+        if sockets.is_empty() {
+            return;
+        }
+        if let Some(session) = self.punch_sessions.get_mut(&nonce) {
+            session.birthday_started = true;
+            session.birthday_sockets = sockets;
+            session.deadline = env.now() + BIRTHDAY_DURATION;
+        }
+        // The target only starts its 1,024-probe spray after these mappings
+        // exist. It is relayed like all P5 control traffic and is accepted
+        // only by the negotiated session at the other end.
+        if let Ok(raw) = (OverlayFrame::PunchBirthday {
+            nonce,
+            origin: self.local_pubkey,
+            target: peer,
+        })
+        .encode()
+        {
+            self.transport.queue_datagram_to_peer(env, &via, raw);
+        }
+    }
+
+    fn handle_punch_birthday(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        nonce: u64,
+        origin: Pubkey,
+        target: Pubkey,
+    ) {
+        let sender = self.transport.peer_identity(from);
+        if target != self.local_pubkey {
+            // A via forwards only an authenticated origin to a currently
+            // connected target; unlike ConnectResponse it needs no extra
+            // state because the target verifies its signed session profile.
+            if sender == Some(origin)
+                && self.transport.connection_addr(&target).is_some()
+                && self.gossip.get(&target, env.now()).is_some()
+            {
+                if let Ok(raw) = (OverlayFrame::PunchBirthday {
+                    nonce,
+                    origin,
+                    target,
+                })
+                .encode()
+                {
+                    self.transport.queue_datagram_to_peer(env, &target, raw);
+                }
+            } else {
+                self.refuse_punch("birthday ready has no authenticated via route");
+            }
+            return;
+        }
+        let Some(via) = sender else {
+            self.refuse_punch("birthday ready arrived unauthenticated");
+            return;
+        };
+        let Some(session) = self.punch_sessions.get_mut(&nonce) else {
+            self.refuse_punch("birthday ready has no session");
+            return;
+        };
+        if session.peer != origin
+            || session.via != via
+            || session.birthday_spray_sent
+            || !self.birthday_punch
+            || !session.remote_profile.birthday_punch
+            || !matches!(session.remote_profile.allocator, Some(AllocatorProfile::Random))
+        {
+            self.refuse_punch("birthday ready is not opt-in random session");
+            return;
+        }
+        let Some(ip) = session.candidates.first().map(SocketAddr::ip) else {
+            self.refuse_punch("birthday spray has no signed origin address");
+            return;
+        };
+        session.birthday_spray_sent = true;
+        session.deadline = env.now() + BIRTHDAY_DURATION;
+        let probe = PunchProbe::sign(nonce, self.keypair.as_ref());
+        for _ in 0..BIRTHDAY_SPRAY_CAP {
+            let port = BIRTHDAY_PORT_START
+                + (env.rng().next_u32() % u32::from(BIRTHDAY_PORT_WIDTH)) as u16;
+            let _ = self
+                .transport
+                .send_punch_probe(env, SocketAddr::new(ip, port), probe.clone());
+        }
+    }
+
+    /// Returns `true` when this raw probe belongs to a live helper socket and
+    /// was therefore consumed before ordinary peer-session prflx handling.
+    fn handle_punch_helper_probe(&mut self, env: &mut dyn OverlayEnv, event: &PunchProbeEvent) -> bool {
+        let Some(helper) = self.punch_helpers.get(&event.socket) else {
+            return false;
+        };
+        if !event.probe.verify()
+            || event.probe.origin != helper.origin
+            || event.probe.nonce != helper.nonce
+        {
+            return true;
+        }
+        let helper = PunchHelper {
+            origin: helper.origin,
+            target: helper.target,
+            nonce: helper.nonce,
+            socket: helper.socket,
+            kind: helper.kind,
+            deadline: helper.deadline,
+        };
+        match helper.kind {
+            PunchAssistKind::SamePortObservation => {
+                let frame = OverlayFrame::PunchObservation {
+                    nonce: helper.nonce,
+                    origin: helper.origin,
+                    target: helper.target,
+                    observed: event.from,
+                };
+                if let Ok(raw) = frame.encode() {
+                    self.transport.queue_datagram_to_peer(env, &helper.target, raw);
+                }
+            }
+            PunchAssistKind::SequentialBracket => {
+                // X1 is the source of the existing authenticated connection
+                // from A to the via; X2 is the helper probe source. The
+                // symmetric target mapping P lies between them for a quiet
+                // sequential allocator. Do not widen a noisy bracket.
+                if let Some(first) = self.transport.connection_addr(&helper.origin)
+                    && first.ip() == event.from.ip()
+                {
+                    let start = first.port().min(event.from.port());
+                    let end = first.port().max(event.from.port());
+                    if end.saturating_sub(start).saturating_add(1) <= MAX_BRACKET_WIDTH {
+                        let frame = OverlayFrame::PunchBracket {
+                            nonce: helper.nonce,
+                            origin: helper.origin,
+                            target: helper.target,
+                            ip: event.from.ip(),
+                            start,
+                            end,
+                        };
+                        if let Ok(raw) = frame.encode() {
+                            self.transport.queue_datagram_to_peer(env, &helper.target, raw);
+                        }
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn advance_punches(&mut self, env: &mut dyn OverlayEnv, now: Instant) {
@@ -1246,7 +1933,10 @@ impl<T: OverlayTransport> OverlayCore<T> {
             .map(|(&nonce, _)| nonce)
             .collect();
         for nonce in expired {
-            self.punch_sessions.remove(&nonce);
+            if let Some(session) = self.punch_sessions.remove(&nonce) {
+                self.cache_punch_failure(&session, now);
+                self.close_birthday_sockets(env, session.birthday_sockets, None);
+            }
         }
 
         let mut sends: Vec<(SocketAddr, PunchProbe)> = Vec::new();
@@ -1254,13 +1944,59 @@ impl<T: OverlayTransport> OverlayCore<T> {
             if session.awaiting_response || now < session.next_probe {
                 continue;
             }
+            let random_mapping = matches!(
+                session.local_profile.allocator,
+                Some(AllocatorProfile::Random)
+            ) || matches!(
+                session.remote_profile.allocator,
+                Some(AllocatorProfile::Random)
+            );
+            let has_public_side = matches!(session.local_profile.class, Some(NatClass::Public))
+                || matches!(session.remote_profile.class, Some(NatClass::Public));
+            if random_mapping
+                && !has_public_side
+                && !(self.birthday_punch
+                    && session.local_profile.birthday_punch
+                    && session.remote_profile.birthday_punch)
+            {
+                // Without a filtering classification we only take the
+                // ordinary random-EDM path when a public endpoint is in the
+                // exchange. Any restricted EIM peer needs the explicit
+                // birthday opt-in; otherwise this terminates cleanly and is
+                // cached instead of becoming a retry loop.
+                session.next_probe = session.deadline;
+                continue;
+            }
+            if session.probe_rounds >= MAX_PUNCH_PROBE_ROUNDS {
+                // Never leave an already-due periodic deadline behind: it
+                // would spin the simulator at TIMER_MIN_ADVANCE (§6.9).
+                session.next_probe = session.deadline;
+                continue;
+            }
+            session.probe_rounds += 1;
             session.next_probe = now + PUNCH_PROBE_INTERVAL;
             let probe = PunchProbe::sign(session.nonce, self.keypair.as_ref());
+            if let Some(predicted) = session.sequential_prediction {
+                // A sequential helper reports the last observed allocation;
+                // this is the one reciprocal filter opener that matters. Do
+                // not also fan over stale bootstrap hints here: every extra
+                // mapping allocation would move a symmetric NAT's cursor and
+                // invalidate the calibrated prediction. One packet is the
+                // bounded rung-2 attempt; prflx supplies any re-aim.
+                sends.push((predicted, probe));
+                session.next_probe = session.deadline;
+                continue;
+            }
             if let Some(addr) = session.freshest {
                 sends.push((addr, probe.clone()));
             }
             for &candidate in &session.candidates {
                 if Some(candidate) != session.freshest {
+                    sends.push((candidate, probe.clone()));
+                }
+            }
+            for &candidate in &session.bracket_candidates {
+                if Some(candidate) != session.freshest && !session.candidates.contains(&candidate) {
                     sends.push((candidate, probe.clone()));
                 }
             }
@@ -1273,6 +2009,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
     }
 
     fn handle_punch_probe(&mut self, env: &mut dyn OverlayEnv, event: PunchProbeEvent) {
+        if self.handle_punch_helper_probe(env, &event) {
+            return;
+        }
         if !event.probe.verify() {
             self.refuse_punch("invalid raw probe signature");
             return;
@@ -1288,24 +2027,41 @@ impl<T: OverlayTransport> OverlayCore<T> {
         let peer = session.peer;
         let deadline = session.deadline;
         let should_dial = self.local_pubkey < peer && !session.dial_started;
-        let payload = if should_dial {
+        let birthday_socket = session
+            .birthday_sockets
+            .contains(&event.socket)
+            .then_some(event.socket);
+        let payload = if should_dial && birthday_socket.is_none() {
             session.dial_started = true;
             session.payload.take()
+        } else if should_dial {
+            session.dial_started = true;
+            None
         } else {
             None
         };
-        // Reply immediately from our overlay socket. This opens both filters
-        // even if the lower-pubkey QUIC dial below races the response.
+        // Reply immediately. A birthday collision must reply from the very
+        // socket whose random mapping the peer just targeted; otherwise a
+        // port-restricted peer only sees our unrelated primary mapping and
+        // drops the crucial return probe.
         let reply = PunchProbe::sign(event.probe.nonce, self.keypair.as_ref());
-        let _ = self.transport.send_punch_probe(env, event.from, reply);
+        let _ = match birthday_socket {
+            Some(socket) => self
+                .transport
+                .send_punch_probe_from(env, socket, event.from, reply),
+            None => self.transport.send_punch_probe(env, event.from, reply),
+        };
         if !should_dial {
             return;
         }
-        let result = match payload {
-            Some(payload) => self
+        let result = match (birthday_socket, payload) {
+            (Some(socket), _) => self
+                .transport
+                .dial_expecting_from(env, socket, event.from, peer),
+            (None, Some(payload)) => self
                 .transport
                 .queue_datagram_expecting(env, event.from, peer, payload),
-            None => self.transport.dial_expecting(env, event.from, peer),
+            (None, None) => self.transport.dial_expecting(env, event.from, peer),
         };
         if result.is_ok() {
             self.confirming.entry(event.from).or_insert(ConfirmDial {
@@ -1323,16 +2079,65 @@ impl<T: OverlayTransport> OverlayCore<T> {
             .map(|(&nonce, _)| nonce)
             .collect();
         for nonce in complete {
-            if let Some(session) = self.punch_sessions.remove(&nonce)
-                && let Some(payload) = session.payload
-            {
-                self.transport.queue_datagram_to_peer(env, &peer, payload);
+            if let Some(session) = self.punch_sessions.remove(&nonce) {
+                if let Some(payload) = session.payload {
+                    self.transport.queue_datagram_to_peer(env, &peer, payload);
+                }
+                let keep = self.transport.connection_socket(&peer);
+                self.close_birthday_sockets(env, session.birthday_sockets, keep);
             }
         }
     }
 
+    fn close_birthday_sockets(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        sockets: Vec<SocketId>,
+        keep: Option<SocketId>,
+    ) {
+        for socket in sockets {
+            if Some(socket) == keep {
+                continue;
+            }
+            self.transport.unregister_punch_socket(socket);
+            env.close(socket);
+        }
+    }
+
+    fn cache_punch_failure(&mut self, session: &PunchSession, now: Instant) {
+        if session.awaiting_response {
+            // No peer profile means signaling itself failed; do not cache a
+            // transient via outage as a NAT verdict.
+            return;
+        }
+        self.last_punch_profiles.push(session.peer, session.remote_profile);
+        self.punch_outcomes.push(
+            PunchOutcomeKey {
+                peer: session.peer,
+                local_generation: session.local_profile.generation,
+                remote_generation: session.remote_profile.generation,
+            },
+            now + PUNCH_OUTCOME_TTL,
+        );
+    }
+
     fn expire_punch_forwards(&mut self, now: Instant) {
         self.punch_forwards.retain(|_, forward| now < forward.deadline);
+    }
+
+    fn expire_punch_helpers(&mut self, env: &mut dyn OverlayEnv, now: Instant) {
+        let expired: Vec<SocketId> = self
+            .punch_helpers
+            .iter()
+            .filter(|(_, helper)| now >= helper.deadline)
+            .map(|(&socket, _)| socket)
+            .collect();
+        for socket in expired {
+            if self.punch_helpers.remove(&socket).is_some() {
+                self.transport.unregister_punch_socket(socket);
+                env.close(socket);
+            }
+        }
     }
 
     fn is_quarantined(&self, addr: &SocketAddr) -> bool {
@@ -1946,5 +2751,34 @@ impl<T: OverlayTransport> OverlayCore<T> {
             log::debug!("overlay: core event queue full ({MAX_CORE_EVENTS}); dropping oldest");
         }
         self.events.push_back(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn punch_outcome_cache_is_keyed_by_both_nat_generations() {
+        let peer = Pubkey::new_unique();
+        let old = PunchOutcomeKey {
+            peer,
+            local_generation: Some("198.51.100.10".parse().unwrap()),
+            remote_generation: Some("198.51.100.11".parse().unwrap()),
+        };
+        let local_rebound = PunchOutcomeKey {
+            local_generation: Some("198.51.100.12".parse().unwrap()),
+            ..old
+        };
+        let remote_rebound = PunchOutcomeKey {
+            remote_generation: Some("198.51.100.13".parse().unwrap()),
+            ..old
+        };
+        let mut cache = LruBTreeMap::new(4);
+        cache.push(old, Instant::now() + PUNCH_OUTCOME_TTL);
+
+        assert!(cache.get_without_update(&old).is_some());
+        assert!(cache.get_without_update(&local_rebound).is_none());
+        assert!(cache.get_without_update(&remote_rebound).is_none());
     }
 }

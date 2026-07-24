@@ -25,6 +25,17 @@ pub enum OverlayMode {
     Source,
 }
 
+/// NAT-traversal knobs. Kept under `[overlay.nat]` so the expensive P5
+/// birthday behaviour is visibly separate from normal overlay operation.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OverlayNatConfig {
+    /// Enable the expensive §6.5.1 rung-3 birthday volley. Disabled by
+    /// default: one attempt briefly binds 256 sockets and can consume a
+    /// meaningful fraction of a CGN subscriber's port budget.
+    #[serde(default)]
+    pub birthday_punch: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OverlayConfig {
     #[serde(default)]
@@ -53,6 +64,8 @@ pub struct OverlayConfig {
     #[serde(default)]
     pub portmap_local_ip: Option<IpAddr>,
     #[serde(default)]
+    pub nat: OverlayNatConfig,
+    #[serde(default)]
     pub static_peers: Vec<SocketAddr>,
     #[serde(default = "default_fanout")]
     pub fanout: usize,
@@ -73,6 +86,7 @@ impl Default for OverlayConfig {
             advertised_addr_v6: None,
             gateway_addr: None,
             portmap_local_ip: None,
+            nat: OverlayNatConfig::default(),
             static_peers: Vec::new(),
             fanout: default_fanout(),
             repair_addr: None,

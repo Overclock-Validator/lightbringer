@@ -102,6 +102,8 @@ pub struct NodeOptions {
     /// host; the gateway programs the innermost NAT box (PCP/UPnP never
     /// traverses a CGN). `Some` also feeds `gateway_addr` to the node.
     pub gateway: Option<GatewayConfig>,
+    /// Opt in to P5's bounded random-symmetric birthday volley.
+    pub birthday_punch: bool,
 }
 
 impl Default for NodeOptions {
@@ -118,6 +120,7 @@ impl Default for NodeOptions {
             keep_alive_interval: Some(Duration::from_secs(10)),
             max_idle_timeout: Some(Duration::from_secs(30)),
             initial_mtu: Some(OVERLAY_INITIAL_MTU),
+            birthday_punch: false,
             udp_repair: false,
             zero_config: false,
             ipv6: true,
@@ -557,6 +560,9 @@ impl SimWorld {
             advertised_addr_v6,
             gateway_addr: gateway.as_ref().map(|gateway| gateway.udp_endpoint()),
             portmap_local_ip: None,
+            nat: super::config::OverlayNatConfig {
+                birthday_punch: options.birthday_punch,
+            },
             static_peers: options.static_peers.clone(),
             fanout: options.fanout,
             repair_addr: options
@@ -931,6 +937,18 @@ impl SimWorld {
         self.post_process(host.0);
     }
 
+    /// Explicit P5 targeted reach-upgrade trigger. It mirrors the production
+    /// `send_to_peer` path after a caller has selected a concrete Coordinated
+    /// identity; it never walks or proactively punches the gossip view.
+    pub fn request_direct_path(&mut self, host: HostId, peer: Pubkey) -> bool {
+        let mut started = false;
+        self.with_overlay_node(host.0, |node, env| {
+            started = node.core.request_direct_path(env, peer);
+        });
+        self.post_process(host.0);
+        started
+    }
+
     /// Seed a host's in-memory shred store (the serve-repair source).
     pub fn store_insert(&mut self, host: HostId, slot: u64, index: u32, shred: Vec<u8>) {
         if let HostKind::Overlay(node) = &mut self.hosts[host.0 as usize].kind {
@@ -998,6 +1016,15 @@ impl SimWorld {
     pub fn dropped_unreachable(&self, host: HostId) -> u64 {
         match &self.hosts[host.0 as usize].kind {
             HostKind::Overlay(node) => node.core.dropped_unreachable(),
+            _ => 0,
+        }
+    }
+
+    /// P5 targeted-ladder attempt counter, exposed for cache/laziness
+    /// oracles without peeking through the transport implementation.
+    pub fn punch_attempts(&self, host: HostId) -> u64 {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.punch_attempts(),
             _ => 0,
         }
     }

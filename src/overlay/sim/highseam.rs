@@ -332,6 +332,10 @@ impl OverlayTransport for MemTransport {
         self.established.get(pubkey).copied()
     }
 
+    fn connection_socket(&self, pubkey: &Pubkey) -> Option<SocketId> {
+        self.established.contains_key(pubkey).then_some(SocketId::PRIMARY)
+    }
+
     fn connected_peers(&self) -> Vec<Pubkey> {
         self.established.keys().copied().collect()
     }
@@ -482,6 +486,22 @@ impl OverlayTransport for MemTransport {
         Ok(())
     }
 
+    fn send_punch_probe_from(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        _socket: SocketId,
+        to: SocketAddr,
+        probe: PunchProbe,
+    ) -> Result<()> {
+        // The high seam intentionally owns no real helper sockets; route the
+        // protocol message through its ordinary in-memory lane instead.
+        self.send_punch_probe(env, to, probe)
+    }
+
+    fn register_punch_socket(&mut self, _socket: SocketId) {}
+
+    fn unregister_punch_socket(&mut self, _socket: SocketId) {}
+
     fn poll_punch_probe(&mut self) -> Option<PunchProbeEvent> {
         self.punch_probes.pop_front()
     }
@@ -489,6 +509,17 @@ impl OverlayTransport for MemTransport {
     fn dial_expecting(
         &mut self,
         _env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        _expected: Pubkey,
+    ) -> Result<()> {
+        self.dial_requests.push_back(to);
+        Ok(())
+    }
+
+    fn dial_expecting_from(
+        &mut self,
+        _env: &mut dyn OverlayEnv,
+        _socket: SocketId,
         to: SocketAddr,
         _expected: Pubkey,
     ) -> Result<()> {
@@ -558,6 +589,7 @@ pub struct HighSeamNodeOptions {
     pub direct: bool,
     pub fanout: usize,
     pub peer_ttl: Duration,
+    pub birthday_punch: bool,
 }
 
 impl Default for HighSeamNodeOptions {
@@ -568,6 +600,7 @@ impl Default for HighSeamNodeOptions {
             direct: true,
             fanout: 8,
             peer_ttl: Duration::from_secs(30),
+            birthday_punch: false,
         }
     }
 }
@@ -651,6 +684,9 @@ impl HighSeamNet {
             advertised_addr_v6: None,
             gateway_addr: None,
             portmap_local_ip: None,
+            nat: super::super::config::OverlayNatConfig {
+                birthday_punch: options.birthday_punch,
+            },
             static_peers: options.static_peers,
             fanout: options.fanout,
             repair_addr: None,

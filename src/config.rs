@@ -557,6 +557,21 @@ shred_version = 42
     }
 
     #[test]
+    fn overlay_nat_birthday_punch_is_explicit_and_defaults_off() {
+        let default_toml = format!(
+            "{REQUIRED}\n[overlay]\nenabled = true\nmode = \"source\"\nbind_addr = \"127.0.0.1:65410\"\n"
+        );
+        let default_cfg: Config = parse_toml(&default_toml).try_into().expect("validate");
+        assert!(!default_cfg.overlay.expect("overlay").nat.birthday_punch);
+
+        let opt_in_toml = format!(
+            "{REQUIRED}\n[overlay]\nenabled = true\nmode = \"source\"\nbind_addr = \"127.0.0.1:65410\"\n\n[overlay.nat]\nbirthday_punch = true\n"
+        );
+        let opt_in_cfg: Config = parse_toml(&opt_in_toml).try_into().expect("validate");
+        assert!(opt_in_cfg.overlay.expect("overlay").nat.birthday_punch);
+    }
+
+    #[test]
     fn overlay_sink_requires_shred_version() {
         let toml = r#"
 storage = "/tmp/shred-store"

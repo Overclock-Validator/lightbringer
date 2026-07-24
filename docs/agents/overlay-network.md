@@ -240,3 +240,46 @@ also present the same `identity.json`-derived cert, so inbound and outbound QUIC
 handshakes both authenticate an Ed25519 overlay identity. The recovered peer
 pubkey is currently logged on handshake and is available for future gossip-level
 identity binding.
+
+P5 hole punching (§6.5/§6.5.1) is a reach upgrade only: repair and normal
+connected-only dissemination retain their P2 semantics when it fails. Its
+trigger is deliberately narrow after the P3 proactive-meshing regression:
+`Coordinated` peers stay out of turbine/repair sampling, and a punch begins
+only when a caller explicitly targets one through `send_to_peer` (or the
+matching test API). A completed punched path is just an authenticated QUIC
+connection, so it automatically appears in `usable_peers`, turbine fan-out,
+and existing stream repair without a special route.
+
+`OverlayFrame` remains protocol v1 (the format is unfrozen) and adds signed
+`ConnectRequest`/`ConnectResponse` envelopes. A public `via` only forwards
+between already authenticated connections, records bounded response state,
+and rate-limits independently by initiator and target. The target verifies
+the original Ed25519 signature and requires the origin to be gossip-visible
+before it ever probes a candidate. Raw probes are signed, non-QUIC packets
+(`LBP` magic whose first byte clears QUIC's `0x40` fixed bit) demultiplexed in
+`OverlayQuicTransport` before quinn after the complete magic is checked (so a
+stateless-reset-looking datagram cannot be stolen by the probe path); a valid
+probe source is an authenticated peer-reflexive candidate. The lower pubkey
+is the sole QUIC dialer, while the higher accepts. Base probing is one
+bootstrap round plus one re-aim round, not a retry loop.
+
+The assisted ladder is all bounded and sans-IO. A port-dependent mapping uses
+a short-lived helper bind on the target's public port; its raw source is sent
+back to the target as a prflx observation. A sequential allocator brackets
+the shared-via observation and an isolated helper observation with hard
+`k <= 32` cap. Its final observed allocation yields an exact `X + stride`
+next-mapping filter opener; two sequential peers compose those reciprocal
+predictions, while an unrepresentable port wrap falls back to the capped
+bracket. Random allocator
+profiles skip ordinary retries unless the exchange includes a public side:
+they either fall to a 10-minute `(peer, local-generation, remote-generation)`
+outcome cache or, only when both endpoints set `overlay.nat.birthday_punch = true`,
+run the rung-3 256 helper-socket / 1,024 high-port-spray volley for at most 20
+seconds. The flag is off by default because the volley consumes real CGN port
+budget and about 100KB of traffic.
+
+The P5 low-seam tests are `sim/tests/punch_core.rs` and
+`sim/tests/punch_outcome.rs`; high-seam forwarding/refusal tests live in
+`sim/tests/punch_signaling.rs`. Registered determinism scenarios are
+`punch-reachability-matrix`, `punch-v6`, `prflx-retarget`, and
+`punch-lazy-no-regression`.

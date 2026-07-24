@@ -204,6 +204,10 @@ pub trait OverlayTransport {
     ) -> bool;
     /// Address of the established connection with `pubkey`, if any.
     fn connection_addr(&self, pubkey: &Pubkey) -> Option<SocketAddr>;
+    /// Egress socket backing an established connection, when it was created
+    /// by a P5 birthday helper. Ordinary paths return the primary/family
+    /// socket implicitly and therefore `None` here.
+    fn connection_socket(&self, pubkey: &Pubkey) -> Option<SocketId>;
     /// TLS-verified identities of all established connections.
     fn connected_peers(&self) -> Vec<Pubkey>;
     /// Every established connection with its verified identity — unlike
@@ -269,6 +273,20 @@ pub trait OverlayTransport {
         to: SocketAddr,
         probe: PunchProbe,
     ) -> Result<()>;
+    /// As above, but from a bounded helper/birthday socket supplied by the
+    /// core. The transport has no socket ownership; it merely keeps demux
+    /// state and preserves the chosen egress socket through the seam.
+    fn send_punch_probe_from(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
+        to: SocketAddr,
+        probe: PunchProbe,
+    ) -> Result<()>;
+    /// Register/unregister a non-primary socket on which raw punch probes may
+    /// arrive. QUIC packets on these sockets remain rejected.
+    fn register_punch_socket(&mut self, socket: SocketId);
+    fn unregister_punch_socket(&mut self, socket: SocketId);
     /// Pop a demultiplexed raw punch probe.
     fn poll_punch_probe(&mut self) -> Option<PunchProbeEvent>;
     /// Start an identity-gated QUIC connection without an application
@@ -277,6 +295,16 @@ pub trait OverlayTransport {
     fn dial_expecting(
         &mut self,
         env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        expected: Pubkey,
+    ) -> Result<()>;
+    /// Identity-gated QUIC dial preserving the mapping opened by `socket`.
+    /// Used only after a bounded birthday raw probe has authenticated a
+    /// peer-reflexive path.
+    fn dial_expecting_from(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
         to: SocketAddr,
         expected: Pubkey,
     ) -> Result<()>;
@@ -334,6 +362,10 @@ struct QuicConnection {
     conn: Connection,
     established: bool,
     peer_pubkey: Option<Pubkey>,
+    /// `Some` only for a P5 helper/birthday socket. The socket must remain
+    /// alive for the connection's lifetime so QUIC traffic keeps the punched
+    /// NAT mapping rather than rebinding onto the primary socket.
+    socket: Option<SocketId>,
     pending: VecDeque<Vec<u8>>,
     /// §6.2.3 F8 identity gate: when set, `pending` is released only if the
     /// verified peer identity matches; a mismatch drops it (a lying advert).
@@ -405,6 +437,15 @@ impl OverlayQuicTransport {
     }
 
     fn ensure_connection(&mut self, now: Instant, peer: SocketAddr) -> Result<()> {
+        self.ensure_connection_from(now, peer, None)
+    }
+
+    fn ensure_connection_from(
+        &mut self,
+        now: Instant,
+        peer: SocketAddr,
+        socket: Option<SocketId>,
+    ) -> Result<()> {
         if self.connections.contains_key(&peer) {
             return Ok(());
         }
@@ -429,6 +470,7 @@ impl OverlayQuicTransport {
                 conn,
                 established: false,
                 peer_pubkey: None,
+                socket,
                 pending: VecDeque::new(),
                 expect_pubkey: None,
                 streams: BTreeMap::new(),
@@ -440,6 +482,7 @@ impl OverlayQuicTransport {
     fn handle_datagram_event(
         &mut self,
         env: &mut dyn OverlayEnv,
+        socket: SocketId,
         event: Option<DatagramEvent>,
     ) {
         match event {
@@ -456,7 +499,11 @@ impl OverlayQuicTransport {
                     );
                     let transmit = self.endpoint.refuse(incoming, &mut self.endpoint_buf);
                     let bytes = std::mem::take(&mut self.endpoint_buf);
-                    send_transmit(env, self.egress(transmit.destination), &transmit, &bytes);
+                    // An inbound P5 QUIC handshake can arrive on a
+                    // short-lived birthday/helper socket. Reply on that
+                    // exact socket so its NAT mapping and firewall state
+                    // remain the path the peer just opened.
+                    send_transmit(env, socket, &transmit, &bytes);
                     self.endpoint_buf = bytes;
                     return;
                 }
@@ -466,6 +513,10 @@ impl OverlayQuicTransport {
                 {
                     Ok((handle, conn)) => {
                         self.handles.insert(handle, peer);
+                        // Preserve P0-P4's ordinary socket selection. Only
+                        // a P5 birthday/helper ingress that differs from
+                        // the normal family egress pins a connection.
+                        let pinned_socket = (socket != self.egress(peer)).then_some(socket);
                         self.connections.insert(
                             peer,
                             QuicConnection {
@@ -473,6 +524,7 @@ impl OverlayQuicTransport {
                                 conn,
                                 established: false,
                                 peer_pubkey: None,
+                                socket: pinned_socket,
                                 pending: VecDeque::new(),
                                 expect_pubkey: None,
                                 streams: BTreeMap::new(),
@@ -482,12 +534,7 @@ impl OverlayQuicTransport {
                     Err(error) => {
                         if let Some(transmit) = error.response {
                             let bytes = std::mem::take(&mut self.endpoint_buf);
-                            send_transmit(
-                                env,
-                                self.egress(transmit.destination),
-                                &transmit,
-                                &bytes[..transmit.size],
-                            );
+                            send_transmit(env, socket, &transmit, &bytes[..transmit.size]);
                             self.endpoint_buf = bytes;
                         }
                         log::warn!(
@@ -946,7 +993,7 @@ impl OverlayQuicTransport {
                 ) {
                     let bytes = self.transmit_buf[..transmit.size].to_vec();
                     self.transmit_buf.clear();
-                    transmits.push((transmit, bytes));
+                    transmits.push((connection.socket, transmit, bytes));
                 }
             }
 
@@ -954,8 +1001,13 @@ impl OverlayQuicTransport {
                 return;
             }
 
-            for (transmit, bytes) in transmits {
-                send_transmit(env, self.egress(transmit.destination), &transmit, &bytes);
+            for (socket, transmit, bytes) in transmits {
+                send_transmit(
+                    env,
+                    socket.unwrap_or_else(|| self.egress(transmit.destination)),
+                    &transmit,
+                    &bytes,
+                );
             }
         }
     }
@@ -1033,7 +1085,7 @@ impl OverlayTransport for OverlayQuicTransport {
             BytesMut::from(datagram),
             &mut self.endpoint_buf,
         );
-        self.handle_datagram_event(env, event);
+        self.handle_datagram_event(env, socket, event);
         self.drive(env);
         self.drive_probes(env);
     }
@@ -1092,6 +1144,11 @@ impl OverlayTransport for OverlayQuicTransport {
 
     fn connection_addr(&self, pubkey: &Pubkey) -> Option<SocketAddr> {
         self.by_pubkey.get(pubkey).copied()
+    }
+
+    fn connection_socket(&self, pubkey: &Pubkey) -> Option<SocketId> {
+        let addr = self.by_pubkey.get(pubkey)?;
+        self.connections.get(addr)?.socket
     }
 
     fn connected_peers(&self) -> Vec<Pubkey> {
@@ -1259,6 +1316,26 @@ impl OverlayTransport for OverlayQuicTransport {
         Ok(())
     }
 
+    fn send_punch_probe_from(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
+        to: SocketAddr,
+        probe: PunchProbe,
+    ) -> Result<()> {
+        let raw = probe.encode()?;
+        env.send(socket, to, &raw);
+        Ok(())
+    }
+
+    fn register_punch_socket(&mut self, socket: SocketId) {
+        self.probe_sockets.insert(socket);
+    }
+
+    fn unregister_punch_socket(&mut self, socket: SocketId) {
+        self.probe_sockets.remove(&socket);
+    }
+
     fn poll_punch_probe(&mut self) -> Option<PunchProbeEvent> {
         self.punch_probes.pop_front()
     }
@@ -1270,6 +1347,21 @@ impl OverlayTransport for OverlayQuicTransport {
         expected: Pubkey,
     ) -> Result<()> {
         self.ensure_connection(env.now(), to)?;
+        if let Some(connection) = self.connections.get_mut(&to) {
+            connection.expect_pubkey.get_or_insert(expected);
+        }
+        self.drive(env);
+        Ok(())
+    }
+
+    fn dial_expecting_from(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
+        to: SocketAddr,
+        expected: Pubkey,
+    ) -> Result<()> {
+        self.ensure_connection_from(env.now(), to, Some(socket))?;
         if let Some(connection) = self.connections.get_mut(&to) {
             connection.expect_pubkey.get_or_insert(expected);
         }

@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 
 use super::{
     gossip::SignedPeerAdvert,
@@ -27,6 +28,19 @@ const FRAME_DIALBACK_REQUEST: u8 = 3;
 const FRAME_DIALBACK_RESULT: u8 = 4;
 const FRAME_CONNECT_REQUEST: u8 = 5;
 const FRAME_CONNECT_RESPONSE: u8 = 6;
+const FRAME_PUNCH_ASSIST: u8 = 7;
+const FRAME_PUNCH_OBSERVATION: u8 = 8;
+const FRAME_PUNCH_BRACKET: u8 = 9;
+const FRAME_PUNCH_BIRTHDAY: u8 = 10;
+
+/// Which bounded §6.5.1 helper operation the via allocated. The plan travels
+/// on an authenticated connection from the via, after it has already checked
+/// the signed ConnectRequest/Response pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PunchAssistKind {
+    SamePortObservation,
+    SequentialBracket,
+}
 
 #[derive(Clone, Debug)]
 pub enum OverlayFrame {
@@ -55,6 +69,41 @@ pub enum OverlayFrame {
     ConnectRequest { request: ConnectRequest },
     /// P5 §6.5: signed target response routed back through the same relay.
     ConnectResponse { response: ConnectResponse },
+    /// Via → initiator: probe the via's short-lived helper socket at `port`.
+    PunchAssist {
+        nonce: u64,
+        origin: solana_sdk::pubkey::Pubkey,
+        target: solana_sdk::pubkey::Pubkey,
+        port: u16,
+        kind: PunchAssistKind,
+    },
+    /// Via → target: this authenticated source was observed at a helper
+    /// socket after the initiator signed a raw probe.
+    PunchObservation {
+        nonce: u64,
+        origin: solana_sdk::pubkey::Pubkey,
+        target: solana_sdk::pubkey::Pubkey,
+        observed: SocketAddr,
+    },
+    /// Via → target: bounded sequential-allocation bracket for B's filter
+    /// opener. `start..=end` is capped at 32 ports by the sender and checked
+    /// again by the receiver.
+    PunchBracket {
+        nonce: u64,
+        origin: solana_sdk::pubkey::Pubkey,
+        target: solana_sdk::pubkey::Pubkey,
+        ip: std::net::IpAddr,
+        start: u16,
+        end: u16,
+    },
+    /// Initiator → via → target: the opt-in hard side has opened its bounded
+    /// birthday sockets, so the target may spend its one capped high-port
+    /// spray now (rather than racing it before mappings exist).
+    PunchBirthday {
+        nonce: u64,
+        origin: solana_sdk::pubkey::Pubkey,
+        target: solana_sdk::pubkey::Pubkey,
+    },
 }
 
 impl OverlayFrame {
@@ -84,6 +133,22 @@ impl OverlayFrame {
 
     pub fn connect_response(response: ConnectResponse) -> Self {
         Self::ConnectResponse { response }
+    }
+
+    pub fn punch_assist(
+        nonce: u64,
+        origin: solana_sdk::pubkey::Pubkey,
+        target: solana_sdk::pubkey::Pubkey,
+        port: u16,
+        kind: PunchAssistKind,
+    ) -> Self {
+        Self::PunchAssist {
+            nonce,
+            origin,
+            target,
+            port,
+            kind,
+        }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -125,6 +190,48 @@ impl OverlayFrame {
                 bincode::serialize_into(&mut out, response)?;
                 Ok(out)
             }
+            Self::PunchAssist {
+                nonce,
+                origin,
+                target,
+                port,
+                kind,
+            } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_PUNCH_ASSIST];
+                bincode::serialize_into(&mut out, &(*nonce, *origin, *target, *port, *kind))?;
+                Ok(out)
+            }
+            Self::PunchObservation {
+                nonce,
+                origin,
+                target,
+                observed,
+            } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_PUNCH_OBSERVATION];
+                bincode::serialize_into(&mut out, &(*nonce, *origin, *target, *observed))?;
+                Ok(out)
+            }
+            Self::PunchBracket {
+                nonce,
+                origin,
+                target,
+                ip,
+                start,
+                end,
+            } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_PUNCH_BRACKET];
+                bincode::serialize_into(&mut out, &(*nonce, *origin, *target, *ip, *start, *end))?;
+                Ok(out)
+            }
+            Self::PunchBirthday {
+                nonce,
+                origin,
+                target,
+            } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_PUNCH_BIRTHDAY];
+                bincode::serialize_into(&mut out, &(*nonce, *origin, *target))?;
+                Ok(out)
+            }
         }
     }
 
@@ -159,6 +266,44 @@ impl OverlayFrame {
             FRAME_CONNECT_RESPONSE => Ok(Self::ConnectResponse {
                 response: bincode::deserialize(body)?,
             }),
+            FRAME_PUNCH_ASSIST => {
+                let (nonce, origin, target, port, kind) = bincode::deserialize(body)?;
+                Ok(Self::PunchAssist {
+                    nonce,
+                    origin,
+                    target,
+                    port,
+                    kind,
+                })
+            }
+            FRAME_PUNCH_OBSERVATION => {
+                let (nonce, origin, target, observed) = bincode::deserialize(body)?;
+                Ok(Self::PunchObservation {
+                    nonce,
+                    origin,
+                    target,
+                    observed,
+                })
+            }
+            FRAME_PUNCH_BRACKET => {
+                let (nonce, origin, target, ip, start, end) = bincode::deserialize(body)?;
+                Ok(Self::PunchBracket {
+                    nonce,
+                    origin,
+                    target,
+                    ip,
+                    start,
+                    end,
+                })
+            }
+            FRAME_PUNCH_BIRTHDAY => {
+                let (nonce, origin, target) = bincode::deserialize(body)?;
+                Ok(Self::PunchBirthday {
+                    nonce,
+                    origin,
+                    target,
+                })
+            }
             other => Err(anyhow!("unknown overlay frame type {other}")),
         }
     }
@@ -167,7 +312,7 @@ impl OverlayFrame {
 #[cfg(test)]
 mod tests {
     use arrayvec::ArrayVec;
-    use solana_sdk::{signature::Keypair, signer::Signer};
+    use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer};
 
     use super::*;
     use crate::overlay::gossip::{PeerAdvert, Reachability, RepairEndpoint};
@@ -241,6 +386,46 @@ mod tests {
                 }
                 other => panic!("decoded wrong frame: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn p5_assistance_frames_roundtrip_inside_unfrozen_v1() {
+        let origin = Pubkey::new_unique();
+        let target = Pubkey::new_unique();
+        let frames = [
+            OverlayFrame::PunchAssist {
+                nonce: 9,
+                origin,
+                target,
+                port: 51_000,
+                kind: PunchAssistKind::SamePortObservation,
+            },
+            OverlayFrame::PunchObservation {
+                nonce: 9,
+                origin,
+                target,
+                observed: "198.51.100.8:51001".parse().unwrap(),
+            },
+            OverlayFrame::PunchBracket {
+                nonce: 9,
+                origin,
+                target,
+                ip: "198.51.100.8".parse().unwrap(),
+                start: 51_000,
+                end: 51_031,
+            },
+            OverlayFrame::PunchBirthday {
+                nonce: 9,
+                origin,
+                target,
+            },
+        ];
+        for frame in frames {
+            let raw = frame.encode().unwrap();
+            assert_eq!(raw[0], OVERLAY_PROTOCOL_VERSION);
+            assert!(raw.len() < 160, "P5 control frame unexpectedly large");
+            assert!(OverlayFrame::decode(&raw).is_ok());
         }
     }
 

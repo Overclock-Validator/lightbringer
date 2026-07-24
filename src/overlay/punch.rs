@@ -31,6 +31,9 @@ pub const PUNCH_PROBE_VERSION: u8 = 1;
 pub struct NatProfile {
     pub class: Option<NatClass>,
     pub allocator: Option<AllocatorProfile>,
+    /// Explicitly opt-in capability for the bounded birthday volley. The
+    /// peer must see this signed bit before it emits a high-port spray.
+    pub birthday_punch: bool,
     /// Current observed external IP. A change is a new NAT generation and
     /// invalidates the peer-pair outcome cache (§6.5.1 rung 4).
     pub generation: Option<std::net::IpAddr>,
@@ -261,6 +264,7 @@ mod tests {
             NatProfile {
                 class: Some(NatClass::PortDependent),
                 allocator: Some(AllocatorProfile::Sequential { stride: 1 }),
+                birthday_punch: false,
                 generation: Some("198.51.100.8".parse().unwrap()),
             },
             &origin,
