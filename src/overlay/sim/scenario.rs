@@ -12,6 +12,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use super::{
     HostId, NodeOptions, SimRepairEvent, SimWorld, crypto,
+    gateway::GatewayConfig,
     nat::{AllocatorProfile, NatClass, NatConfig, TaggedObservation, classify_observations},
     net::LinkParams,
 };
@@ -34,6 +35,8 @@ pub const SCENARIOS: &[&str] = &[
     "repair-nat-matrix",
     "repair-liveness",
     "repair-performance",
+    "portmap-matrix",
+    "portmap-lease",
 ];
 
 #[derive(Debug)]
@@ -60,6 +63,8 @@ pub fn run(name: &str, seed: u64, verbose: bool) -> Option<ScenarioOutcome> {
         "repair-nat-matrix" => Some(repair_nat_matrix(seed, verbose)),
         "repair-liveness" => Some(repair_liveness(seed, verbose)),
         "repair-performance" => Some(repair_performance(seed, verbose)),
+        "portmap-matrix" => Some(portmap_matrix(seed, verbose)),
+        "portmap-lease" => Some(portmap_lease(seed, verbose)),
         _ => None,
     }
 }
@@ -1128,5 +1133,224 @@ pub fn repair_performance(seed: u64, verbose: bool) -> ScenarioOutcome {
         summary: format!(
             "repaired {repaired}/{COUNT}; latency ms p50={p50} p95={p95} max={max}; control-plane bytes/shred={bytes_per_shred}"
         ),
+    }
+}
+
+/// What a P4 port-map row must produce at a witness (nat-traversal.md §6.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortMapExpect {
+    /// The gateway grant was dial-back-confirmed: the witness observes
+    /// `Direct` containing the mapped port at the subject's external IP.
+    DirectMapped,
+    /// No usable grant (absent/denied/fake gateway): exactly the P3
+    /// behavior — Coordinated, never a Direct advert.
+    Coordinated,
+}
+
+const PORTMAP_ROWS: &[(&str, fn() -> NatConfig, fn() -> GatewayConfig, PortMapExpect)] = &[
+    // A gateway grant upgrades even NAT classes that P3 correctly left
+    // Coordinated (restricted filtering / symmetric mapping) into Direct.
+    (
+        "pcp-grant-restricted",
+        NatConfig::port_restricted_cone,
+        GatewayConfig::granting,
+        PortMapExpect::DirectMapped,
+    ),
+    (
+        "pcp-grant-symmetric",
+        NatConfig::symmetric_random,
+        GatewayConfig::granting,
+        PortMapExpect::DirectMapped,
+    ),
+    // The ladder falls through silent tiers: NAT-PMP-only and UPnP-only
+    // gateways still end Direct.
+    (
+        "natpmp-fallback",
+        NatConfig::symmetric_random,
+        GatewayConfig::natpmp_only,
+        PortMapExpect::DirectMapped,
+    ),
+    (
+        "upnp-fallback",
+        NatConfig::symmetric_random,
+        GatewayConfig::upnp_only,
+        PortMapExpect::DirectMapped,
+    ),
+    // No/refusing/lying/broken gateways leave the node exactly where P3
+    // left it. grant-fake is the §6.3 caution: the gateway says yes and
+    // installs nothing, so the fresh-source probe must refute the grant.
+    (
+        "absent",
+        NatConfig::symmetric_random,
+        GatewayConfig::absent,
+        PortMapExpect::Coordinated,
+    ),
+    (
+        "deny",
+        NatConfig::symmetric_random,
+        GatewayConfig::denying,
+        PortMapExpect::Coordinated,
+    ),
+    (
+        "grant-fake",
+        NatConfig::symmetric_random,
+        GatewayConfig::grant_fake,
+        PortMapExpect::Coordinated,
+    ),
+    (
+        "malformed",
+        NatConfig::symmetric_random,
+        GatewayConfig::malformed,
+        PortMapExpect::Coordinated,
+    ),
+];
+
+/// P4 deliverable (a) — the port-map matrix (nat-traversal.md §6.3, §10 P4):
+/// a zero-config NATed subject with a gateway walks PCP→NAT-PMP→UPnP,
+/// dial-back-confirms any grant through a fresh-source probe, and only then
+/// advertises the mapped address as `Direct`. Absent/denying/lying/garbage
+/// gateways leave the node `Coordinated` — a grant alone is never trusted.
+pub fn portmap_matrix(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+
+    let mut subjects = Vec::new();
+    for (name, nat, gateway, expect) in PORTMAP_ROWS {
+        let observers = spawn_observers(&mut world, &OBSERVER_PORTS);
+        let witness = observers[0];
+        let subject = world.add_node(NodeOptions {
+            nat: vec![nat()],
+            gateway: Some(gateway()),
+            static_peers: observer_addrs(&world, &observers),
+            bind_port: SUBJECT_BIND_PORT,
+            zero_config: true,
+            ..NodeOptions::default()
+        });
+        subjects.push((*name, subject, witness, *expect));
+    }
+    // Ladder (up to ~12s for the UPnP-only walk) + observations + dial-back
+    // confirmations on advert cycles.
+    world.run_for(Duration::from_secs(45));
+
+    let mut failures = Vec::new();
+    for (name, subject, witness, expect) in subjects {
+        let subject_pk = world.overlay_pubkey(subject);
+        let external_ip = world.external_ip(subject, 0);
+        let advert = world.peer_advert(witness, &subject_pk);
+        match expect {
+            PortMapExpect::DirectMapped => match advert {
+                Some(advert) => {
+                    let mapped: std::net::SocketAddr =
+                        std::net::SocketAddr::new(external_ip, SUBJECT_BIND_PORT);
+                    if !advert.direct_addrs().contains(&mapped) {
+                        failures.push(format!(
+                            "{name}: want Direct [{mapped}], observed {:?}",
+                            advert.reachability
+                        ));
+                    }
+                    // The advert must be backed by a live gateway lease.
+                    if !world.static_map_live(subject, 0, SUBJECT_BIND_PORT) {
+                        failures.push(format!("{name}: Direct advert without a live lease"));
+                    }
+                }
+                None => failures.push(format!("{name}: witness never learned the advert")),
+            },
+            PortMapExpect::Coordinated => {
+                if let Some(advert) = advert
+                    && !advert.direct_addrs().is_empty()
+                {
+                    failures.push(format!(
+                        "{name}: misadvertised Direct {:?}",
+                        advert.direct_addrs()
+                    ));
+                }
+                if world.confirmed_portmap(subject).is_some() {
+                    failures.push(format!("{name}: confirmed an unusable grant"));
+                }
+            }
+        }
+    }
+    ScenarioOutcome {
+        name: "portmap-matrix",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            format!("{} gateway rows advertised as predicted", PORTMAP_ROWS.len())
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+/// P4 deliverable (b) — re-lease at half-life (nat-traversal.md §6.3): with
+/// a short gateway lease, the client renews before expiry, the gateway's
+/// lease-install counter keeps climbing, and the witness's view stays
+/// `Direct` across several lease lifetimes; the lease is still live at the
+/// end (a mapping that would expire got renewed).
+pub fn portmap_lease(seed: u64, verbose: bool) -> ScenarioOutcome {
+    const LEASE: Duration = Duration::from_secs(30);
+
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+    let observers = spawn_observers(&mut world, &OBSERVER_PORTS);
+    let witness = observers[0];
+    let subject = world.add_node(NodeOptions {
+        nat: vec![NatConfig::symmetric_random()],
+        gateway: Some(GatewayConfig::granting().lease(LEASE)),
+        static_peers: observer_addrs(&world, &observers),
+        bind_port: SUBJECT_BIND_PORT,
+        zero_config: true,
+        ..NodeOptions::default()
+    });
+    let subject_pk = world.overlay_pubkey(subject);
+
+    let mut failures = Vec::new();
+    world.run_for(Duration::from_secs(30));
+    if !world.static_map_live(subject, 0, SUBJECT_BIND_PORT) {
+        failures.push("no live lease after startup".to_string());
+    }
+
+    // Direct must hold across four lease lifetimes — impossible without
+    // half-life renewals.
+    let mut direct_checkpoints = 0;
+    for _ in 0..6 {
+        world.run_for(Duration::from_secs(20));
+        if let Some(advert) = world.peer_advert(witness, &subject_pk)
+            && !advert.direct_addrs().is_empty()
+        {
+            direct_checkpoints += 1;
+        }
+    }
+    if direct_checkpoints < 5 {
+        failures.push(format!(
+            "witness saw Direct at only {direct_checkpoints}/6 checkpoints"
+        ));
+    }
+    if !world.static_map_live(subject, 0, SUBJECT_BIND_PORT) {
+        failures.push("lease not live at the end (renewal stopped)".to_string());
+    }
+    let installs = world.nat_stats(subject)[0].static_installs;
+    // 150s across a 30s lease with 15s half-life renewals ⇒ many installs.
+    if installs < 5 {
+        failures.push(format!("only {installs} lease installs; renewals missing"));
+    }
+
+    ScenarioOutcome {
+        name: "portmap-lease",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            format!("lease renewed through 150s of 30s leases ({installs} installs)")
+        } else {
+            failures.join("; ")
+        },
     }
 }

@@ -25,7 +25,7 @@ use crate::overlay::sim::{HostId, NodeOptions, SimWorld, nat::NatConfig, net::Li
 use crate::overlay::transport::OverlayTransport;
 
 fn dialback_request_frame(nonce: u64) -> Vec<u8> {
-    OverlayFrame::dialback_request(nonce)
+    OverlayFrame::dialback_request(nonce, None)
         .encode()
         .expect("dial-back request encodes")
 }

@@ -8,7 +8,13 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use glommio::{Task, net::UdpSocket, spawn_local, timer::timeout};
+use futures::{AsyncReadExt, AsyncWriteExt};
+use glommio::{
+    Task,
+    net::{TcpStream, UdpSocket},
+    spawn_local,
+    timer::timeout,
+};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use solana_sdk::signature::Keypair;
 
@@ -19,7 +25,7 @@ use crate::{
 
 use super::{
     OverlayConfig, OverlayIdentity, OverlayMode,
-    env::{IpFamily, OverlayEnv, SocketId, TcpId},
+    env::{IpFamily, OverlayEnv, SocketId, TcpEvent, TcpId},
     repair::{OverlayRepairCommand, RepairRoute, RepairStore, SharedRepairView},
     service::{CoreEvent, OverlayCore},
     transport::{OverlayQuicTransport, OverlayStreamId, TransportOptions},
@@ -48,7 +54,6 @@ const MAX_TCP_CONNS: usize = 8;
 /// Env-side state of one production TCP stream (§6.3 UPnP). The driver
 /// spawns a task owning the `glommio::net::TcpStream`; this shared cell
 /// carries the core's queued writes and close request to it.
-#[allow(dead_code)] // driver task wiring lands with the port-map client
 struct TcpConnState {
     to: SocketAddr,
     out: VecDeque<Vec<u8>>,
@@ -194,6 +199,125 @@ impl OverlayEnv for GlommioEnv {
 /// driver loop into the core.
 type HelperInbound = Rc<RefCell<VecDeque<(SocketId, SocketAddr, Vec<u8>)>>>;
 
+/// TCP events produced by per-conn tasks (§6.3 UPnP), drained into the core.
+type TcpInbound = Rc<RefCell<VecDeque<TcpEvent>>>;
+
+/// Default gateway of the host, from the kernel routing table (Linux).
+/// Best-effort: `None` simply leaves the §6.3 port-map ladder disabled.
+fn discover_default_gateway() -> Option<Ipv4Addr> {
+    let routes = std::fs::read_to_string("/proc/net/route").ok()?;
+    for line in routes.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // Destination 00000000 = the default route; gateway is
+        // little-endian hex.
+        if fields.len() >= 3 && fields[1] == "00000000" {
+            let gateway = u32::from_str_radix(fields[2], 16).ok()?;
+            let ip = Ipv4Addr::from(gateway.to_le_bytes());
+            if !ip.is_unspecified() {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
+/// The local IP the OS would source traffic toward `gateway` from — what
+/// PCP/UPnP must present when `bind_addr` is unspecified. A connected UDP
+/// socket never touches the network.
+fn local_ip_toward(gateway: SocketAddr) -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect(gateway).ok()?;
+    Some(socket.local_addr().ok()?.ip())
+}
+
+/// Resolve the §6.3 gateway knobs before core construction: explicit config
+/// wins, else the default route; the LAN IP presented to the gateway falls
+/// back from `bind_addr` to a route lookup.
+fn resolve_portmap_config(config: &mut OverlayConfig) {
+    if config.gateway_addr.is_none() {
+        config.gateway_addr = discover_default_gateway()
+            .map(|ip| SocketAddr::new(std::net::IpAddr::V4(ip), 5351));
+        if let Some(gateway) = config.gateway_addr {
+            log::info!("overlay: discovered default gateway {gateway} for port mapping");
+        }
+    }
+    if let Some(gateway) = config.gateway_addr
+        && config.portmap_local_ip.is_none()
+        && config.bind_addr.ip().is_unspecified()
+    {
+        config.portmap_local_ip = local_ip_toward(gateway);
+    }
+}
+
+/// Spawn a task per TCP conn the core opened (§6.3 UPnP): connect, flush the
+/// core's queued writes, and feed reads back as events. Tasks self-terminate
+/// on close/EOF; finished conns are reaped by the env on the next connect.
+fn reconcile_tcp_tasks(
+    env: &GlommioEnv,
+    tasks: &mut HashMap<u64, Task<()>>,
+    inbound: &TcpInbound,
+) {
+    tasks.retain(|id, _| env.tcp.contains_key(&TcpId(*id)));
+    for (&id, state) in env.tcp.iter() {
+        if state.borrow().spawned {
+            continue;
+        }
+        state.borrow_mut().spawned = true;
+        let state = state.clone();
+        let inbound = inbound.clone();
+        let task = spawn_local(async move {
+            let to = state.borrow().to;
+            let connect = timeout(Duration::from_secs(5), TcpStream::connect(to)).await;
+            let mut stream = match connect {
+                Ok(stream) => stream,
+                Err(e) => {
+                    log::debug!("overlay: tcp connect to {to} failed: {e}");
+                    state.borrow_mut().closed = true;
+                    inbound.borrow_mut().push_back(TcpEvent::Closed(id));
+                    return;
+                }
+            };
+            inbound.borrow_mut().push_back(TcpEvent::Connected(id));
+            let mut buf = vec![0u8; 16_384];
+            loop {
+                let pending: Vec<Vec<u8>> = state.borrow_mut().out.drain(..).collect();
+                for chunk in pending {
+                    if stream.write_all(&chunk).await.is_err() {
+                        state.borrow_mut().closed = true;
+                        inbound.borrow_mut().push_back(TcpEvent::Closed(id));
+                        return;
+                    }
+                }
+                if state.borrow().closed {
+                    return;
+                }
+                match timeout(Duration::from_millis(20), async {
+                    stream
+                        .read(&mut buf)
+                        .await
+                        .map_err(glommio::GlommioError::from)
+                })
+                .await
+                {
+                    Ok(0) => {
+                        state.borrow_mut().closed = true;
+                        inbound.borrow_mut().push_back(TcpEvent::Closed(id));
+                        return;
+                    }
+                    Ok(read) => {
+                        inbound
+                            .borrow_mut()
+                            .push_back(TcpEvent::Data(id, buf[..read].to_vec()));
+                    }
+                    // Receive window elapsed; flush writes and poll again.
+                    Err(_) => {}
+                }
+            }
+        });
+        tasks.insert(id.0, task);
+    }
+}
+
 /// Spawn a forwarder task for every open helper socket (index ≥ 1) that lacks
 /// one, and cancel forwarders whose socket the core has closed. Helper sockets
 /// are short-lived (a dial-back probe), so this set is normally empty.
@@ -251,6 +375,8 @@ async fn run_driver(
     repair_store: impl RepairStore,
     repair_requester: Option<OverlayRepairRequester>,
 ) -> Result<()> {
+    let mut config = config;
+    resolve_portmap_config(&mut config);
     let (mut env, socket_v6) = GlommioEnv::bind_primary(config.bind_addr, config.bind_addr_v6)?;
     let transport = OverlayQuicTransport::new(
         SocketId::PRIMARY,
@@ -268,10 +394,16 @@ async fn run_driver(
     // forwarder task reads it into this shared queue, drained each loop.
     let helper_inbound: HelperInbound = Rc::new(RefCell::new(VecDeque::new()));
     let mut helper_readers: HashMap<u32, Task<()>> = HashMap::new();
+    // §6.3 UPnP TCP conns: per-conn tasks feed events into this queue.
+    let tcp_inbound: TcpInbound = Rc::new(RefCell::new(VecDeque::new()));
+    let mut tcp_tasks: HashMap<u64, Task<()>> = HashMap::new();
 
     loop {
         for (socket, from, bytes) in helper_inbound.borrow_mut().drain(..).collect::<Vec<_>>() {
             core.on_datagram(&mut env, socket, from, &bytes);
+        }
+        for event in tcp_inbound.borrow_mut().drain(..).collect::<Vec<_>>() {
+            core.on_tcp_event(&mut env, event);
         }
         env.flush().await;
 
@@ -366,8 +498,10 @@ async fn run_driver(
         }
         env.flush().await;
         // Spawn/cancel forwarder tasks for helper sockets the core bound or
-        // closed this iteration (§6.2.3 dial-back).
+        // closed this iteration (§6.2.3 dial-back), and per-conn TCP tasks
+        // for the §6.3 UPnP conversation.
         reconcile_helper_readers(&env, &mut helper_readers, &helper_inbound).await;
+        reconcile_tcp_tasks(&env, &mut tcp_tasks, &tcp_inbound);
 
         let now = Instant::now();
         let mut wait = core

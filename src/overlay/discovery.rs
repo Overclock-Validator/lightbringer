@@ -105,6 +105,14 @@ impl AddressDiscovery {
             .map(|(ip, _)| ip)
     }
 
+    /// The external IP the current observations agree on. The §6.3
+    /// port-mapped candidate is advertised at THIS IP (what the world
+    /// routes to us), not the gateway's claimed external — behind CGN the
+    /// two differ and the gateway's is unreachable.
+    pub fn external_ip(&self) -> Option<IpAddr> {
+        self.generation_ip()
+    }
+
     /// The §6.2 allocator-discipline calibration for the current NAT
     /// generation, computed from the external ports observed toward distinct
     /// helper endpoints and cached until the external IP changes. `None` when

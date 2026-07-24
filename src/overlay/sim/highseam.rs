@@ -610,6 +610,7 @@ impl HighSeamNet {
             advertised_addr: options.direct.then_some(addr),
             advertised_addr_v6: None,
             gateway_addr: None,
+            portmap_local_ip: None,
             static_peers: options.static_peers,
             fanout: options.fanout,
             repair_addr: None,

@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +47,11 @@ pub struct OverlayConfig {
     /// gateway; explicitly set wins.
     #[serde(default)]
     pub gateway_addr: Option<SocketAddr>,
+    /// LAN IP presented to the gateway in PCP/UPnP requests (§6.3). Falls
+    /// back to `bind_addr`'s IP; the driver auto-resolves it when that is
+    /// unspecified (0.0.0.0).
+    #[serde(default)]
+    pub portmap_local_ip: Option<IpAddr>,
     #[serde(default)]
     pub static_peers: Vec<SocketAddr>,
     #[serde(default = "default_fanout")]
@@ -64,6 +72,7 @@ impl Default for OverlayConfig {
             advertised_addr: None,
             advertised_addr_v6: None,
             gateway_addr: None,
+            portmap_local_ip: None,
             static_peers: Vec::new(),
             fanout: default_fanout(),
             repair_addr: None,

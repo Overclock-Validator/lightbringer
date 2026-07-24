@@ -337,6 +337,22 @@ impl NatBox {
         src: SocketAddr,
         dst: SocketAddr,
     ) -> Result<OutboundPass, NatDropReason> {
+        // A live gateway lease (§6.3) pins its internal socket to the static
+        // external port in BOTH directions — conntrack/DNAT symmetry: replies
+        // to forwarded traffic and further sends from that socket exit from
+        // the mapped port. This is what makes a port-forwarded socket behave
+        // full-cone even on an otherwise symmetric NAT.
+        let static_port = self
+            .static_maps
+            .iter()
+            .find(|(_, map)| map.internal == src && now <= map.expires_at)
+            .map(|(&port, _)| port);
+        if let Some(port) = static_port {
+            return Ok(OutboundPass {
+                external: SocketAddr::new(self.external_ip, port),
+                created: false,
+            });
+        }
         let key = map_key(self.config.mapping, dst);
         let slot = (src, key);
         if let Some(mapping) = self.mappings.get(&slot)

@@ -35,7 +35,7 @@ use crate::types::{PacketInfo, PacketView};
 
 use super::{
     config::{OverlayConfig, OverlayMode},
-    env::{IpFamily, OverlayEnv, SocketId, TcpId},
+    env::{IpFamily, OverlayEnv, SocketId, TcpEvent, TcpId},
     identity::OverlayIdentity,
     repair::RepairReq,
     service::{CoreEvent, OverlayCore},
@@ -336,6 +336,11 @@ enum EventKind {
         host: u32,
         generation: u64,
     },
+    /// A TCP stream event from the host's own gateway model (§6.3 UPnP).
+    TcpDeliver {
+        host: u32,
+        event: TcpEvent,
+    },
 }
 
 struct QueuedEvent {
@@ -551,6 +556,7 @@ impl SimWorld {
             advertised_addr,
             advertised_addr_v6,
             gateway_addr: gateway.as_ref().map(|gateway| gateway.udp_endpoint()),
+            portmap_local_ip: None,
             static_peers: options.static_peers.clone(),
             fanout: options.fanout,
             repair_addr: options
@@ -1038,6 +1044,39 @@ impl SimWorld {
         }
     }
 
+    /// The §6.3 dial-back-confirmed port-mapped candidate a host holds.
+    pub fn confirmed_portmap(&self, host: HostId) -> Option<SocketAddr> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.confirmed_portmap(),
+            _ => None,
+        }
+    }
+
+    /// The gateway-granted (unconfirmed) external mapping a host holds.
+    pub fn portmap_mapped(&self, host: HostId) -> Option<SocketAddr> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.portmap_mapped(self.virtual_now()),
+            _ => None,
+        }
+    }
+
+    /// Whether a host's §6.3 v6 pinhole lease is live (client view).
+    pub fn portmap_pinhole_active(&self, host: HostId) -> bool {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.portmap_pinhole_active(self.virtual_now()),
+            _ => false,
+        }
+    }
+
+    /// (malformed gateway responses, gateway denials) a host's port-map
+    /// client counted.
+    pub fn portmap_counters(&self, host: HostId) -> (u64, u64) {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.portmap_counters(),
+            _ => (0, 0),
+        }
+    }
+
     /// Dial-back requests a host refused as a helper (§9 hardening).
     pub fn dialbacks_refused(&self, host: HostId) -> u64 {
         match &self.hosts[host.0 as usize].kind {
@@ -1148,6 +1187,7 @@ impl SimWorld {
     fn drain_host(&mut self, host: u32) -> Vec<(OverlayStreamId, RepairReq)> {
         let now = self.now_nanos;
         let mut outbox = Vec::new();
+        let mut tcp_events: Vec<TcpEvent> = Vec::new();
         let mut lookups: Vec<(OverlayStreamId, RepairReq)> = Vec::new();
         {
             let Self { hosts, trace, .. } = self;
@@ -1157,6 +1197,35 @@ impl SimWorld {
                     continue;
                 };
                 outbox.push((from, to, bytes));
+            }
+            // TCP intents only ever reach the host's own gateway model
+            // (§6.3 UPnP); anything else is refused as a failed connect.
+            let connects: Vec<_> = entry.env.tcp_connects.drain(..).collect();
+            let sends: Vec<_> = entry.env.tcp_out.drain(..).collect();
+            let closes: Vec<_> = entry.env.tcp_closes.drain(..).collect();
+            for (conn, to) in connects {
+                let accepted = entry
+                    .gateway
+                    .as_mut()
+                    .is_some_and(|gateway| gateway.tcp_open(conn.0, to));
+                tcp_events.push(if accepted {
+                    TcpEvent::Connected(conn)
+                } else {
+                    TcpEvent::Closed(conn)
+                });
+            }
+            for (conn, bytes) in sends {
+                if let Some(gateway) = entry.gateway.as_mut() {
+                    let nat = entry.nat_chain.first_mut().expect("gateway requires NAT");
+                    for response in gateway.tcp_bytes(now, conn.0, &bytes, nat) {
+                        tcp_events.push(TcpEvent::Data(conn, response));
+                    }
+                }
+            }
+            for conn in closes {
+                if let Some(gateway) = entry.gateway.as_mut() {
+                    gateway.tcp_closed(conn.0);
+                }
             }
             match &mut entry.kind {
                 HostKind::Overlay(node) => {
@@ -1250,6 +1319,12 @@ impl SimWorld {
         }
         for (from, to, bytes) in outbox {
             self.route(host, from, to, bytes);
+        }
+        for event in tcp_events {
+            self.push_event(
+                now + GATEWAY_DELAY_NANOS,
+                EventKind::TcpDeliver { host, event },
+            );
         }
         lookups
     }
@@ -1458,6 +1533,17 @@ impl SimWorld {
                 dst,
                 payload,
             } => self.deliver(to_host, src, dst, payload),
+            EventKind::TcpDeliver { host, event } => {
+                if !self.hosts[host as usize].up {
+                    return;
+                }
+                self.with_host(host, |kind, env| {
+                    if let HostKind::Overlay(node) = kind {
+                        node.core.on_tcp_event(env, event);
+                    }
+                });
+                self.post_process(host);
+            }
         }
     }
 

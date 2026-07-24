@@ -15,13 +15,14 @@ use crate::types::{PacketInfo, PacketView};
 use super::{
     OverlayConfig, OverlayMode, TurbineTree,
     discovery::AddressDiscovery,
-    env::{IpFamily, OverlayEnv, SocketId},
+    env::{IpFamily, OverlayEnv, SocketId, TcpEvent},
     gossip::{
         AdvertOutcome, LightbringerGossip, MAX_ADVERT_ADDRS, MAX_ADVERT_VIA, PeerAdvert,
         PortTaggedAddr, Reachability, RepairEndpoint, SignedPeerAdvert,
     },
     nat::{AllocatorProfile, NatClass},
     packet::OverlayFrame,
+    portmap::{PortMapConfig, PortMapper},
     repair::{
         self, MAX_REPAIR_REQ_WIRE, MAX_REPAIR_REQUESTS_PER_SECOND, MAX_REPAIR_RESP_WIRE,
         RepairPeerEntry, RepairRateLimiter, RepairReq,
@@ -119,11 +120,22 @@ struct OutboundRepair {
     deadline: Instant,
 }
 
+/// Which Direct candidate a §6.2.3 dial-back is confirming (P4 grew the
+/// candidate set beyond the P3 observed mapping, §6.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateKind {
+    /// The observed consistent mapping (P3).
+    Observed,
+    /// The gateway-granted port at our observed external IP (§6.3).
+    PortMapped,
+}
+
 /// Requester side of a §6.2.3 dial-back: the candidate address we asked a
 /// helper to confirm, awaiting its verdict.
 struct DialBackPending {
     #[allow(dead_code)] // recorded for diagnostics; matched by nonce
     helper: Pubkey,
+    kind: CandidateKind,
     candidate: SocketAddr,
     deadline: Instant,
 }
@@ -185,6 +197,12 @@ pub struct OverlayCore<T> {
     /// helper's fresh-source probe reached us on. Consumed by the auto-advert
     /// policy (P3) to advertise `Direct`.
     confirmed_direct: Option<SocketAddr>,
+    /// §6.3 dial-back confirmed port-mapped candidate: the gateway granted
+    /// it AND a fresh-source probe reached it (a grant alone proves nothing
+    /// behind CGN or a lying gateway).
+    confirmed_portmap: Option<SocketAddr>,
+    /// §6.3 port-mapping ladder client, when a gateway is configured.
+    portmap: Option<PortMapper>,
     dialback_pending: BTreeMap<u64, DialBackPending>,
     next_dialback_nonce: u64,
     /// Helper side: probes in flight, keyed by transport probe handle.
@@ -212,6 +230,19 @@ pub struct OverlayCore<T> {
 impl<T: OverlayTransport> OverlayCore<T> {
     pub fn new(transport: T, config: &OverlayConfig, keypair: Arc<Keypair>, now: Instant) -> Self {
         let local_pubkey = keypair.pubkey();
+        let portmap = config.gateway_addr.map(|gateway| {
+            PortMapper::new(
+                PortMapConfig {
+                    gateway,
+                    internal_port: config.bind_addr.port(),
+                    internal_ip: config
+                        .portmap_local_ip
+                        .unwrap_or_else(|| config.bind_addr.ip()),
+                    internal_v6: config.bind_addr_v6,
+                },
+                now,
+            )
+        });
         Self {
             mode: config.mode,
             transport,
@@ -234,6 +265,8 @@ impl<T: OverlayTransport> OverlayCore<T> {
             inbound_repairs: BTreeMap::new(),
             repair_rate: RepairRateLimiter::new(MAX_REPAIR_REQUESTS_PER_SECOND),
             confirmed_direct: None,
+            confirmed_portmap: None,
+            portmap,
             dialback_pending: BTreeMap::new(),
             next_dialback_nonce: 0,
             helper_probes: BTreeMap::new(),
@@ -257,13 +290,31 @@ impl<T: OverlayTransport> OverlayCore<T> {
         from: SocketAddr,
         datagram: &[u8],
     ) {
+        // The port-map socket speaks PCP/NAT-PMP/SSDP, never QUIC (§6.3).
+        if let Some(portmap) = &mut self.portmap
+            && portmap.socket() == Some(socket)
+        {
+            portmap.on_datagram(env, from, datagram);
+            return;
+        }
         self.transport.on_datagram(env, socket, from, datagram);
         self.pump(env);
+    }
+
+    /// TCP stream event for the §6.3 UPnP gateway conversation, forwarded by
+    /// the driver.
+    pub fn on_tcp_event(&mut self, env: &mut dyn OverlayEnv, event: TcpEvent) {
+        if let Some(portmap) = &mut self.portmap {
+            portmap.on_tcp_event(env, event);
+        }
     }
 
     /// Fire due deadlines. Safe to call early; deadlines are re-checked.
     pub fn on_timer(&mut self, env: &mut dyn OverlayEnv) {
         self.transport.on_timer(env);
+        if let Some(portmap) = &mut self.portmap {
+            portmap.on_timer(env);
+        }
         let now = env.now();
         if now >= self.next_advert {
             self.next_advert = now + ADVERT_INTERVAL;
@@ -331,6 +382,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
             Some(transport_deadline) => transport_deadline.min(self.next_advert),
             None => self.next_advert,
         };
+        if let Some(portmap_deadline) = self.portmap.as_ref().and_then(|pm| pm.poll_timeout()) {
+            deadline = deadline.min(portmap_deadline);
+        }
         for repair in self.outbound_repairs.values() {
             deadline = deadline.min(repair.deadline);
         }
@@ -714,8 +768,8 @@ impl<T: OverlayTransport> OverlayCore<T> {
                     self.discovery.record(observer, from, observed);
                 }
             }
-            OverlayFrame::DialBackRequest { nonce } => {
-                self.handle_dialback_request(env, from, nonce);
+            OverlayFrame::DialBackRequest { nonce, probe_port } => {
+                self.handle_dialback_request(env, from, nonce, probe_port);
             }
             OverlayFrame::DialBackResult { nonce, ok } => {
                 self.handle_dialback_result(nonce, ok);
@@ -878,27 +932,68 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
     }
 
-    /// Requester side of §6.2.3: if this node has a single stable Direct
-    /// candidate (Public/EIM) that is not yet dial-back-confirmed, ask a
-    /// connected helper to confirm it from a fresh source. Operator-config
-    /// `advertised_addr` needs no confirmation and clears any prior one.
+    /// Requester side of §6.2.3/§6.3: run a dial-back for every Direct
+    /// candidate not yet confirmed — the observed consistent mapping (P3)
+    /// and the gateway-mapped port (P4). Operator-config `advertised_addr`
+    /// needs no confirmation and clears any prior ones.
     fn maybe_request_dialback(&mut self, env: &mut dyn OverlayEnv) {
         if self.advertised_addr.is_some() {
             self.confirmed_direct = None;
+            self.confirmed_portmap = None;
             return;
         }
-        let candidate = self.discovery.consistent_mapping();
+        let observed = self.discovery.consistent_mapping();
         // Drop a stale confirmation when the candidate mapping changed or the
         // class is no longer endpoint-independent.
-        if self.confirmed_direct != candidate {
+        if self.confirmed_direct != observed {
             self.confirmed_direct = None;
         }
-        if self.confirmed_direct.is_some() || !self.dialback_pending.is_empty() {
-            return;
+        // §6.3: the port-mapped candidate is the granted port at our
+        // OBSERVED external IP — the address the world routes to us. Behind
+        // CGN the gateway's claimed IP is an inner hop; probing/advertising
+        // it would be meaningless, so the observed IP is authoritative and
+        // the fresh-source probe then refutes unreachable grants.
+        let mut portmapped = self
+            .portmap
+            .as_ref()
+            .and_then(|portmap| portmap.mapped_external(env.now()))
+            .map(|mapped| {
+                SocketAddr::new(
+                    self.discovery.external_ip().unwrap_or_else(|| mapped.ip()),
+                    mapped.port(),
+                )
+            });
+        // Identical to the observed candidate ⇒ one confirmation suffices.
+        if portmapped == observed {
+            portmapped = None;
         }
+        if self.confirmed_portmap != portmapped {
+            self.confirmed_portmap = None;
+        }
+        if self.confirmed_direct.is_none() {
+            self.request_dialback(env, CandidateKind::Observed, observed, None);
+        }
+        if self.confirmed_portmap.is_none() {
+            let probe_port = portmapped.map(|addr| addr.port());
+            self.request_dialback(env, CandidateKind::PortMapped, portmapped, probe_port);
+        }
+    }
+
+    /// Ask a connected helper to fresh-source-probe `candidate` (§6.2.3).
+    /// At most one in-flight confirmation per candidate kind.
+    fn request_dialback(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        kind: CandidateKind,
+        candidate: Option<SocketAddr>,
+        probe_port: Option<u16>,
+    ) {
         let Some(candidate) = candidate else {
             return;
         };
+        if self.dialback_pending.values().any(|pending| pending.kind == kind) {
+            return;
+        }
         let Some(helper) = self
             .transport
             .connected_peers()
@@ -909,13 +1004,14 @@ impl<T: OverlayTransport> OverlayCore<T> {
         };
         let nonce = self.next_dialback_nonce;
         self.next_dialback_nonce += 1;
-        match OverlayFrame::dialback_request(nonce).encode() {
+        match OverlayFrame::dialback_request(nonce, probe_port).encode() {
             Ok(raw) => {
                 if self.transport.queue_datagram_to_peer(env, &helper, raw) {
                     self.dialback_pending.insert(
                         nonce,
                         DialBackPending {
                             helper,
+                            kind,
                             candidate,
                             deadline: env.now() + DIALBACK_TIMEOUT,
                         },
@@ -929,9 +1025,16 @@ impl<T: OverlayTransport> OverlayCore<T> {
     /// Helper side of §6.2.3: dial the requester's *own* observed source from
     /// a fresh short-lived socket, so its restricted filtering is genuinely
     /// exercised. Hardened per §9: per-requester rate limit, no privileged
-    /// ports, and — because we only ever target the address we already see
-    /// the requester at — no reflection at third parties.
-    fn handle_dialback_request(&mut self, env: &mut dyn OverlayEnv, from: SocketAddr, nonce: u64) {
+    /// ports, and — because the target IP is pinned to the source of this
+    /// very request (only the port may be overridden for a §6.3 gateway-
+    /// mapped candidate on that same NAT) — no reflection at third parties.
+    fn handle_dialback_request(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        from: SocketAddr,
+        nonce: u64,
+        probe_port: Option<u16>,
+    ) {
         let Some(requester) = self.transport.peer_identity(from) else {
             return;
         };
@@ -943,12 +1046,11 @@ impl<T: OverlayTransport> OverlayCore<T> {
             self.send_dialback_result(env, &requester, nonce, false);
             return;
         }
-        // Reflection-safe: the probe target is the requester's own mapping as
-        // we observe it, never an address it supplied.
-        let Some(target) = self.transport.connection_addr(&requester) else {
-            self.send_dialback_result(env, &requester, nonce, false);
-            return;
-        };
+        // Reflection-safe: probing the request's own source address; a port
+        // override stays on that host. Using `from` (not the pubkey-indexed
+        // connection) keeps multi-connection peers correct — a request over
+        // the v6 connection targets the v6 source (§6.3).
+        let target = SocketAddr::new(from.ip(), probe_port.unwrap_or_else(|| from.port()));
         if target.port() < MIN_UNPRIVILEGED_PORT {
             self.dialbacks_refused += 1;
             self.send_dialback_result(env, &requester, nonce, false);
@@ -997,12 +1099,15 @@ impl<T: OverlayTransport> OverlayCore<T> {
     }
 
     /// Requester side: record a helper's verdict. A success confirms the
-    /// candidate as our Direct address.
+    /// probed candidate as a Direct address of its kind.
     fn handle_dialback_result(&mut self, nonce: u64, ok: bool) {
         if let Some(pending) = self.dialback_pending.remove(&nonce)
             && ok
         {
-            self.confirmed_direct = Some(pending.candidate);
+            match pending.kind {
+                CandidateKind::Observed => self.confirmed_direct = Some(pending.candidate),
+                CandidateKind::PortMapped => self.confirmed_portmap = Some(pending.candidate),
+            }
         }
     }
 
@@ -1052,6 +1157,38 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.confirmed_direct
     }
 
+    /// The §6.3 dial-back-confirmed port-mapped candidate. Oracle surface.
+    #[allow(dead_code)]
+    pub fn confirmed_portmap(&self) -> Option<SocketAddr> {
+        self.confirmed_portmap
+    }
+
+    /// The gateway-granted external mapping (unconfirmed), if a lease is
+    /// live. Oracle surface.
+    #[allow(dead_code)]
+    pub fn portmap_mapped(&self, now: Instant) -> Option<SocketAddr> {
+        self.portmap
+            .as_ref()
+            .and_then(|portmap| portmap.mapped_external(now))
+    }
+
+    /// A live §6.3 v6 pinhole lease exists. Oracle surface.
+    #[allow(dead_code)]
+    pub fn portmap_pinhole_active(&self, now: Instant) -> bool {
+        self.portmap
+            .as_ref()
+            .is_some_and(|portmap| portmap.pinhole_active(now))
+    }
+
+    /// (malformed gateway responses dropped, gateway denials). Oracle surface.
+    #[allow(dead_code)]
+    pub fn portmap_counters(&self) -> (u64, u64) {
+        self.portmap
+            .as_ref()
+            .map(|portmap| (portmap.malformed_responses, portmap.denials))
+            .unwrap_or((0, 0))
+    }
+
     /// Dial-back requests this node refused as a helper (rate/port/caps, §9).
     #[allow(dead_code)]
     pub fn dialbacks_refused(&self) -> u64 {
@@ -1093,16 +1230,23 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.discovery.observed_hints()
     }
 
-    /// The reachability this node advertises (nat-traversal.md §6.1/§6.2/§7):
+    /// The reachability this node advertises (nat-traversal.md
+    /// §6.1/§6.2/§6.3/§7):
     ///  - operator-configured `advertised_addr` wins;
-    ///  - else a dial-back-confirmed candidate (Public confirms its bind,
-    ///    full-cone confirms its observed mapping) advertises `Direct`;
+    ///  - else a dial-back-confirmed candidate advertises `Direct` — the
+    ///    observed mapping (Public confirms its bind, full-cone its
+    ///    external) or, failing that, the confirmed port-mapped address
+    ///    (§6.3 upgrades restricted/symmetric homes with a working gateway);
     ///  - else `Coordinated`, whose `observed` hints follow the §12-Q3 flavor
     ///    policy: fully symmetric advertises none (per-destination ports are
     ///    noise), every other flavor advertises port-tagged hints; `via`
     ///    carries connected public peers.
     fn compute_reachability(&self) -> Reachability {
-        if let Some(addr) = self.advertised_addr.or(self.confirmed_direct) {
+        if let Some(addr) = self
+            .advertised_addr
+            .or(self.confirmed_direct)
+            .or(self.confirmed_portmap)
+        {
             let mut addrs = ArrayVec::new();
             addrs.push(addr);
             return Reachability::Direct(addrs);

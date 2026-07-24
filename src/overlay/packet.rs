@@ -36,8 +36,13 @@ pub enum OverlayFrame {
     /// nat-traversal.md §6.2 step 3: "please confirm my reachability." The
     /// helper dials the requester's *own* observed source from a fresh port
     /// (§9: never a third-party address — no reflection vector), so the
-    /// request carries only a correlation nonce.
-    DialBackRequest { nonce: u64 },
+    /// request carries a correlation nonce and, since P4, an optional port
+    /// override: the probe target's IP stays pinned to the request's source,
+    /// but a §6.3 gateway-mapped port on that same NAT may be probed.
+    DialBackRequest {
+        nonce: u64,
+        probe_port: Option<u16>,
+    },
     /// The helper's verdict: `ok` iff the fresh-source handshake completed
     /// with the requester's expected identity.
     DialBackResult { nonce: u64, ok: bool },
@@ -56,8 +61,8 @@ impl OverlayFrame {
         Self::AddressObservation { observed }
     }
 
-    pub fn dialback_request(nonce: u64) -> Self {
-        Self::DialBackRequest { nonce }
+    pub fn dialback_request(nonce: u64, probe_port: Option<u16>) -> Self {
+        Self::DialBackRequest { nonce, probe_port }
     }
 
     pub fn dialback_result(nonce: u64, ok: bool) -> Self {
@@ -83,9 +88,9 @@ impl OverlayFrame {
                 bincode::serialize_into(&mut out, observed)?;
                 Ok(out)
             }
-            Self::DialBackRequest { nonce } => {
+            Self::DialBackRequest { nonce, probe_port } => {
                 let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_DIALBACK_REQUEST];
-                bincode::serialize_into(&mut out, nonce)?;
+                bincode::serialize_into(&mut out, &(nonce, probe_port))?;
                 Ok(out)
             }
             Self::DialBackResult { nonce, ok } => {
@@ -113,9 +118,10 @@ impl OverlayFrame {
             FRAME_ADDRESS_OBSERVATION => Ok(Self::AddressObservation {
                 observed: bincode::deserialize(body)?,
             }),
-            FRAME_DIALBACK_REQUEST => Ok(Self::DialBackRequest {
-                nonce: bincode::deserialize(body)?,
-            }),
+            FRAME_DIALBACK_REQUEST => {
+                let (nonce, probe_port) = bincode::deserialize(body)?;
+                Ok(Self::DialBackRequest { nonce, probe_port })
+            }
             FRAME_DIALBACK_RESULT => {
                 let (nonce, ok) = bincode::deserialize(body)?;
                 Ok(Self::DialBackResult { nonce, ok })
@@ -180,11 +186,17 @@ mod tests {
             other => panic!("decoded wrong frame: {other:?}"),
         }
 
-        let req = OverlayFrame::dialback_request(0xDEAD_BEEF).encode().unwrap();
-        assert!(req.len() < 16);
-        match OverlayFrame::decode(&req).unwrap() {
-            OverlayFrame::DialBackRequest { nonce } => assert_eq!(nonce, 0xDEAD_BEEF),
-            other => panic!("decoded wrong frame: {other:?}"),
+        for probe_port in [None, Some(51_000u16)] {
+            let req = OverlayFrame::dialback_request(0xDEAD_BEEF, probe_port)
+                .encode()
+                .unwrap();
+            assert!(req.len() < 16);
+            match OverlayFrame::decode(&req).unwrap() {
+                OverlayFrame::DialBackRequest { nonce, probe_port: got } => {
+                    assert_eq!((nonce, got), (0xDEAD_BEEF, probe_port));
+                }
+                other => panic!("decoded wrong frame: {other:?}"),
+            }
         }
 
         for ok in [true, false] {

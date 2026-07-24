@@ -93,7 +93,7 @@ fn port_restricted_stays_unconfirmed_despite_eim_class() {
 }
 
 fn dialback_request_frame(nonce: u64) -> Vec<u8> {
-    OverlayFrame::dialback_request(nonce)
+    OverlayFrame::dialback_request(nonce, None)
         .encode()
         .expect("dial-back request encodes")
 }
