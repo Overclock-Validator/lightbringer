@@ -9,7 +9,10 @@ mod gossip_oracles;
 mod keepalive;
 mod mtu;
 mod nat_matrix;
+mod repair_abuse;
 mod repair_core;
+mod repair_matrix;
+mod repair_sampling;
 mod streams;
 
 use std::time::Duration;

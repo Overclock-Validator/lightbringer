@@ -77,6 +77,11 @@ pub struct NodeOptions {
     pub keep_alive_interval: Option<Duration>,
     pub max_idle_timeout: Option<Duration>,
     pub initial_mtu: Option<u16>,
+    /// Advertise a Solana-format UDP repair endpoint (`RepairEndpoint::Udp`
+    /// at bind_port+1). The sim runs no UDP repair server, so leave this
+    /// off unless a test wants dead-Udp-target behavior; `false` advertises
+    /// `InConnection` (the §6.4 stream path).
+    pub udp_repair: bool,
 }
 
 impl Default for NodeOptions {
@@ -93,6 +98,7 @@ impl Default for NodeOptions {
             keep_alive_interval: Some(Duration::from_secs(10)),
             max_idle_timeout: Some(Duration::from_secs(30)),
             initial_mtu: Some(OVERLAY_INITIAL_MTU),
+            udp_repair: false,
         }
     }
 }
@@ -403,7 +409,9 @@ impl SimWorld {
             advertised_addr,
             static_peers: options.static_peers.clone(),
             fanout: options.fanout,
-            repair_addr: Some(SocketAddr::new(host_ip, repair_port)),
+            repair_addr: options
+                .udp_repair
+                .then(|| SocketAddr::new(host_ip, repair_port)),
             shred_version: Some(options.shred_version),
             peer_ttl_ms: options.peer_ttl.as_millis() as u64,
         };
@@ -725,6 +733,16 @@ impl SimWorld {
         });
         self.post_process(host.0);
         stream
+    }
+
+    /// The §6.4 repair peer view of an overlay host, as its requester
+    /// would sample it.
+    pub fn repair_peer_view(&mut self, host: HostId) -> Vec<super::repair::RepairPeerEntry> {
+        let now = self.virtual_now();
+        match &mut self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.repair_peer_view(now),
+            _ => Vec::new(),
+        }
     }
 
     /// Client-side repair outcomes a host observed, in order.

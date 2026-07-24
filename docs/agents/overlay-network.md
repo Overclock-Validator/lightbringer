@@ -46,10 +46,40 @@ point: prefer the established connection (the transport keeps a
 pubkey→address index over TLS-verified identities), dial only `Direct`
 peers, otherwise drop and count. Shred retransmit loop suppression is a
 bounded LRU dedup keyed on payload hash — the wire frame carries no origin
-field. `overlay.repair_addr` is mandatory whenever the overlay is enabled
-and is advertised as `RepairEndpoint::Udp`. Sink mode must not use Solana
-repair as a fallback; until the overlay repair requester is wired,
-generated sink repair requests are logged rather than sent to Solana.
+field.
+
+Repair rides overlay QUIC bidirectional streams (nat-traversal.md §6.4,
+phase P2 — R2 complete for every NAT type). The sub-protocol is a fresh
+minimal bincode pair in `src/overlay/repair.rs` — a client-opened bidi
+stream carries one `RepairReq { WindowIndex | HighestWindowIndex }`, the
+server answers `RepairResp { Shred(bytes) | NotFound }`, FIN both ways —
+explicitly NOT Solana's `RepairProtocol`: no header/signature/nonce/ping,
+because the QUIC connection already authenticates both ends. Responses
+never touch the 1242-byte datagram budget. Every overlay node serves:
+`OverlayCore` parses and rate-admits inbound requests (per-pubkey
+LRU-bounded limiter, 100 req/s) and emits `CoreEvent::RepairRequest`; the
+DRIVER does the blocking fjall lookup behind the narrow `RepairStore` seam
+(`ShredStore` in production, an in-memory map in the sim) and answers via
+`on_repair_response`. Malformed or over-limit streams are reset and
+counted, never served.
+
+The requesting side runs the same `RepairManager` loop in both worlds
+behind `RepairPeerSource::sample_peer → RepairTarget::{Udp(addr, pubkey),
+Overlay(pubkey)}`: Solana mode keeps `ClusterInfo::repair_peers` verbatim
+(`SolanaRepairPeers`); sink mode samples the overlay gossip view
+(`OverlayRepairPeerSource` over a driver-republished `SharedRepairView`) —
+peers advertising `RepairEndpoint::Udp` go out the node's own repair UDP
+socket in Solana wire format, `InConnection` peers ride streams over
+existing connections only (never dialed; unreachable targets drop and
+count). `PeerSample`'s latency-weighted selection is ported keyed by
+pubkey and lives in `overlay::repair`. Responses are matched by
+`RepairRoute` (UDP source address / stream peer identity); the driver
+returns stream responses UDP-shaped (shred ‖ nonce LE) so the outstanding
+store and packet filter treat both worlds identically.
+`overlay.repair_addr` is optional since P2: unset advertises
+`RepairEndpoint::InConnection` (streams serve it); set, it advertises a
+Solana-format UDP endpoint — which sink mode does not serve, so sink
+operators should leave it unset.
 
 The wire format (v1, still unfrozen) is a two-byte header (version, frame
 type) followed by the body: raw shred bytes delimited by the QUIC datagram
@@ -87,11 +117,27 @@ ECDHE keys from its own entropy outside the rustls SecureRandom seam.
 
 The high-seam tier (`src/overlay/sim/highseam.rs`) swaps the QUIC transport
 for `MemTransport`, an in-memory authenticated fake, so hundreds of
-`OverlayCore`s run gossip/advert/turbine logic in a deterministic
+`OverlayCore`s run gossip/advert/turbine/repair logic in a deterministic
 tick-driven harness (`HighSeamNet`) — this is where the per-phase safety
-oracles run (`sim/tests/gossip_oracles.rs`, `advert_security.rs`). Dev
+oracles run (`sim/tests/gossip_oracles.rs`, `advert_security.rs`,
+`repair_abuse.rs`, `repair_sampling.rs`). `MemTransport` mirrors the P2
+stream seam: stream ops are reliable and ordered (exempt from the drop
+model — on real QUIC, loss is stream latency, never stream data loss),
+carried by the harness with the same one-tick latency as datagrams. Dev
 builds compile the dalek crypto crates at opt-level 3 (see Cargo.toml
 profile overrides); without that, ed25519 dominates the sim suite ~100x.
+
+`OverlayTransport` carries the P2 stream surface at both tiers:
+`open_stream` (established connections only, by identity), buffered
+`write_stream`/`finish_stream`/`reset_stream`, and polled `StreamEvent`s
+(`Opened`/`Data`/`Finished`/`Failed`); `OverlayQuicTransport` plumbs the
+quinn-proto Streams API sans-IO with transport-unique handles that never
+recycle across reconnects. The P2 deliverable scenarios
+(`repair-nat-matrix`, `repair-liveness`, `repair-performance` in
+`sim/scenario.rs`) assert the §10 P2 definition of done: R2 across every
+§6.2 NAT row including a symmetric+CGNAT *server*, gap liveness through
+loss/partition/restart, and latency/bytes-per-shred performance rails —
+all auto-covered by the determinism suite.
 
 Overlay QUIC identity reuses `identity.json`. `OverlayIdentity` follows the same
 pattern as Agave's TLS utilities: the Solana Ed25519 secret is encoded as
