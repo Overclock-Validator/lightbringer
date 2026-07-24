@@ -327,12 +327,23 @@ fn main() {
         (None, None)
     };
 
+    // Shred storage (created before the overlay runner: overlay nodes serve
+    // repair from this store over QUIC streams).
+    let shred_store = ShredStore::new(
+        lsm_ks,
+        shred_cutoff_slot,
+        solana_context
+            .as_ref()
+            .map(|context| context.cluster_info.clone()),
+    )
+    .unwrap();
+
     if let Some(overlay_config) = overlay_config.clone() {
         let overlay_keypair = keypair.clone();
         let overlay_output_tx = filter_tx.clone();
-        threadpool.spawn(enclose!((overlay_output_tx) move |exit| async move {
+        threadpool.spawn(enclose!((overlay_output_tx, shred_store) move |exit| async move {
             if let Err(e) =
-                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, overlay_output_tx).await
+                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, overlay_output_tx, shred_store).await
             {
                 log::error!("overlay runner stopped with error: {e}");
             }
@@ -352,15 +363,6 @@ fn main() {
         )
     });
 
-    // Shred storage
-    let shred_store = ShredStore::new(
-        lsm_ks,
-        shred_cutoff_slot,
-        solana_context
-            .as_ref()
-            .map(|context| context.cluster_info.clone()),
-    )
-    .unwrap();
     threadpool.spawn(
         enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
     );

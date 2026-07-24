@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     hash::{Hash, Hasher},
     net::SocketAddr,
     sync::Arc,
@@ -20,7 +20,11 @@ use super::{
         RepairEndpoint, SignedPeerAdvert,
     },
     packet::OverlayFrame,
-    transport::{OverlayTransport, TransportEvent},
+    repair::{
+        self, MAX_REPAIR_REQ_WIRE, MAX_REPAIR_REQUESTS_PER_SECOND, MAX_REPAIR_RESP_WIRE,
+        RepairPeerEntry, RepairRateLimiter, RepairReq,
+    },
+    transport::{OverlayStreamId, OverlayTransport, StreamEvent, TransportEvent},
 };
 
 const ADVERT_INTERVAL: Duration = Duration::from_secs(10);
@@ -29,6 +33,14 @@ const MAX_CORE_EVENTS: usize = 8192;
 /// carries no origin field, so a shred returning to a node that already
 /// flooded it must be recognized and dropped here.
 const SEEN_SHREDS_CAPACITY: usize = 32_768;
+/// A repair stream that has neither concluded nor died by this deadline is
+/// reclaimed. Requesters retry far sooner (the repair manager re-samples at
+/// 200ms); this bound only reclaims state.
+const REPAIR_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
+/// In-flight repair exchange caps, both roles. Inbound is additionally
+/// bounded per connection by the transport's concurrent-stream limit.
+const MAX_OUTBOUND_REPAIRS: usize = 1024;
+const MAX_INBOUND_REPAIRS: usize = 1024;
 
 fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
@@ -57,6 +69,45 @@ pub enum CoreEvent {
         peer: SocketAddr,
         reason: String,
     },
+    /// Inbound §6.4 repair request, parsed and rate-admitted. The driver
+    /// owns the (blocking, fjall) store lookup and answers through
+    /// [`OverlayCore::on_repair_response`]; the core stays sans-IO.
+    RepairRequest {
+        stream: OverlayStreamId,
+        #[allow(dead_code)] // consumed by sim oracles; drivers answer by stream
+        peer: Pubkey,
+        request: RepairReq,
+    },
+    /// A repair stream this node opened concluded with the peer's answer
+    /// (`None` = NotFound).
+    RepairResponse {
+        #[allow(dead_code)] // requester wiring lands in P2 step 3
+        stream: OverlayStreamId,
+        peer: Pubkey,
+        #[allow(dead_code)] // requester wiring lands in P2 step 3
+        shred: Option<Vec<u8>>,
+    },
+    /// A repair stream this node opened died without an answer (reset,
+    /// disconnect, malformed response, or timeout).
+    RepairFailed {
+        #[allow(dead_code)] // requester wiring lands in P2 step 3
+        stream: OverlayStreamId,
+        peer: Pubkey,
+    },
+}
+
+struct OutboundRepair {
+    peer: Pubkey,
+    buf: Vec<u8>,
+    deadline: Instant,
+}
+
+struct InboundRepair {
+    peer: Pubkey,
+    buf: Vec<u8>,
+    /// Request parsed and handed to the driver; awaiting its lookup.
+    awaiting_lookup: bool,
+    deadline: Instant,
 }
 
 /// Sans-IO overlay state machine (nat-traversal.md §6.9): inbound datagrams
@@ -83,8 +134,13 @@ pub struct OverlayCore<T> {
     advert_seq: u64,
     next_advert: Instant,
     seen_shreds: LruBTreeMap<u64, ()>,
+    outbound_repairs: BTreeMap<OverlayStreamId, OutboundRepair>,
+    inbound_repairs: BTreeMap<OverlayStreamId, InboundRepair>,
+    repair_rate: RepairRateLimiter,
     dropped_unreachable: u64,
     invalid_adverts: u64,
+    repairs_refused: u64,
+    repairs_malformed: u64,
     events: VecDeque<CoreEvent>,
 }
 
@@ -108,8 +164,13 @@ impl<T: OverlayTransport> OverlayCore<T> {
             advert_seq: 0,
             next_advert: now + ADVERT_INTERVAL,
             seen_shreds: LruBTreeMap::new(SEEN_SHREDS_CAPACITY),
+            outbound_repairs: BTreeMap::new(),
+            inbound_repairs: BTreeMap::new(),
+            repair_rate: RepairRateLimiter::new(MAX_REPAIR_REQUESTS_PER_SECOND),
             dropped_unreachable: 0,
             invalid_adverts: 0,
+            repairs_refused: 0,
+            repairs_malformed: 0,
             events: VecDeque::new(),
         }
     }
@@ -133,7 +194,36 @@ impl<T: OverlayTransport> OverlayCore<T> {
             self.next_advert = now + ADVERT_INTERVAL;
             self.advertise(env);
         }
+        self.expire_repairs(env, now);
         self.pump(env);
+    }
+
+    /// Reclaim repair streams that neither concluded nor died in time.
+    fn expire_repairs(&mut self, env: &mut dyn OverlayEnv, now: Instant) {
+        let expired_out: Vec<OverlayStreamId> = self
+            .outbound_repairs
+            .iter()
+            .filter(|(_, repair)| now >= repair.deadline)
+            .map(|(&stream, _)| stream)
+            .collect();
+        for stream in expired_out {
+            let repair = self.outbound_repairs.remove(&stream).expect("collected above");
+            self.transport.reset_stream(env, stream);
+            self.push_event(CoreEvent::RepairFailed {
+                stream,
+                peer: repair.peer,
+            });
+        }
+        let expired_in: Vec<OverlayStreamId> = self
+            .inbound_repairs
+            .iter()
+            .filter(|(_, repair)| now >= repair.deadline)
+            .map(|(&stream, _)| stream)
+            .collect();
+        for stream in expired_in {
+            self.inbound_repairs.remove(&stream);
+            self.transport.reset_stream(env, stream);
+        }
     }
 
     pub fn on_source_packet(&mut self, env: &mut dyn OverlayEnv, packet: PacketInfo) {
@@ -158,10 +248,16 @@ impl<T: OverlayTransport> OverlayCore<T> {
     }
 
     pub fn poll_timeout(&mut self) -> Option<Instant> {
-        let deadline = match self.transport.poll_timeout() {
+        let mut deadline = match self.transport.poll_timeout() {
             Some(transport_deadline) => transport_deadline.min(self.next_advert),
             None => self.next_advert,
         };
+        for repair in self.outbound_repairs.values() {
+            deadline = deadline.min(repair.deadline);
+        }
+        for repair in self.inbound_repairs.values() {
+            deadline = deadline.min(repair.deadline);
+        }
         Some(deadline)
     }
 
@@ -215,6 +311,105 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.gossip.len()
     }
 
+    /// Repair requests refused by the per-pubkey rate limit or the
+    /// in-flight cap.
+    #[allow(dead_code)]
+    pub fn repairs_refused(&self) -> u64 {
+        self.repairs_refused
+    }
+
+    /// Malformed/truncated repair requests and responses dropped inertly.
+    #[allow(dead_code)]
+    pub fn repairs_malformed(&self) -> u64 {
+        self.repairs_malformed
+    }
+
+    /// The repair peer view a requester samples (§6.4): every live gossip
+    /// identity, its advertised repair endpoint, and whether an overlay
+    /// connection currently exists. The driver republishes this to the
+    /// repair manager's `RepairPeerSource`.
+    #[allow(dead_code)] // consumed by the requester wiring (P2 step 3)
+    pub fn repair_peer_view(&mut self, now: Instant) -> Vec<RepairPeerEntry> {
+        let connected: BTreeSet<Pubkey> = self.transport.connected_peers().into_iter().collect();
+        self.gossip
+            .peers(now)
+            .into_iter()
+            .filter(|advert| advert.pubkey != self.local_pubkey)
+            .map(|advert| RepairPeerEntry {
+                pubkey: advert.pubkey,
+                repair: advert.repair,
+                connected: connected.contains(&advert.pubkey),
+            })
+            .collect()
+    }
+
+    /// Open a §6.4 repair stream toward `peer` over the existing overlay
+    /// connection: encoded request, then FIN. Never dials — an unconnected
+    /// target is dropped and counted (`dropped_unreachable`), and the
+    /// requester's retry samples someone else.
+    #[allow(dead_code)] // requester wiring lands in P2 step 3
+    pub fn request_repair(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        peer: Pubkey,
+        request: &RepairReq,
+    ) -> Option<OverlayStreamId> {
+        if self.outbound_repairs.len() >= MAX_OUTBOUND_REPAIRS {
+            log::debug!("overlay: outbound repair cap {MAX_OUTBOUND_REPAIRS} reached");
+            return None;
+        }
+        let Some(stream) = self.transport.open_stream(&peer) else {
+            self.dropped_unreachable += 1;
+            log::debug!("overlay: no connection to {peer} for repair; dropped");
+            return None;
+        };
+        self.transport
+            .write_stream(env, stream, &repair::encode_request(request));
+        self.transport.finish_stream(env, stream);
+        self.outbound_repairs.insert(
+            stream,
+            OutboundRepair {
+                peer,
+                buf: Vec::new(),
+                deadline: env.now() + REPAIR_STREAM_TIMEOUT,
+            },
+        );
+        self.pump(env);
+        Some(stream)
+    }
+
+    /// Driver-side answer to a [`CoreEvent::RepairRequest`]: the store
+    /// lookup result (`None` = not found) is written back and the stream is
+    /// FIN'd. Ignored when the stream already died.
+    pub fn on_repair_response(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        stream: OverlayStreamId,
+        shred: Option<Vec<u8>>,
+    ) {
+        let Some(repair) = self.inbound_repairs.remove(&stream) else {
+            return;
+        };
+        if !repair.awaiting_lookup {
+            return;
+        }
+        let response = match shred {
+            Some(bytes) => repair::RepairResp::Shred(bytes),
+            None => repair::RepairResp::NotFound,
+        };
+        match repair::encode_response(&response) {
+            Ok(raw) => {
+                self.transport.write_stream(env, stream, &raw);
+                self.transport.finish_stream(env, stream);
+            }
+            Err(e) => {
+                log::warn!("overlay: failed to encode repair response: {e}");
+                self.transport.reset_stream(env, stream);
+            }
+        }
+        self.pump(env);
+    }
+
     fn pump(&mut self, env: &mut dyn OverlayEnv) {
         while let Some(event) = self.transport.poll_event() {
             let event = match event {
@@ -229,6 +424,122 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
         while let Some((from, raw)) = self.transport.poll_inbound() {
             self.handle_frame(env, from, raw);
+        }
+        while let Some(event) = self.transport.poll_stream_event() {
+            self.handle_stream_event(env, event);
+        }
+    }
+
+    fn handle_stream_event(&mut self, env: &mut dyn OverlayEnv, event: StreamEvent) {
+        match event {
+            StreamEvent::Opened { stream, peer } => {
+                if self.inbound_repairs.len() >= MAX_INBOUND_REPAIRS {
+                    self.repairs_refused += 1;
+                    self.transport.reset_stream(env, stream);
+                    return;
+                }
+                self.inbound_repairs.insert(
+                    stream,
+                    InboundRepair {
+                        peer,
+                        buf: Vec::new(),
+                        awaiting_lookup: false,
+                        deadline: env.now() + REPAIR_STREAM_TIMEOUT,
+                    },
+                );
+            }
+            StreamEvent::Data { stream, bytes } => {
+                if let Some(repair) = self.inbound_repairs.get_mut(&stream) {
+                    if repair.awaiting_lookup {
+                        // Bytes after the FIN-delimited request are garbage.
+                        self.repairs_malformed += 1;
+                        self.inbound_repairs.remove(&stream);
+                        self.transport.reset_stream(env, stream);
+                        return;
+                    }
+                    repair.buf.extend_from_slice(&bytes);
+                    if repair.buf.len() > MAX_REPAIR_REQ_WIRE {
+                        self.repairs_malformed += 1;
+                        self.inbound_repairs.remove(&stream);
+                        self.transport.reset_stream(env, stream);
+                    }
+                } else if let Some(repair) = self.outbound_repairs.get_mut(&stream) {
+                    repair.buf.extend_from_slice(&bytes);
+                    if repair.buf.len() > MAX_REPAIR_RESP_WIRE {
+                        self.repairs_malformed += 1;
+                        let repair =
+                            self.outbound_repairs.remove(&stream).expect("present above");
+                        self.transport.reset_stream(env, stream);
+                        self.push_event(CoreEvent::RepairFailed {
+                            stream,
+                            peer: repair.peer,
+                        });
+                    }
+                }
+            }
+            StreamEvent::Finished { stream } => {
+                if let Some(repair) = self.inbound_repairs.get_mut(&stream) {
+                    if repair.awaiting_lookup {
+                        return;
+                    }
+                    let peer = repair.peer;
+                    match repair::decode_request(&repair.buf) {
+                        Ok(request) => {
+                            if self.repair_rate.check_and_increment(peer, env.now()) {
+                                repair.awaiting_lookup = true;
+                                repair.buf = Vec::new();
+                                self.push_event(CoreEvent::RepairRequest {
+                                    stream,
+                                    peer,
+                                    request,
+                                });
+                            } else {
+                                self.repairs_refused += 1;
+                                self.inbound_repairs.remove(&stream);
+                                self.transport.reset_stream(env, stream);
+                            }
+                        }
+                        Err(_) => {
+                            self.repairs_malformed += 1;
+                            self.inbound_repairs.remove(&stream);
+                            self.transport.reset_stream(env, stream);
+                        }
+                    }
+                } else if let Some(repair) = self.outbound_repairs.remove(&stream) {
+                    match repair::decode_response(&repair.buf) {
+                        Ok(repair::RepairResp::Shred(bytes)) => {
+                            self.push_event(CoreEvent::RepairResponse {
+                                stream,
+                                peer: repair.peer,
+                                shred: Some(bytes),
+                            });
+                        }
+                        Ok(repair::RepairResp::NotFound) => {
+                            self.push_event(CoreEvent::RepairResponse {
+                                stream,
+                                peer: repair.peer,
+                                shred: None,
+                            });
+                        }
+                        Err(_) => {
+                            self.repairs_malformed += 1;
+                            self.push_event(CoreEvent::RepairFailed {
+                                stream,
+                                peer: repair.peer,
+                            });
+                        }
+                    }
+                }
+            }
+            StreamEvent::Failed { stream } => {
+                self.inbound_repairs.remove(&stream);
+                if let Some(repair) = self.outbound_repairs.remove(&stream) {
+                    self.push_event(CoreEvent::RepairFailed {
+                        stream,
+                        peer: repair.peer,
+                    });
+                }
+            }
         }
     }
 

@@ -91,6 +91,24 @@ pub enum TraceEvent {
     HostUp {
         host: u32,
     },
+    /// Server side: a §6.4 repair request was admitted and answered from
+    /// the host's store (`found` = a shred went back).
+    RepairServed {
+        host: u32,
+        slot: u64,
+        index: u32,
+        highest: bool,
+        found: bool,
+    },
+    /// Client side: a repair stream concluded with the peer's answer.
+    RepairConcluded {
+        host: u32,
+        found: bool,
+    },
+    /// Client side: a repair stream died without an answer.
+    RepairFailed {
+        host: u32,
+    },
 }
 
 pub struct Trace {
@@ -254,6 +272,29 @@ fn encode_event(buf: &mut Vec<u8>, event: &TraceEvent) {
             buf.extend_from_slice(&host.to_le_bytes());
             encode_addr(buf, from);
             buf.extend_from_slice(&payload_hash.to_le_bytes());
+        }
+        TraceEvent::RepairServed {
+            host,
+            slot,
+            index,
+            highest,
+            found,
+        } => {
+            buf.push(17);
+            buf.extend_from_slice(&host.to_le_bytes());
+            buf.extend_from_slice(&slot.to_le_bytes());
+            buf.extend_from_slice(&index.to_le_bytes());
+            buf.push(u8::from(*highest));
+            buf.push(u8::from(*found));
+        }
+        TraceEvent::RepairConcluded { host, found } => {
+            buf.push(18);
+            buf.extend_from_slice(&host.to_le_bytes());
+            buf.push(u8::from(*found));
+        }
+        TraceEvent::RepairFailed { host } => {
+            buf.push(19);
+            buf.extend_from_slice(&host.to_le_bytes());
         }
     }
 }

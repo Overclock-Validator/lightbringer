@@ -237,6 +237,21 @@ impl ShredStore {
         }
     }
 
+    fn repair_lookup(
+        &self,
+        request: &crate::overlay::repair::RepairReq,
+    ) -> fjall::Result<Option<ShredInfoView>> {
+        use crate::overlay::repair::RepairReq;
+        match *request {
+            RepairReq::WindowIndex { slot, shred_index } => {
+                self.get_shred(slot, u64::from(shred_index))
+            }
+            RepairReq::HighestWindowIndex { slot, shred_index } => {
+                self.get_highest_data_shred_from(slot, u64::from(shred_index))
+            }
+        }
+    }
+
     pub fn get_slot_shreds(&self, slot: u64) -> fjall::Result<Vec<ShredInfoView>> {
         let prefix = slot.to_be_bytes();
 
@@ -247,5 +262,19 @@ impl ShredStore {
             .collect::<fjall::Result<_>>()?;
 
         Ok(res)
+    }
+}
+
+/// Overlay serve-repair (nat-traversal.md §6.4) answers stream requests
+/// from the same store as the UDP `repair_delivery` server.
+impl crate::overlay::repair::RepairStore for ShredStore {
+    fn lookup(&self, request: &crate::overlay::repair::RepairReq) -> Option<Vec<u8>> {
+        match self.repair_lookup(request) {
+            Ok(found) => found.map(|view| view.as_ref().to_vec()),
+            Err(e) => {
+                log::warn!("overlay serve_repair: fjall lookup error: {e}");
+                None
+            }
+        }
     }
 }

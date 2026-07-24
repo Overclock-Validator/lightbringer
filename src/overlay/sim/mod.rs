@@ -36,6 +36,7 @@ use super::{
     config::{OverlayConfig, OverlayMode},
     env::{OverlayEnv, SocketId},
     identity::OverlayIdentity,
+    repair::RepairReq,
     service::{CoreEvent, OverlayCore},
     transport::{
         OVERLAY_INITIAL_MTU, OverlayQuicTransport, OverlayStreamId, OverlayTransport,
@@ -158,6 +159,38 @@ impl OverlayEnv for SimEnv<'_> {
     }
 }
 
+/// The §6.4 store-lookup seam, simulator side: an in-memory stand-in for
+/// `ShredStore` answering the same two queries the fjall driver does.
+pub type SimShredStore = BTreeMap<(u64, u32), Vec<u8>>;
+
+pub fn lookup_repair(store: &SimShredStore, request: &RepairReq) -> Option<Vec<u8>> {
+    match *request {
+        RepairReq::WindowIndex { slot, shred_index } => {
+            store.get(&(slot, shred_index)).cloned()
+        }
+        RepairReq::HighestWindowIndex { slot, shred_index } => store
+            .range((slot, shred_index)..=(slot, u32::MAX))
+            .next_back()
+            .map(|(_, shred)| shred.clone()),
+    }
+}
+
+/// Client-side repair outcome observed on a node, with its virtual time.
+#[derive(Clone, Debug)]
+pub enum SimRepairEvent {
+    Response {
+        at_nanos: u64,
+        stream: u64,
+        peer: Pubkey,
+        shred: Option<Vec<u8>>,
+    },
+    Failed {
+        at_nanos: u64,
+        stream: u64,
+        peer: Pubkey,
+    },
+}
+
 struct OverlayNode {
     core: OverlayCore<OverlayQuicTransport>,
     keypair: Arc<Keypair>,
@@ -165,6 +198,8 @@ struct OverlayNode {
     config: OverlayConfig,
     options: NodeOptions,
     delivered: Vec<Vec<u8>>,
+    store: SimShredStore,
+    repair_events: Vec<SimRepairEvent>,
 }
 
 struct ProbeNode {
@@ -197,6 +232,10 @@ struct Host {
     kind: HostKind,
     timer_generation: u64,
     next_timer: Option<u64>,
+    /// Datagrams/bytes this host put on the wire (post-NAT, pre-fault) —
+    /// the §6.9 control-plane-cost denominator.
+    sent_datagrams: u64,
+    sent_bytes: u64,
 }
 
 enum EventKind {
@@ -389,9 +428,13 @@ impl SimWorld {
                 config,
                 options,
                 delivered: Vec::new(),
+                store: SimShredStore::new(),
+                repair_events: Vec::new(),
             })),
             timer_generation: 0,
             next_timer: None,
+            sent_datagrams: 0,
+            sent_bytes: 0,
         };
         self.hosts.push(host);
         self.reschedule_timer(id);
@@ -426,6 +469,8 @@ impl SimWorld {
             })),
             timer_generation: 0,
             next_timer: None,
+            sent_datagrams: 0,
+            sent_bytes: 0,
         };
         self.hosts.push(host);
         self.reschedule_timer(id);
@@ -521,6 +566,8 @@ impl SimWorld {
             }),
             timer_generation: 0,
             next_timer: None,
+            sent_datagrams: 0,
+            sent_bytes: 0,
         };
         self.hosts.push(host);
         HostId(id)
@@ -657,6 +704,67 @@ impl SimWorld {
         self.post_process(host.0);
     }
 
+    /// Seed a host's in-memory shred store (the serve-repair source).
+    pub fn store_insert(&mut self, host: HostId, slot: u64, index: u32, shred: Vec<u8>) {
+        if let HostKind::Overlay(node) = &mut self.hosts[host.0 as usize].kind {
+            node.store.insert((slot, index), shred);
+        }
+    }
+
+    /// Open a §6.4 repair stream from `host` toward the connected `peer`.
+    /// Returns the stream handle for correlation with [`Self::repair_events`].
+    pub fn request_repair(
+        &mut self,
+        host: HostId,
+        peer: Pubkey,
+        request: RepairReq,
+    ) -> Option<u64> {
+        let mut stream = None;
+        self.with_overlay_node(host.0, |node, env| {
+            stream = node.core.request_repair(env, peer, &request).map(|id| id.0);
+        });
+        self.post_process(host.0);
+        stream
+    }
+
+    /// Client-side repair outcomes a host observed, in order.
+    pub fn repair_events(&self, host: HostId) -> &[SimRepairEvent] {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => &node.repair_events,
+            _ => &[],
+        }
+    }
+
+    /// (datagrams, bytes) this host put on the wire so far.
+    pub fn host_sent(&self, host: HostId) -> (u64, u64) {
+        let entry = &self.hosts[host.0 as usize];
+        (entry.sent_datagrams, entry.sent_bytes)
+    }
+
+    /// Repair requests refused (rate limit / caps) by a host's core.
+    pub fn repairs_refused(&self, host: HostId) -> u64 {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.repairs_refused(),
+            _ => 0,
+        }
+    }
+
+    /// Malformed repair traffic a host's core dropped inertly.
+    pub fn repairs_malformed(&self, host: HostId) -> u64 {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.repairs_malformed(),
+            _ => 0,
+        }
+    }
+
+    /// Sends dropped because the target was neither connected nor Direct.
+    pub fn dropped_unreachable(&self, host: HostId) -> u64 {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.dropped_unreachable(),
+            _ => 0,
+        }
+    }
+
     pub fn run_for(&mut self, duration: Duration) {
         let target = self.now_nanos + duration.as_nanos() as u64;
         loop {
@@ -707,10 +815,51 @@ impl SimWorld {
     }
 
     /// Drain a host's effects after any core call: sends route into the
-    /// world, core events feed the trace, and the host timer is rescheduled.
+    /// world, core events feed the trace, repair requests are answered from
+    /// the host's in-memory store (the §6.4 store-lookup seam), and the
+    /// host timer is rescheduled. Loops until quiescent because answering a
+    /// repair request produces further sends.
     fn post_process(&mut self, host: u32) {
         let now = self.now_nanos;
+        loop {
+            let lookups = self.drain_host(host);
+            if lookups.is_empty() {
+                break;
+            }
+            for (stream, request) in lookups {
+                let mut found = false;
+                self.with_overlay_node(host, |node, env| {
+                    let shred = lookup_repair(&node.store, &request);
+                    found = shred.is_some();
+                    node.core.on_repair_response(env, stream, shred);
+                });
+                let (slot, index, highest) = match request {
+                    RepairReq::WindowIndex { slot, shred_index } => (slot, shred_index, false),
+                    RepairReq::HighestWindowIndex { slot, shred_index } => {
+                        (slot, shred_index, true)
+                    }
+                };
+                self.trace.record(
+                    now,
+                    &TraceEvent::RepairServed {
+                        host,
+                        slot,
+                        index,
+                        highest,
+                        found,
+                    },
+                );
+            }
+        }
+        self.reschedule_timer(host);
+    }
+
+    /// One pass of host-effect draining; returns repair requests awaiting
+    /// their store lookup.
+    fn drain_host(&mut self, host: u32) -> Vec<(OverlayStreamId, RepairReq)> {
+        let now = self.now_nanos;
         let mut outbox = Vec::new();
+        let mut lookups: Vec<(OverlayStreamId, RepairReq)> = Vec::new();
         {
             let Self { hosts, trace, .. } = self;
             let entry = &mut hosts[host as usize];
@@ -742,6 +891,36 @@ impl SimWorld {
                             }
                             CoreEvent::PeerDisconnected { peer, .. } => {
                                 trace.record(now, &TraceEvent::PeerDisconnected { host, peer });
+                            }
+                            CoreEvent::RepairRequest { stream, request, .. } => {
+                                lookups.push((stream, request));
+                            }
+                            CoreEvent::RepairResponse { stream, peer, shred } => {
+                                trace.record(
+                                    now,
+                                    &TraceEvent::RepairConcluded {
+                                        host,
+                                        found: shred.is_some(),
+                                    },
+                                );
+                                if node.repair_events.len() < MAX_DELIVERED_SHREDS {
+                                    node.repair_events.push(SimRepairEvent::Response {
+                                        at_nanos: now,
+                                        stream: stream.0,
+                                        peer,
+                                        shred,
+                                    });
+                                }
+                            }
+                            CoreEvent::RepairFailed { stream, peer } => {
+                                trace.record(now, &TraceEvent::RepairFailed { host });
+                                if node.repair_events.len() < MAX_DELIVERED_SHREDS {
+                                    node.repair_events.push(SimRepairEvent::Failed {
+                                        at_nanos: now,
+                                        stream: stream.0,
+                                        peer,
+                                    });
+                                }
                             }
                         }
                     }
@@ -783,7 +962,7 @@ impl SimWorld {
         for (from, to, bytes) in outbox {
             self.route(host, from, to, bytes);
         }
-        self.reschedule_timer(host);
+        lookups
     }
 
     /// Carry a datagram from a host socket toward `to`: outbound NAT
@@ -871,6 +1050,8 @@ impl SimWorld {
                 len: payload.len(),
             },
         );
+        self.hosts[sender as usize].sent_datagrams += 1;
+        self.hosts[sender as usize].sent_bytes += payload.len() as u64;
         if self.rng.random_bool(params.drop_probability) {
             self.trace.record(
                 now,

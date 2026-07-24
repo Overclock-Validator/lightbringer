@@ -24,11 +24,12 @@ use solana_sdk::{pubkey::Pubkey, signer::Signer};
 use crate::overlay::{
     OverlayConfig, OverlayMode,
     env::{OverlayEnv, SocketId},
+    repair::RepairReq,
     service::{CoreEvent, OverlayCore},
     transport::{OverlayStreamId, OverlayTransport, StreamEvent, TransportEvent},
 };
 
-use super::crypto;
+use super::{SimRepairEvent, SimShredStore, crypto, lookup_repair};
 
 const TICK: Duration = Duration::from_secs(1);
 
@@ -40,13 +41,13 @@ const TICK: Duration = Duration::from_secs(1);
 /// sent this op.
 #[derive(Clone, Debug)]
 pub struct MemStreamOp {
-    initiator_is_sender: bool,
-    seq: u64,
-    kind: MemStreamOpKind,
+    pub initiator_is_sender: bool,
+    pub seq: u64,
+    pub kind: MemStreamOpKind,
 }
 
 #[derive(Clone, Debug)]
-enum MemStreamOpKind {
+pub enum MemStreamOpKind {
     Open,
     Data(Vec<u8>),
     Fin,
@@ -418,6 +419,8 @@ struct HighSeamNode {
     pubkey: Pubkey,
     addr: SocketAddr,
     delivered: Vec<Vec<u8>>,
+    store: SimShredStore,
+    repair_events: Vec<SimRepairEvent>,
     up: bool,
 }
 
@@ -498,6 +501,8 @@ impl HighSeamNet {
             pubkey,
             addr,
             delivered: Vec::new(),
+            store: SimShredStore::new(),
+            repair_events: Vec::new(),
             up: true,
         });
         self.by_addr.insert(addr, index);
@@ -529,6 +534,29 @@ impl HighSeamNet {
         &self.nodes[index].delivered
     }
 
+    /// Seed a node's in-memory shred store (the serve-repair source).
+    pub fn store_insert(&mut self, index: usize, slot: u64, shred_index: u32, shred: Vec<u8>) {
+        self.nodes[index].store.insert((slot, shred_index), shred);
+    }
+
+    /// Open a §6.4 repair stream from node `index` toward `peer`.
+    pub fn request_repair(&mut self, index: usize, peer: Pubkey, request: RepairReq) -> Option<u64> {
+        let now = self.now();
+        let node = &mut self.nodes[index];
+        node.env.now = now;
+        let stream = node
+            .core
+            .request_repair(&mut node.env, peer, &request)
+            .map(|id| id.0);
+        self.drain_node(index);
+        stream
+    }
+
+    /// Client-side repair outcomes node `index` observed, in order.
+    pub fn repair_events(&self, index: usize) -> &[SimRepairEvent] {
+        &self.nodes[index].repair_events
+    }
+
     pub fn set_node_up(&mut self, index: usize, up: bool) {
         self.nodes[index].up = up;
     }
@@ -550,6 +578,17 @@ impl HighSeamNet {
         node.env.now = now;
         node.core
             .on_datagram(&mut node.env, SocketId::PRIMARY, from_addr, bytes);
+        self.drain_node(to);
+    }
+
+    /// Deliver a raw stream op into a node as if sent by `from` — the
+    /// adversarial injection point for forged/garbage stream traffic.
+    pub fn inject_stream_op(&mut self, to: usize, from: Pubkey, op: MemStreamOp) {
+        let now = self.now();
+        let node = &mut self.nodes[to];
+        node.env.now = now;
+        node.core.transport_mut().deliver_stream_op(from, op);
+        node.core.on_transport_activity(&mut node.env);
         self.drain_node(to);
     }
 
@@ -643,17 +682,57 @@ impl HighSeamNet {
         }
     }
 
+    /// Drain a node's effects, answering repair requests from its store
+    /// (the §6.4 store-lookup seam) until quiescent.
     fn drain_node(&mut self, index: usize) {
-        let from = self.nodes[index].addr;
-        while let Some((to, bytes)) = self.nodes[index].env.outbox.pop_front() {
-            self.in_flight.push_back((from, to, bytes));
-        }
-        for (to, op) in self.nodes[index].core.transport_mut().take_stream_ops() {
-            self.in_flight_ops.push_back((index, to, op));
-        }
-        while let Some(event) = self.nodes[index].core.poll_event() {
-            if let CoreEvent::ShredForFilter(packet) = event {
-                self.nodes[index].delivered.push(packet.as_slice().to_vec());
+        loop {
+            let from = self.nodes[index].addr;
+            while let Some((to, bytes)) = self.nodes[index].env.outbox.pop_front() {
+                self.in_flight.push_back((from, to, bytes));
+            }
+            for (to, op) in self.nodes[index].core.transport_mut().take_stream_ops() {
+                self.in_flight_ops.push_back((index, to, op));
+            }
+            let mut lookups = Vec::new();
+            let ticks = self.ticks;
+            {
+                let node = &mut self.nodes[index];
+                while let Some(event) = node.core.poll_event() {
+                    match event {
+                        CoreEvent::ShredForFilter(packet) => {
+                            node.delivered.push(packet.as_slice().to_vec());
+                        }
+                        CoreEvent::RepairRequest { stream, request, .. } => {
+                            lookups.push((stream, request));
+                        }
+                        CoreEvent::RepairResponse { stream, peer, shred } => {
+                            node.repair_events.push(SimRepairEvent::Response {
+                                at_nanos: ticks,
+                                stream: stream.0,
+                                peer,
+                                shred,
+                            });
+                        }
+                        CoreEvent::RepairFailed { stream, peer } => {
+                            node.repair_events.push(SimRepairEvent::Failed {
+                                at_nanos: ticks,
+                                stream: stream.0,
+                                peer,
+                            });
+                        }
+                        CoreEvent::PeerConnected { .. } | CoreEvent::PeerDisconnected { .. } => {}
+                    }
+                }
+            }
+            if lookups.is_empty() {
+                return;
+            }
+            let now = self.now();
+            for (stream, request) in lookups {
+                let node = &mut self.nodes[index];
+                node.env.now = now;
+                let shred = lookup_repair(&node.store, &request);
+                node.core.on_repair_response(&mut node.env, stream, shred);
             }
         }
     }

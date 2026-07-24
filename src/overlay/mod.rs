@@ -4,6 +4,7 @@ mod env;
 mod gossip;
 mod identity;
 mod packet;
+pub mod repair;
 mod service;
 #[cfg(feature = "sim")]
 pub mod sim;

@@ -15,6 +15,7 @@ use crate::{thread_manager::CancelRx, types::PacketInfo};
 use super::{
     OverlayConfig, OverlayIdentity, OverlayMode,
     env::{OverlayEnv, SocketId},
+    repair::RepairStore,
     service::{CoreEvent, OverlayCore},
     transport::{OverlayQuicTransport, TransportOptions},
 };
@@ -88,6 +89,7 @@ async fn run_driver(
     config: OverlayConfig,
     source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
     filter_tx: kanal::AsyncSender<PacketInfo>,
+    repair_store: impl RepairStore,
 ) -> Result<()> {
     let mut env = GlommioEnv::bind_primary(config.bind_addr)?;
     let transport =
@@ -126,8 +128,23 @@ async fn run_driver(
                 CoreEvent::PeerDisconnected { peer, reason } => {
                     log::debug!("overlay: peer {peer} disconnected: {reason}");
                 }
+                // Serving side of §6.4: the store lookup lives here in the
+                // driver (fjall blocks); the sans-IO core only frames the
+                // exchange. Same lookups as repair_delivery's UDP server.
+                CoreEvent::RepairRequest { stream, request, .. } => {
+                    core.on_repair_response(&mut env, stream, repair_store.lookup(&request));
+                }
+                // Requester side lands with the sink repair wiring; nothing
+                // opens repair streams from this driver yet.
+                CoreEvent::RepairResponse { peer, .. } => {
+                    log::debug!("overlay: unexpected repair response from {peer}");
+                }
+                CoreEvent::RepairFailed { peer, .. } => {
+                    log::debug!("overlay: repair stream to {peer} failed");
+                }
             }
         }
+        env.flush().await;
 
         let now = Instant::now();
         let mut wait = core
@@ -162,12 +179,15 @@ pub async fn start_overlay_runner(
     config: OverlayConfig,
     source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
     filter_tx: kanal::AsyncSender<PacketInfo>,
+    repair_store: impl RepairStore + 'static,
 ) -> Result<()> {
     let identity = OverlayIdentity::from_keypair(&keypair)?;
     log::info!("overlay identity: {}", identity.pubkey);
 
     let runner_task = spawn_local(async move {
-        if let Err(e) = run_driver(&identity, keypair, config, source_rx, filter_tx).await {
+        if let Err(e) =
+            run_driver(&identity, keypair, config, source_rx, filter_tx, repair_store).await
+        {
             log::error!("overlay: driver stopped: {e}");
         }
     });
