@@ -37,6 +37,7 @@ pub const SCENARIOS: &[&str] = &[
     "repair-performance",
     "portmap-matrix",
     "portmap-lease",
+    "ipv6-dual-advert",
 ];
 
 #[derive(Debug)]
@@ -65,6 +66,7 @@ pub fn run(name: &str, seed: u64, verbose: bool) -> Option<ScenarioOutcome> {
         "repair-performance" => Some(repair_performance(seed, verbose)),
         "portmap-matrix" => Some(portmap_matrix(seed, verbose)),
         "portmap-lease" => Some(portmap_lease(seed, verbose)),
+        "ipv6-dual-advert" => Some(ipv6_dual_advert(seed, verbose)),
         _ => None,
     }
 }
@@ -1349,6 +1351,124 @@ pub fn portmap_lease(seed: u64, verbose: bool) -> ScenarioOutcome {
         ok: failures.is_empty(),
         summary: if failures.is_empty() {
             format!("lease renewed through 150s of 30s leases ({installs} installs)")
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+/// P4 deliverable (c) — IPv6 dual advertisement (nat-traversal.md §6.3
+/// step 2, §4 caution): a NATed dual-stack subject dials helpers over v6 to
+/// have its v6 source observed, a PCP pinhole opens its firewall, a
+/// fresh-source dial-back proves the end-to-end v6 path, and only then does
+/// the advert carry the v6 address — listed before v4, and preferred by a
+/// dialing peer. A subject whose pinhole is refused keeps advertising v4
+/// only: a broken v6 address never rides an advert.
+pub fn ipv6_dual_advert(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+
+    let observers = spawn_observers(&mut world, &OBSERVER_PORTS);
+    let witness = observers[0];
+    let static_peers = observer_addrs(&world, &observers);
+    // Subject A: gateway grants both the v4 mapping and the v6 pinhole.
+    let granted = world.add_node(NodeOptions {
+        nat: vec![NatConfig::port_restricted_cone()],
+        gateway: Some(GatewayConfig::granting()),
+        static_peers: static_peers.clone(),
+        bind_port: SUBJECT_BIND_PORT,
+        zero_config: true,
+        ..NodeOptions::default()
+    });
+    // Subject B: v4 mapping granted, v6 pinhole refused (§4: the v6 path
+    // exists but is not usable end to end).
+    let denied = world.add_node(NodeOptions {
+        nat: vec![NatConfig::port_restricted_cone()],
+        gateway: Some(GatewayConfig::granting().v6_pinhole(super::gateway::TierMode::Deny)),
+        static_peers: static_peers.clone(),
+        bind_port: SUBJECT_BIND_PORT,
+        zero_config: true,
+        ..NodeOptions::default()
+    });
+    // A public dual-stack node that will later dial subject A by its advert.
+    let prober = world.add_node(NodeOptions {
+        mode: OverlayMode::Source,
+        static_peers,
+        ..NodeOptions::default()
+    });
+
+    // Connect (t=10s advert), v6 self-discovery dials (20s), observations,
+    // v6 dial-back (~40s), and the advert cycle that carries the result.
+    world.run_for(Duration::from_secs(55));
+
+    let mut failures = Vec::new();
+    let granted_pk = world.overlay_pubkey(granted);
+    let denied_pk = world.overlay_pubkey(denied);
+    let granted_v6 = world.addr_v6(granted);
+    let granted_v4_mapped =
+        std::net::SocketAddr::new(world.external_ip(granted, 0), SUBJECT_BIND_PORT);
+
+    if !world.pinhole_live(granted, SUBJECT_BIND_PORT) {
+        failures.push("granted subject has no live pinhole".to_string());
+    }
+    if world.pinhole_live(denied, SUBJECT_BIND_PORT) {
+        failures.push("denied subject somehow got a pinhole".to_string());
+    }
+
+    match world.peer_advert(witness, &granted_pk) {
+        Some(advert) => {
+            let addrs = advert.direct_addrs();
+            if addrs.first() != Some(&granted_v6) {
+                failures.push(format!(
+                    "granted subject must list its v6 {granted_v6} first, observed {addrs:?}"
+                ));
+            }
+            if !addrs.contains(&granted_v4_mapped) {
+                failures.push(format!(
+                    "granted subject must also carry v4 {granted_v4_mapped}, observed {addrs:?}"
+                ));
+            }
+        }
+        None => failures.push("witness never learned the granted subject's advert".to_string()),
+    }
+    match world.peer_advert(witness, &denied_pk) {
+        Some(advert) => {
+            let addrs = advert.direct_addrs();
+            if addrs.iter().any(|addr| addr.is_ipv6()) {
+                failures.push(format!(
+                    "denied subject advertised an unusable v6 path: {addrs:?}"
+                ));
+            }
+            if addrs.is_empty() {
+                failures.push("denied subject should still be Direct via its v4 mapping".into());
+            }
+        }
+        None => failures.push("witness never learned the denied subject's advert".to_string()),
+    }
+
+    // Preference: a shred injected at the unconnected prober fans out to
+    // Direct peers; its dial to subject A must land on the v6 address.
+    let shred = synth_shred(seed, 3, 0);
+    world.inject_shred(prober, &shred);
+    world.run_for(Duration::from_secs(5));
+    match world.peer_connection_addr(prober, &granted_pk) {
+        Some(addr) if addr.is_ipv6() => {}
+        Some(addr) => failures.push(format!("prober dialed subject A over v4 {addr}")),
+        None => failures.push("prober never connected to subject A".to_string()),
+    }
+
+    ScenarioOutcome {
+        name: "ipv6-dual-advert",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            format!(
+                "granted advertises [{granted_v6}, {granted_v4_mapped}], denied stays v4-only, prober dialed v6"
+            )
         } else {
             failures.join("; ")
         },

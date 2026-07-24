@@ -128,7 +128,14 @@ enum CandidateKind {
     Observed,
     /// The gateway-granted port at our observed external IP (§6.3).
     PortMapped,
+    /// The observed v6 mapping, confirmed end-to-end over the v6 path
+    /// (§6.3 step 2 — §4: naive v6 advertising measurably hurts).
+    V6,
 }
+
+/// Peers dialed for v6 self-discovery per advert cycle (§6.3): two distinct
+/// observer IPs are what classification needs; one spare covers churn.
+const MAX_V6_PROBE_DIALS: usize = 3;
 
 /// Requester side of a §6.2.3 dial-back: the candidate address we asked a
 /// helper to confirm, awaiting its verdict.
@@ -182,9 +189,15 @@ pub struct OverlayCore<T> {
     local_pubkey: Pubkey,
     gossip: LightbringerGossip,
     discovery: AddressDiscovery,
+    /// v6-side observation store (§6.3): families never mix — a v6 mapping
+    /// grouped with v4 observations would misclassify both.
+    discovery_v6: Option<AddressDiscovery>,
     tree: TurbineTree,
     static_peers: Vec<SocketAddr>,
     advertised_addr: Option<SocketAddr>,
+    advertised_addr_v6: Option<SocketAddr>,
+    /// The v6 overlay socket's address, when dual-stack (§6.3).
+    bind_v6: Option<SocketAddr>,
     repair: RepairEndpoint,
     advert_ttl_ms: u32,
     advert_seq: u64,
@@ -201,6 +214,9 @@ pub struct OverlayCore<T> {
     /// it AND a fresh-source probe reached it (a grant alone proves nothing
     /// behind CGN or a lying gateway).
     confirmed_portmap: Option<SocketAddr>,
+    /// §6.3 dial-back confirmed v6 address: a fresh-source probe completed a
+    /// handshake over the end-to-end v6 path (pinhole or open firewall).
+    confirmed_v6: Option<SocketAddr>,
     /// §6.3 port-mapping ladder client, when a gateway is configured.
     portmap: Option<PortMapper>,
     dialback_pending: BTreeMap<u64, DialBackPending>,
@@ -250,9 +266,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
             keypair,
             gossip: LightbringerGossip::new(config.peer_ttl()),
             discovery: AddressDiscovery::new(config.bind_addr),
+            discovery_v6: config.bind_addr_v6.map(AddressDiscovery::new),
             tree: TurbineTree::new(local_pubkey, config.fanout),
             static_peers: config.static_peers.clone(),
             advertised_addr: config.advertised_addr,
+            advertised_addr_v6: config.advertised_addr_v6,
+            bind_v6: config.bind_addr_v6,
             repair: config
                 .repair_addr
                 .map(RepairEndpoint::Udp)
@@ -266,6 +285,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             repair_rate: RepairRateLimiter::new(MAX_REPAIR_REQUESTS_PER_SECOND),
             confirmed_direct: None,
             confirmed_portmap: None,
+            confirmed_v6: None,
             portmap,
             dialback_pending: BTreeMap::new(),
             next_dialback_nonce: 0,
@@ -318,8 +338,11 @@ impl<T: OverlayTransport> OverlayCore<T> {
         let now = env.now();
         if now >= self.next_advert {
             self.next_advert = now + ADVERT_INTERVAL;
-            self.advertise(env);
+            let advert_raw = self.advertise(env);
             self.broadcast_observations(env);
+            if let Some(advert_raw) = advert_raw {
+                self.maybe_probe_v6(env, advert_raw);
+            }
             self.maybe_request_dialback(env);
         }
         self.expire_repairs(env, now);
@@ -763,9 +786,16 @@ impl<T: OverlayTransport> OverlayCore<T> {
             OverlayFrame::AddressObservation { observed } => {
                 // §6.2 step 1: a connected peer reports our public mapping.
                 // Only an authenticated peer's observation is meaningful; the
-                // identity keys the port-tagged store.
+                // identity keys the port-tagged store. Families never mix
+                // (§6.3): the v6 mapping has its own store.
                 if let Some(observer) = self.transport.peer_identity(from) {
-                    self.discovery.record(observer, from, observed);
+                    if observed.is_ipv6() {
+                        if let Some(discovery_v6) = &mut self.discovery_v6 {
+                            discovery_v6.record(observer, from, observed);
+                        }
+                    } else {
+                        self.discovery.record(observer, from, observed);
+                    }
                 }
             }
             OverlayFrame::DialBackRequest { nonce, probe_port } => {
@@ -793,19 +823,28 @@ impl<T: OverlayTransport> OverlayCore<T> {
             }
             return;
         }
-        let dial_addr = self
+        // §6.3: prefer the v6 Direct address when we can speak v6; fall back
+        // to v4 rather than dropping when the preferred one is quarantined.
+        let has_v6 = self.bind_v6.is_some();
+        let advertised: Vec<SocketAddr> = self
             .gossip
             .get(&pubkey, env.now())
-            .and_then(|advert| advert.direct_addrs().first().copied());
+            .map(|advert| advert.direct_addrs().to_vec())
+            .unwrap_or_default();
+        let usable: Vec<SocketAddr> = advertised
+            .into_iter()
+            .filter(|addr| !self.is_quarantined(addr))
+            .collect();
+        let dial_addr = usable
+            .iter()
+            .find(|addr| addr.is_ipv6() && has_v6)
+            .or_else(|| usable.iter().find(|addr| !addr.is_ipv6()))
+            .copied();
         let Some(addr) = dial_addr else {
             self.dropped_unreachable += 1;
             log::debug!("overlay: no route to {pubkey}; dropped");
             return;
         };
-        if self.is_quarantined(&addr) {
-            self.dropped_unreachable += 1;
-            return;
-        }
         // Identity-gated dial-on-demand (§6.2.3 F8): the payload rides the
         // dial but the transport releases it only once the connection
         // authenticates as `pubkey`; a mismatch drops it undelivered and the
@@ -977,6 +1016,114 @@ impl<T: OverlayTransport> OverlayCore<T> {
             let probe_port = portmapped.map(|addr| addr.port());
             self.request_dialback(env, CandidateKind::PortMapped, portmapped, probe_port);
         }
+        self.maybe_request_dialback_v6(env);
+    }
+
+    /// §6.3 step 2: dial peers advertising a v6 `Direct` address over our v6
+    /// socket, so they observe (and later fresh-source-probe) our v6 source.
+    /// Identity-gated exactly like every dial (§6.2.3 F8); the payload is
+    /// this cycle's signed advert. Stops once the v6 path is confirmed.
+    fn maybe_probe_v6(&mut self, env: &mut dyn OverlayEnv, advert_raw: Vec<u8>) {
+        if self.bind_v6.is_none()
+            || self.advertised_addr_v6.is_some()
+            || self.confirmed_v6.is_some()
+        {
+            return;
+        }
+        let now = env.now();
+        let connected_v6: BTreeSet<SocketAddr> = self
+            .transport
+            .connections()
+            .into_iter()
+            .filter(|(_, addr)| addr.is_ipv6())
+            .map(|(_, addr)| addr)
+            .collect();
+        let targets: Vec<(Pubkey, SocketAddr)> = self
+            .gossip
+            .peers(now)
+            .into_iter()
+            .filter(|advert| advert.pubkey != self.local_pubkey)
+            .filter_map(|advert| {
+                advert
+                    .direct_addrs()
+                    .iter()
+                    .find(|addr| addr.is_ipv6())
+                    .map(|addr| (advert.pubkey, *addr))
+            })
+            .filter(|(_, addr)| !connected_v6.contains(addr) && !self.is_quarantined(addr))
+            .take(MAX_V6_PROBE_DIALS)
+            .collect();
+        for (pubkey, addr) in targets {
+            if self
+                .transport
+                .queue_datagram_expecting(env, addr, pubkey, advert_raw.clone())
+                .is_err()
+            {
+                continue;
+            }
+            self.confirming.entry(addr).or_insert(ConfirmDial {
+                expected: pubkey,
+                deadline: now + CONFIRM_TIMEOUT,
+            });
+        }
+    }
+
+    /// §6.3 v6 candidate: the consistent v6 mapping our peers observe,
+    /// confirmed through a helper we hold a *v6* connection to — the request
+    /// rides that connection so the helper probes our v6 source fresh.
+    fn maybe_request_dialback_v6(&mut self, env: &mut dyn OverlayEnv) {
+        if self.advertised_addr_v6.is_some() {
+            self.confirmed_v6 = None;
+            return;
+        }
+        let candidate = self
+            .discovery_v6
+            .as_ref()
+            .and_then(|discovery| discovery.consistent_mapping());
+        if self.confirmed_v6 != candidate {
+            self.confirmed_v6 = None;
+        }
+        if self.confirmed_v6.is_some() {
+            return;
+        }
+        let Some(candidate) = candidate else {
+            return;
+        };
+        if self
+            .dialback_pending
+            .values()
+            .any(|pending| pending.kind == CandidateKind::V6)
+        {
+            return;
+        }
+        let Some((helper, helper_addr)) = self
+            .transport
+            .connections()
+            .into_iter()
+            .find(|(pubkey, addr)| addr.is_ipv6() && *pubkey != self.local_pubkey)
+        else {
+            return;
+        };
+        let nonce = self.next_dialback_nonce;
+        self.next_dialback_nonce += 1;
+        match OverlayFrame::dialback_request(nonce, None).encode() {
+            Ok(raw) => {
+                // Address-directed so it rides the v6 connection, not the
+                // identity-indexed (possibly v4) one.
+                if self.transport.queue_datagram(env, helper_addr, raw).is_ok() {
+                    self.dialback_pending.insert(
+                        nonce,
+                        DialBackPending {
+                            helper,
+                            kind: CandidateKind::V6,
+                            candidate,
+                            deadline: env.now() + DIALBACK_TIMEOUT,
+                        },
+                    );
+                }
+            }
+            Err(e) => log::warn!("overlay: failed to encode v6 dial-back request: {e}"),
+        }
     }
 
     /// Ask a connected helper to fresh-source-probe `candidate` (§6.2.3).
@@ -1107,6 +1254,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             match pending.kind {
                 CandidateKind::Observed => self.confirmed_direct = Some(pending.candidate),
                 CandidateKind::PortMapped => self.confirmed_portmap = Some(pending.candidate),
+                CandidateKind::V6 => self.confirmed_v6 = Some(pending.candidate),
             }
         }
     }
@@ -1161,6 +1309,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
     #[allow(dead_code)]
     pub fn confirmed_portmap(&self) -> Option<SocketAddr> {
         self.confirmed_portmap
+    }
+
+    /// The §6.3 dial-back-confirmed v6 address. Oracle surface.
+    #[allow(dead_code)]
+    pub fn confirmed_v6(&self) -> Option<SocketAddr> {
+        self.confirmed_v6
     }
 
     /// The gateway-granted external mapping (unconfirmed), if a lease is
@@ -1242,13 +1396,17 @@ impl<T: OverlayTransport> OverlayCore<T> {
     ///    noise), every other flavor advertises port-tagged hints; `via`
     ///    carries connected public peers.
     fn compute_reachability(&self) -> Reachability {
-        if let Some(addr) = self
+        let v4 = self
             .advertised_addr
             .or(self.confirmed_direct)
-            .or(self.confirmed_portmap)
-        {
+            .or(self.confirmed_portmap);
+        // §6.3: the v6 address rides alongside v4, listed first — peers
+        // prefer the NAT-free path. Never an unconfirmed v6 (§4 caution).
+        let v6 = self.advertised_addr_v6.or(self.confirmed_v6);
+        if v4.is_some() || v6.is_some() {
             let mut addrs = ArrayVec::new();
-            addrs.push(addr);
+            addrs.extend(v6);
+            addrs.extend(v4);
             return Reachability::Direct(addrs);
         }
         let observed = match self.discovery.classify() {
@@ -1264,7 +1422,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
         Reachability::Coordinated { observed, via }
     }
 
-    fn advertise(&mut self, env: &mut dyn OverlayEnv) {
+    /// Sign and flood this cycle's advert; returns the encoded frame so the
+    /// v6 self-discovery dial can carry it as its payload (§6.3).
+    fn advertise(&mut self, env: &mut dyn OverlayEnv) -> Option<Vec<u8>> {
         self.advert_seq += 1;
         let reachability = self.compute_reachability();
         let advert = PeerAdvert {
@@ -1278,14 +1438,14 @@ impl<T: OverlayTransport> OverlayCore<T> {
             Ok(signed) => signed,
             Err(e) => {
                 log::warn!("overlay: failed to sign advert: {e}");
-                return;
+                return None;
             }
         };
         let raw = match OverlayFrame::peer_advertisement(signed).encode() {
             Ok(raw) => raw,
             Err(e) => {
                 log::warn!("overlay: failed to encode advert: {e}");
-                return;
+                return None;
             }
         };
 
@@ -1304,6 +1464,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 log::warn!("overlay: failed to reach static peer {addr}: {e}");
             }
         }
+        Some(raw)
     }
 
     fn push_event(&mut self, event: CoreEvent) {

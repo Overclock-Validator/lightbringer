@@ -1052,6 +1052,24 @@ impl SimWorld {
         }
     }
 
+    /// The §6.3 dial-back-confirmed v6 address a host holds.
+    pub fn confirmed_v6(&self, host: HostId) -> Option<SocketAddr> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.confirmed_v6(),
+            _ => None,
+        }
+    }
+
+    /// The address a host's transport holds its connection to `pubkey` at
+    /// (the first connection per identity — what fan-out rides).
+    pub fn peer_connection_addr(&self, host: HostId, pubkey: &Pubkey) -> Option<SocketAddr> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.transport().connection_addr(pubkey),
+            HostKind::Transport(node) => node.transport.connection_addr(pubkey),
+            HostKind::Probe(_) => None,
+        }
+    }
+
     /// The gateway-granted (unconfirmed) external mapping a host holds.
     pub fn portmap_mapped(&self, host: HostId) -> Option<SocketAddr> {
         match &self.hosts[host.0 as usize].kind {
