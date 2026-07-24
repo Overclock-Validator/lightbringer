@@ -27,6 +27,7 @@ use solana_sdk::pubkey::Pubkey;
 use super::{
     env::{OverlayEnv, SocketId},
     identity::{OverlayIdentity, pubkey_from_certificate},
+    punch::PunchProbe,
 };
 
 const MAX_DATAGRAMS_PER_TRANSMIT: usize = 1;
@@ -56,6 +57,9 @@ const MAX_CONCURRENT_BIDI_STREAMS: u32 = 64;
 /// rate-limits helper binds per requester and reclaims each probe promptly.
 const MAX_PROBES: usize = 256;
 const MAX_PROBE_EVENTS: usize = 1024;
+/// Raw P5 punch probes are unauthenticated until the core verifies their
+/// signature and negotiated nonce. Keep the pre-verification queue small.
+const MAX_PUNCH_PROBES: usize = 2048;
 const SEEDED_CID_LEN: usize = 8;
 
 /// Construction-time knobs for the QUIC transport. Production uses
@@ -119,6 +123,16 @@ pub struct ProbeEvent {
     pub probe: ProbeId,
     pub addr: SocketAddr,
     pub identity: Option<Pubkey>,
+}
+
+/// A non-QUIC punch probe received on an overlay socket. The transport only
+/// demultiplexes and bounds this queue; the core verifies the signature and
+/// associates it with a negotiated session before acting on it.
+#[derive(Clone, Debug)]
+pub struct PunchProbeEvent {
+    pub socket: SocketId,
+    pub from: SocketAddr,
+    pub probe: PunchProbe,
 }
 
 /// Handle for a bidirectional stream, unique for the life of the transport
@@ -246,6 +260,26 @@ pub trait OverlayTransport {
     fn poll_probe_event(&mut self) -> Option<ProbeEvent>;
     /// Tear down a probe connection; the caller closes its socket separately.
     fn close_probe(&mut self, env: &mut dyn OverlayEnv, probe: ProbeId);
+    /// Send a raw P5 punch probe on the primary socket for `to`'s family.
+    /// This is intentionally separate from QUIC transmits: the packet's first
+    /// byte has the QUIC fixed bit clear and must never reach quinn-proto.
+    fn send_punch_probe(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        probe: PunchProbe,
+    ) -> Result<()>;
+    /// Pop a demultiplexed raw punch probe.
+    fn poll_punch_probe(&mut self) -> Option<PunchProbeEvent>;
+    /// Start an identity-gated QUIC connection without an application
+    /// datagram. P5's lower-pubkey dialer uses this after a raw probe proves
+    /// the path; the higher peer only accepts.
+    fn dial_expecting(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        expected: Pubkey,
+    ) -> Result<()>;
     /// Drop the connection at `addr` without emitting a `Disconnected` event
     /// (a §6.2.3 identity-mismatch on a receiver-side confirm-dial: the peer
     /// that answered is not the advertised identity, so we must not keep it
@@ -277,6 +311,7 @@ pub struct OverlayQuicTransport {
     probe_handles: HashMap<ConnectionHandle, ProbeId>,
     probe_sockets: BTreeSet<SocketId>,
     probe_events: VecDeque<ProbeEvent>,
+    punch_probes: VecDeque<PunchProbeEvent>,
     next_probe: u64,
     endpoint_buf: Vec<u8>,
     transmit_buf: Vec<u8>,
@@ -353,6 +388,7 @@ impl OverlayQuicTransport {
             probe_handles: HashMap::new(),
             probe_sockets: BTreeSet::new(),
             probe_events: VecDeque::new(),
+            punch_probes: VecDeque::new(),
             next_probe: 0,
             endpoint_buf: Vec::with_capacity(UDP_BUFFER_SIZE),
             transmit_buf: Vec::with_capacity(UDP_BUFFER_SIZE),
@@ -972,6 +1008,22 @@ impl OverlayTransport for OverlayQuicTransport {
             log::debug!("overlay: dropping datagram from {from} on unexpected {socket}");
             return;
         }
+        if PunchProbe::looks_like(datagram) {
+            match PunchProbe::decode(datagram) {
+                Ok(probe) => push_bounded(
+                    &mut self.punch_probes,
+                    PunchProbeEvent {
+                        socket,
+                        from,
+                        probe,
+                    },
+                    MAX_PUNCH_PROBES,
+                    "punch probes",
+                ),
+                Err(e) => log::debug!("overlay: dropped malformed punch probe from {from}: {e}"),
+            }
+            return;
+        }
         self.endpoint_buf.clear();
         let event = self.endpoint.handle(
             env.now(),
@@ -1194,6 +1246,35 @@ impl OverlayTransport for OverlayQuicTransport {
             // socket; the core releases it via OverlayEnv::close.
             self.probe_sockets.remove(&conn.socket);
         }
+    }
+
+    fn send_punch_probe(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        probe: PunchProbe,
+    ) -> Result<()> {
+        let raw = probe.encode()?;
+        env.send(self.egress(to), to, &raw);
+        Ok(())
+    }
+
+    fn poll_punch_probe(&mut self) -> Option<PunchProbeEvent> {
+        self.punch_probes.pop_front()
+    }
+
+    fn dial_expecting(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        expected: Pubkey,
+    ) -> Result<()> {
+        self.ensure_connection(env.now(), to)?;
+        if let Some(connection) = self.connections.get_mut(&to) {
+            connection.expect_pubkey.get_or_insert(expected);
+        }
+        self.drive(env);
+        Ok(())
     }
 
     fn drop_connection(&mut self, _env: &mut dyn OverlayEnv, addr: SocketAddr) {

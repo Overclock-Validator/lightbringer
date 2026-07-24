@@ -7,6 +7,7 @@ mod identity;
 mod nat;
 mod packet;
 mod portmap;
+mod punch;
 pub mod repair;
 mod service;
 #[cfg(feature = "sim")]

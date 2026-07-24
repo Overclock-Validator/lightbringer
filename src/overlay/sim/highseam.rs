@@ -26,7 +26,11 @@ use crate::overlay::{
     env::{IpFamily, OverlayEnv, SocketId, TcpId},
     repair::RepairReq,
     service::{CoreEvent, OverlayCore},
-    transport::{OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, StreamEvent, TransportEvent},
+    punch::PunchProbe,
+    transport::{
+        OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, PunchProbeEvent, StreamEvent,
+        TransportEvent,
+    },
 };
 
 use super::{SimRepairEvent, SimShredStore, crypto, lookup_repair};
@@ -80,6 +84,7 @@ pub struct MemTransport {
     established: BTreeMap<Pubkey, SocketAddr>,
     by_addr: BTreeMap<SocketAddr, Pubkey>,
     inbound: VecDeque<(SocketAddr, Vec<u8>)>,
+    punch_probes: VecDeque<PunchProbeEvent>,
     events: VecDeque<TransportEvent>,
     next_stream: u64,
     streams: BTreeMap<OverlayStreamId, MemStream>,
@@ -104,6 +109,7 @@ impl MemTransport {
             established: BTreeMap::new(),
             by_addr: BTreeMap::new(),
             inbound: VecDeque::new(),
+            punch_probes: VecDeque::new(),
             events: VecDeque::new(),
             next_stream: 0,
             streams: BTreeMap::new(),
@@ -278,7 +284,17 @@ impl OverlayTransport for MemTransport {
         from: SocketAddr,
         datagram: &[u8],
     ) {
-        self.inbound.push_back((from, datagram.to_vec()));
+        if PunchProbe::looks_like(datagram) {
+            if let Ok(probe) = PunchProbe::decode(datagram) {
+                self.punch_probes.push_back(PunchProbeEvent {
+                    socket: SocketId::PRIMARY,
+                    from,
+                    probe,
+                });
+            }
+        } else {
+            self.inbound.push_back((from, datagram.to_vec()));
+        }
     }
 
     fn on_timer(&mut self, _env: &mut dyn OverlayEnv) {}
@@ -455,6 +471,30 @@ impl OverlayTransport for MemTransport {
     }
 
     fn close_probe(&mut self, _env: &mut dyn OverlayEnv, _probe: ProbeId) {}
+
+    fn send_punch_probe(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        probe: PunchProbe,
+    ) -> Result<()> {
+        env.send(SocketId::PRIMARY, to, &probe.encode()?);
+        Ok(())
+    }
+
+    fn poll_punch_probe(&mut self) -> Option<PunchProbeEvent> {
+        self.punch_probes.pop_front()
+    }
+
+    fn dial_expecting(
+        &mut self,
+        _env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        _expected: Pubkey,
+    ) -> Result<()> {
+        self.dial_requests.push_back(to);
+        Ok(())
+    }
 
     fn drop_connection(&mut self, _env: &mut dyn OverlayEnv, addr: SocketAddr) {
         let Some(pubkey) = self.by_addr.remove(&addr) else {

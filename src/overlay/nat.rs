@@ -14,6 +14,8 @@ use std::{
     net::{IpAddr, SocketAddr},
 };
 
+use serde::{Deserialize, Serialize};
+
 /// An address observation as §6.2 defines it: `mapping` is the public
 /// endpoint the peer at `observer` reported seeing for us. Classification
 /// groups observations by `observer.port()` (the observer's inbound port —
@@ -26,7 +28,7 @@ pub struct TaggedObservation {
 }
 
 /// The §6.2 reachability class inferred from port-tagged observations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NatClass {
     /// Every observer reports our own local address — no NAT.
     Public,
@@ -100,7 +102,7 @@ pub fn classify_observations(
 /// External-port allocation discipline inferred for an endpoint-dependent
 /// mapping (§6.2 allocator calibration). Recorded per NAT generation for P5
 /// rung selection; nothing consumes it in P3.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AllocatorProfile {
     /// External port == internal port toward every destination.
     Preserving,
