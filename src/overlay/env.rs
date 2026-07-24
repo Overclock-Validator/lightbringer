@@ -26,6 +26,9 @@ impl fmt::Display for SocketId {
 /// (`driver_glommio`), tests wire it to the deterministic simulator.
 pub trait OverlayEnv {
     fn now(&self) -> Instant;
+    // Seam surface for P5 punch randomness; nothing in the core draws from it
+    // yet (dial-back nonces are a monotonic counter, not random).
+    #[allow(dead_code)]
     fn rng(&mut self) -> &mut dyn RngCore;
     /// Queue `datagram` for transmission from local socket `from` to `to`.
     fn send(&mut self, from: SocketId, to: SocketAddr, datagram: &[u8]);

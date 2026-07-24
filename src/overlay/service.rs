@@ -55,6 +55,12 @@ const MAX_DIALBACK_PER_SECOND: u32 = 4;
 const MIN_UNPRIVILEGED_PORT: u16 = 1024;
 /// Concurrent helper probes this node will run (bounds fresh-socket binds).
 const MAX_HELPER_PROBES: usize = 64;
+/// A receiver-side identity confirm-dial (§6.2.3 F8 closure) that has not
+/// connected by this deadline quarantines the advertised (pubkey→address).
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
+/// Quarantined lying-advert identities. Bounded; a superseding advert lifts
+/// the quarantine so an honestly-moved node can re-confirm.
+const MAX_QUARANTINE: usize = 4096;
 
 fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
@@ -131,6 +137,14 @@ struct HelperProbe {
     deadline: Instant,
 }
 
+/// Receiver-side identity confirm-dial in flight (§6.2.3 F8 closure): we are
+/// dialing `expected`'s advertised address and will keep the connection only
+/// if it authenticates as `expected`.
+struct ConfirmDial {
+    expected: Pubkey,
+    deadline: Instant,
+}
+
 struct InboundRepair {
     peer: Pubkey,
     buf: Vec<u8>,
@@ -176,11 +190,22 @@ pub struct OverlayCore<T> {
     /// Helper side: probes in flight, keyed by transport probe handle.
     helper_probes: BTreeMap<ProbeId, HelperProbe>,
     dialback_rate: RepairRateLimiter,
+    /// Receiver-side identity confirm-dials in flight, keyed by the address
+    /// being confirmed (§6.2.3 F8 closure).
+    confirming: BTreeMap<SocketAddr, ConfirmDial>,
+    /// Advertised `Direct` addresses that answered as the wrong identity (or
+    /// never answered). Any peer — Direct advert or an errant connection —
+    /// resolving to a quarantined address is excluded from fan-out; a
+    /// superseding advert for a *different* address is re-confirmable
+    /// (§6.2.3 F8). Address-keyed so an innocent node that happens to answer
+    /// at the lied-about address is never fanned to either.
+    quarantined: LruBTreeMap<SocketAddr, ()>,
     dropped_unreachable: u64,
     invalid_adverts: u64,
     repairs_refused: u64,
     repairs_malformed: u64,
     dialbacks_refused: u64,
+    quarantined_count: u64,
     events: VecDeque<CoreEvent>,
 }
 
@@ -213,11 +238,14 @@ impl<T: OverlayTransport> OverlayCore<T> {
             next_dialback_nonce: 0,
             helper_probes: BTreeMap::new(),
             dialback_rate: RepairRateLimiter::new(MAX_DIALBACK_PER_SECOND),
+            confirming: BTreeMap::new(),
+            quarantined: LruBTreeMap::new(MAX_QUARANTINE),
             dropped_unreachable: 0,
             invalid_adverts: 0,
             repairs_refused: 0,
             repairs_malformed: 0,
             dialbacks_refused: 0,
+            quarantined_count: 0,
             events: VecDeque::new(),
         }
     }
@@ -245,6 +273,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
         self.expire_repairs(env, now);
         self.expire_dialbacks(env, now);
+        self.expire_confirms(now);
         self.pump(env);
     }
 
@@ -313,6 +342,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
         for probe in self.helper_probes.values() {
             deadline = deadline.min(probe.deadline);
+        }
+        for confirm in self.confirming.values() {
+            deadline = deadline.min(confirm.deadline);
         }
         Some(deadline)
     }
@@ -480,10 +512,15 @@ impl<T: OverlayTransport> OverlayCore<T> {
             };
             self.push_event(event);
         }
-        // §6.2 step 1: tell each freshly-connected peer the address we see it
-        // at, so it can classify its own NAT from our vantage point.
         for (pubkey, peer_addr) in connected {
-            self.send_address_observation(env, &pubkey, peer_addr);
+            // §6.2.3 F8: a connection born from a confirm-dial is kept only if
+            // it authenticates as the advertised identity; a mismatch drops it
+            // and quarantines the liar.
+            if self.resolve_confirm(env, peer_addr, pubkey) {
+                // §6.2 step 1: tell the peer the address we see it at, so it
+                // can classify its own NAT from our vantage point.
+                self.send_address_observation(env, &pubkey, peer_addr);
+            }
         }
         while let Some((from, raw)) = self.transport.poll_inbound() {
             self.handle_frame(env, from, raw);
@@ -686,28 +723,96 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
     }
 
-    /// §6.1's single send choke point: an existing connection is always
-    /// preferred; otherwise only `Reachability::Direct` peers are dialed;
-    /// everything else is dropped and counted. Nothing in the overlay dials
-    /// an address that was not either configured or advertised as dialable.
+    /// §6.1's single send choke point, with the §6.2.3 F8 closure: an
+    /// established (TLS-verified) connection always takes the payload;
+    /// otherwise a `Direct` advert alone does NOT authorize traffic — the
+    /// payload is withheld and an identity confirm-dial started, so a lying
+    /// advert can never direct sustained traffic at a victim (the confirm-dial
+    /// carries no payload, and an identity mismatch quarantines the liar).
     fn send_to_peer(&mut self, env: &mut dyn OverlayEnv, pubkey: Pubkey, raw: Vec<u8>) {
-        if self.transport.connection_addr(&pubkey).is_some() {
-            self.transport.queue_datagram_to_peer(env, &pubkey, raw);
+        if let Some(addr) = self.transport.connection_addr(&pubkey) {
+            if self.is_quarantined(&addr) {
+                self.dropped_unreachable += 1;
+            } else {
+                self.transport.queue_datagram_to_peer(env, &pubkey, raw);
+            }
             return;
         }
         let dial_addr = self
             .gossip
             .get(&pubkey, env.now())
             .and_then(|advert| advert.direct_addrs().first().copied());
-        match dial_addr {
-            Some(addr) => {
-                if let Err(e) = self.transport.queue_datagram(env, addr, raw) {
-                    log::warn!("overlay: failed to dial {pubkey} at {addr}: {e}");
-                }
+        let Some(addr) = dial_addr else {
+            self.dropped_unreachable += 1;
+            log::debug!("overlay: no route to {pubkey}; dropped");
+            return;
+        };
+        if self.is_quarantined(&addr) {
+            self.dropped_unreachable += 1;
+            return;
+        }
+        // Identity-gated dial-on-demand (§6.2.3 F8): the payload rides the
+        // dial but the transport releases it only once the connection
+        // authenticates as `pubkey`; a mismatch drops it undelivered and the
+        // liar is quarantined when the connection surfaces.
+        if let Err(e) = self
+            .transport
+            .queue_datagram_expecting(env, addr, pubkey, raw)
+        {
+            log::warn!("overlay: failed to dial {pubkey} at {addr}: {e}");
+            return;
+        }
+        self.confirming.entry(addr).or_insert(ConfirmDial {
+            expected: pubkey,
+            deadline: env.now() + CONFIRM_TIMEOUT,
+        });
+    }
+
+    fn is_quarantined(&self, addr: &SocketAddr) -> bool {
+        self.quarantined.get_without_update(addr).is_some()
+    }
+
+    fn quarantine(&mut self, addr: SocketAddr) {
+        if self.quarantined.get_without_update(&addr).is_none() {
+            self.quarantined_count += 1;
+        }
+        self.quarantined.push(addr, ());
+    }
+
+    /// Resolve a completed connection against a pending dial-on-demand
+    /// (§6.2.3 F8). Returns whether the connection was kept: a mismatch (the
+    /// advertised address answered as a different identity — the advert lied)
+    /// quarantines the advertised identity and drops the connection so it
+    /// never becomes a fan-out target. The withheld payload was already
+    /// dropped by the transport's identity gate.
+    fn resolve_confirm(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        addr: SocketAddr,
+        connected_pubkey: Pubkey,
+    ) -> bool {
+        match self.confirming.remove(&addr) {
+            Some(confirm) if confirm.expected != connected_pubkey => {
+                self.quarantine(addr);
+                self.transport.drop_connection(env, addr);
+                false
             }
-            None => {
-                self.dropped_unreachable += 1;
-                log::debug!("overlay: no route to {pubkey}; dropped");
+            _ => true,
+        }
+    }
+
+    /// Fail dial-on-demands that never connected: the advertised address did
+    /// not answer, so quarantine the identity (§6.2.3).
+    fn expire_confirms(&mut self, now: Instant) {
+        let expired: Vec<SocketAddr> = self
+            .confirming
+            .iter()
+            .filter(|(_, confirm)| now >= confirm.deadline)
+            .map(|(&addr, _)| addr)
+            .collect();
+        for addr in expired {
+            if self.confirming.remove(&addr).is_some() {
+                self.quarantine(addr);
             }
         }
     }
@@ -716,9 +821,24 @@ impl<T: OverlayTransport> OverlayCore<T> {
     /// `Direct` peers dialable on demand. `Coordinated` peers without a
     /// standing connection are excluded from this node's fan-out.
     fn usable_peers(&mut self, now: Instant, exclude: Option<Pubkey>) -> Vec<Pubkey> {
-        let mut set: BTreeSet<Pubkey> = self.transport.connected_peers().into_iter().collect();
-        for (pubkey, _) in self.gossip.direct_peers(now) {
-            set.insert(pubkey);
+        let mut set: BTreeSet<Pubkey> = BTreeSet::new();
+        for pubkey in self.transport.connected_peers() {
+            // Exclude a connection at a quarantined address (§6.2.3 F8): an
+            // errant connection born from a lying advert must never become a
+            // fan-out target, even after the harness/QUIC re-forms it.
+            match self.transport.connection_addr(&pubkey) {
+                Some(addr) if self.is_quarantined(&addr) => {}
+                _ => {
+                    set.insert(pubkey);
+                }
+            }
+        }
+        for (pubkey, addr) in self.gossip.direct_peers(now) {
+            // A `Direct` advert is a fan-out candidate only until its address
+            // is proven a liar (§6.2.3 F8).
+            if !self.is_quarantined(&addr) {
+                set.insert(pubkey);
+            }
         }
         set.remove(&self.local_pubkey);
         if let Some(exclude) = exclude {
@@ -943,6 +1063,13 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.helper_probes.len()
     }
 
+    /// Identities quarantined for a lying `Direct` advert (§6.2.3 F8).
+    /// Oracle surface.
+    #[allow(dead_code)]
+    pub fn quarantined_count(&self) -> u64 {
+        self.quarantined_count
+    }
+
     /// The §6.2 NAT class inferred from peer observations, or `None` while
     /// observations cannot yet discriminate. Oracle/diagnostic surface.
     #[allow(dead_code)]
@@ -964,27 +1091,36 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.discovery.observed_hints()
     }
 
+    /// The reachability this node advertises (nat-traversal.md §6.1/§6.2/§7):
+    ///  - operator-configured `advertised_addr` wins;
+    ///  - else a dial-back-confirmed candidate (Public confirms its bind,
+    ///    full-cone confirms its observed mapping) advertises `Direct`;
+    ///  - else `Coordinated`, whose `observed` hints follow the §12-Q3 flavor
+    ///    policy: fully symmetric advertises none (per-destination ports are
+    ///    noise), every other flavor advertises port-tagged hints; `via`
+    ///    carries connected public peers.
+    fn compute_reachability(&self) -> Reachability {
+        if let Some(addr) = self.advertised_addr.or(self.confirmed_direct) {
+            let mut addrs = ArrayVec::new();
+            addrs.push(addr);
+            return Reachability::Direct(addrs);
+        }
+        let observed = match self.discovery.classify() {
+            Some(NatClass::Symmetric) => ArrayVec::new(),
+            _ => self.discovery.observed_hints(),
+        };
+        let mut via = ArrayVec::new();
+        for pubkey in self.transport.connected_peers() {
+            if pubkey != self.local_pubkey && via.len() < MAX_ADVERT_VIA {
+                via.push(pubkey);
+            }
+        }
+        Reachability::Coordinated { observed, via }
+    }
+
     fn advertise(&mut self, env: &mut dyn OverlayEnv) {
         self.advert_seq += 1;
-        let reachability = match self.advertised_addr {
-            Some(addr) => {
-                let mut addrs = ArrayVec::new();
-                addrs.push(addr);
-                Reachability::Direct(addrs)
-            }
-            None => {
-                let mut via = ArrayVec::new();
-                for pubkey in self.transport.connected_peers() {
-                    if pubkey != self.local_pubkey && via.len() < MAX_ADVERT_VIA {
-                        via.push(pubkey);
-                    }
-                }
-                Reachability::Coordinated {
-                    observed: ArrayVec::new(),
-                    via,
-                }
-            }
-        };
+        let reachability = self.compute_reachability();
         let advert = PeerAdvert {
             pubkey: self.local_pubkey,
             advert_seq: self.advert_seq,

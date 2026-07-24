@@ -32,6 +32,34 @@ first pass through `packet_filter_loop`, which fetches the Solana leader schedul
 over RPC and verifies the shred signature against the scheduled leader. Only
 validated packets are mirrored to the overlay source channel.
 
+Address discovery is identity-first (nat-traversal.md §6.2, phase P3). On
+every established connection each side sends `OverlayFrame::AddressObservation`
+reporting the peer's observed remote address; the receiver tags it with the
+observing peer's identity/inbound port and aggregates per §6.2 in the bounded
+`AddressDiscovery` store (`src/overlay/discovery.rs`), which classifies
+Public / EIM / PortDependent / Symmetric via the shared `overlay::nat`
+classifier and calibrates the EDM allocator discipline (recorded for P5).
+Before advertising `Direct`, the node dial-back-confirms its candidate: it
+asks a connected helper to dial the candidate from a FRESH source port
+(`OverlayEnv::bind` + an isolated probe connection in the QUIC transport with
+its own egress `SocketId`); success requires a completed handshake with the
+node's identity, so restricted filtering — exercised by the fresh port —
+correctly keeps restricted/EDM nodes `Coordinated`. Helper hardening (§9):
+per-requester rate limit, privileged-port refusal, short-lived sockets, and
+reflection-safety by construction (the helper only ever targets the
+requester's own observed source). Auto-advert (§7): operator `advertised_addr`
+wins; else a dial-back-confirmed candidate advertises `Direct`; else
+`Coordinated` with the §12-Q3 hint policy (fully symmetric → empty observed;
+every other flavor → port-tagged observed hints; `via` = connected peers).
+Receiver-side F8 closure (§6.2.3): a `Direct` advert no longer authorizes
+payload by itself — the send choke point uses identity-gated dial-on-demand
+(`queue_datagram_expecting`), so the first shred rides the dial but the
+transport releases it only once the connection authenticates as the
+advertised identity; a mismatch drops it undelivered and quarantines the
+lied-about address (address-keyed, so an innocent node answering there is
+never fanned to either). A superseding advert for a different address is
+re-confirmable.
+
 Gossip is identity-first (nat-traversal.md §6.1, phase P1).
 `LightbringerGossip` keys peers by Ed25519 pubkey in a bounded
 `LruBTreeMap` — one entry per node no matter how many addresses it is seen

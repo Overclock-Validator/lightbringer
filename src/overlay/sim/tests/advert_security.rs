@@ -338,19 +338,18 @@ fn coordinated_advert_is_never_dialed() {
     );
 }
 
-/// KNOWN LIMITATION, closed by P3 dial-back confirmation (§6.2 step 3, §9):
-/// a *validly signed* advert may claim `Direct([victim_addr])` for an address
-/// it does not own. When the tree selects that identity the node dials the
-/// victim — the residual F8 amplification surface. This test PINS that
-/// pre-P3 behavior; the P3 dial-back should flip it (and this assertion must
-/// then be inverted).
+/// F8 CLOSED (P3, §6.2.3 step 3 / §9): a *validly signed* advert that claims
+/// `Direct([victim_addr])` for an address it does not own can no longer direct
+/// traffic at the victim. The identity-gated dial-on-demand releases the shred
+/// only to the advertised identity; the victim answers as itself (≠ V), so the
+/// payload is dropped undelivered and the liar is quarantined. This is the
+/// inversion of the pre-P3 pinned limitation.
 #[test]
-fn lying_direct_advert_still_dials_victim_known_limitation_until_p3() {
+fn lying_direct_advert_cannot_direct_traffic_at_victim() {
     let mut net = HighSeamNet::new(807);
     let source = net.add_node(node_opts(OverlayMode::Source));
     // The victim is a real node that never advertised itself.
     let victim = net.add_node(node_opts(OverlayMode::Sink));
-    let source_pubkey = net.node_pubkey(source);
     let victim_addr = net.node_addr(victim);
 
     // Identity V lies: validly self-signed, but claims the victim's address
@@ -363,18 +362,20 @@ fn lying_direct_advert_still_dials_victim_known_limitation_until_p3() {
         "the lying advert is stored (its signature is valid)"
     );
 
-    // Originate a shred; V is the only Direct peer, so the node dials the
-    // lied-about victim address.
-    net.inject_shred(source, &[7u8; 64]);
-    net.run_ticks(4);
+    // Originate several shreds over time: V is the only Direct peer, so the
+    // tree keeps selecting it. None of them may reach the victim.
+    for _ in 0..3 {
+        net.inject_shred(source, &[7u8; 64]);
+        net.run_ticks(3);
+    }
 
     assert!(
-        !net.delivered_shreds(victim).is_empty()
-            || net
-                .core(victim)
-                .transport()
-                .is_connected_to(&source_pubkey),
-        "victim was dialed via the lying Direct advert (residual F8, pre-P3)"
+        net.delivered_shreds(victim).is_empty(),
+        "the victim received shreds via a lying Direct advert (F8 not closed)",
+    );
+    assert!(
+        net.core(source).quarantined_count() >= 1,
+        "source must quarantine the lied-about address",
     );
 }
 

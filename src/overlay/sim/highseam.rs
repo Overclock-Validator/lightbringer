@@ -63,6 +63,14 @@ struct MemStream {
     fin_recvd: bool,
 }
 
+/// Dial-on-demand payloads buffered until the connection establishes, gated
+/// on the identity they were addressed to (§6.2.3 F8, mirrors the QUIC
+/// transport's `pending` + `expect_pubkey`).
+struct PendingExpect {
+    expected: Pubkey,
+    payloads: Vec<Vec<u8>>,
+}
+
 /// In-memory authenticated transport: connections are (pubkey, addr) pairs
 /// established by the harness, datagrams pass through untouched, and the
 /// peer identity is simply asserted — the fake models QUIC's *contract*
@@ -80,9 +88,14 @@ pub struct MemTransport {
     stream_events: VecDeque<StreamEvent>,
     /// Outbound ops the harness drains and delivers next tick.
     stream_ops: VecDeque<(Pubkey, MemStreamOp)>,
-    /// No-payload dials the harness turns into established connections (the
-    /// §6.2.3 receiver-side confirmation; the high seam has no real sockets).
+    /// Addresses to dial (from identity-gated dial-on-demand); the harness
+    /// turns each into an established connection.
     dial_requests: VecDeque<SocketAddr>,
+    /// Dial-on-demand payloads awaiting their connection, keyed by address.
+    pending_expect: BTreeMap<SocketAddr, PendingExpect>,
+    /// Payloads released on establish (identity matched), drained by the
+    /// harness into the wire next tick.
+    deferred_out: VecDeque<(SocketAddr, Vec<u8>)>,
 }
 
 impl MemTransport {
@@ -98,12 +111,19 @@ impl MemTransport {
             stream_events: VecDeque::new(),
             stream_ops: VecDeque::new(),
             dial_requests: VecDeque::new(),
+            pending_expect: BTreeMap::new(),
+            deferred_out: VecDeque::new(),
         }
     }
 
-    /// Harness-side: pull the no-payload dials queued since the last drain.
+    /// Harness-side: pull the addresses to dial queued since the last drain.
     pub fn take_dial_requests(&mut self) -> Vec<SocketAddr> {
         std::mem::take(&mut self.dial_requests).into()
+    }
+
+    /// Harness-side: pull payloads released on establish (drained to the wire).
+    pub fn take_deferred_out(&mut self) -> Vec<(SocketAddr, Vec<u8>)> {
+        std::mem::take(&mut self.deferred_out).into()
     }
 
     /// Harness-side: a connection to `pubkey`@`addr` is now established.
@@ -117,6 +137,16 @@ impl MemTransport {
             peer: addr,
             pubkey: Some(pubkey),
         });
+        // §6.2.3 F8: release dial-on-demand payloads buffered for this
+        // address, but only if the identity that answered matches what they
+        // were addressed to; a mismatch (a lying advert) drops them.
+        if let Some(pending) = self.pending_expect.remove(&addr)
+            && pending.expected == pubkey
+        {
+            for payload in pending.payloads {
+                self.deferred_out.push_back((addr, payload));
+            }
+        }
     }
 
     /// Harness-side: drop the connection with `pubkey`. Streams die with it.
@@ -374,10 +404,31 @@ impl OverlayTransport for MemTransport {
         self.stream_events.pop_front()
     }
 
-    fn dial(&mut self, _env: &mut dyn OverlayEnv, addr: SocketAddr) -> Result<()> {
-        // No payload: the harness establishes the connection pair (with the
-        // real identity of whoever owns `addr`) on the next tick.
-        self.dial_requests.push_back(addr);
+    fn queue_datagram_expecting(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        expected: Pubkey,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        match self.by_addr.get(&to) {
+            // Already connected: release only to the addressed identity.
+            Some(&pubkey) if pubkey == expected => env.send(SocketId::PRIMARY, to, &payload),
+            Some(_) => {}
+            // Not connected: buffer and ask the harness to dial. The payload
+            // is released on establish iff the identity matches.
+            None => {
+                self.pending_expect
+                    .entry(to)
+                    .or_insert_with(|| PendingExpect {
+                        expected,
+                        payloads: Vec::new(),
+                    })
+                    .payloads
+                    .push(payload);
+                self.dial_requests.push_back(to);
+            }
+        }
         Ok(())
     }
 
@@ -755,6 +806,12 @@ impl HighSeamNet {
             dialed.insert(target);
         }
         for node in dialed {
+            let now = self.now();
+            let entry = &mut self.nodes[node];
+            entry.env.now = now;
+            // Pump the Connected event so identity-gated dials resolve
+            // (confirm/quarantine) and deferred payloads flush.
+            entry.core.on_transport_activity(&mut entry.env);
             self.drain_node(node);
         }
     }
@@ -778,6 +835,9 @@ impl HighSeamNet {
             }
             for addr in self.nodes[index].core.transport_mut().take_dial_requests() {
                 self.in_flight_dials.push_back((index, addr));
+            }
+            for (to, bytes) in self.nodes[index].core.transport_mut().take_deferred_out() {
+                self.in_flight.push_back((from, to, bytes));
             }
             let mut lookups = Vec::new();
             let ticks = self.ticks;

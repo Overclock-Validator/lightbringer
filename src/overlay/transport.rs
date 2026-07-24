@@ -210,10 +210,21 @@ pub trait OverlayTransport {
     /// event is emitted for a locally reset stream.
     fn reset_stream(&mut self, env: &mut dyn OverlayEnv, stream: OverlayStreamId);
     fn poll_stream_event(&mut self) -> Option<StreamEvent>;
-    /// Dial `addr` to establish a connection without sending payload — the
-    /// receiver-side identity confirmation of a `Direct` advert (§6.2.3, the
-    /// F8 closure). The normal `Connected`/`Disconnected` events report it.
-    fn dial(&mut self, env: &mut dyn OverlayEnv, addr: SocketAddr) -> Result<()>;
+    /// Identity-gated dial-on-demand (§6.2.3 F8 closure): dial `to` and queue
+    /// `payload`, but release it only once the connection authenticates as
+    /// `expected`. A mismatch (a lying `Direct` advert) drops the payload
+    /// undelivered, so it never reaches the victim — the send choke point can
+    /// dial an advertised address without trusting the advert's identity
+    /// claim. Used for the first send to an unconnected `Direct` peer;
+    /// established connections take payload directly via
+    /// [`Self::queue_datagram_to_peer`].
+    fn queue_datagram_expecting(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        expected: Pubkey,
+        payload: Vec<u8>,
+    ) -> Result<()>;
     /// Start a §6.2.3 fresh-source dial-back probe: a one-shot QUIC handshake
     /// to `addr` egressing from helper socket `socket` (bound fresh, so a
     /// candidate's restricted filtering is genuinely exercised). Isolated
@@ -280,6 +291,9 @@ struct QuicConnection {
     established: bool,
     peer_pubkey: Option<Pubkey>,
     pending: VecDeque<Vec<u8>>,
+    /// §6.2.3 F8 identity gate: when set, `pending` is released only if the
+    /// verified peer identity matches; a mismatch drops it (a lying advert).
+    expect_pubkey: Option<Pubkey>,
     /// Live streams on this connection, quinn id → transport handle.
     streams: BTreeMap<quinn_proto::StreamId, OverlayStreamId>,
 }
@@ -357,6 +371,7 @@ impl OverlayQuicTransport {
                 established: false,
                 peer_pubkey: None,
                 pending: VecDeque::new(),
+                expect_pubkey: None,
                 streams: BTreeMap::new(),
             },
         );
@@ -400,6 +415,7 @@ impl OverlayQuicTransport {
                                 established: false,
                                 peer_pubkey: None,
                                 pending: VecDeque::new(),
+                                expect_pubkey: None,
                                 streams: BTreeMap::new(),
                             },
                         );
@@ -1069,8 +1085,24 @@ impl OverlayTransport for OverlayQuicTransport {
         self.stream_events.pop_front()
     }
 
-    fn dial(&mut self, env: &mut dyn OverlayEnv, addr: SocketAddr) -> Result<()> {
-        self.ensure_connection(env.now(), addr)?;
+    fn queue_datagram_expecting(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        to: SocketAddr,
+        expected: Pubkey,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        self.ensure_connection(env.now(), to)?;
+        if let Some(connection) = self.connections.get_mut(&to) {
+            // First expectation wins; a connection is dialed for one identity.
+            connection.expect_pubkey.get_or_insert(expected);
+            push_bounded(
+                &mut connection.pending,
+                payload,
+                MAX_PENDING_DATAGRAMS,
+                "pending datagrams",
+            );
+        }
         self.drive(env);
         Ok(())
     }
@@ -1181,6 +1213,15 @@ fn push_bounded<T>(queue: &mut VecDeque<T>, value: T, cap: usize, what: &str) {
 
 fn flush_pending(connection: &mut QuicConnection) {
     if !connection.established {
+        return;
+    }
+    // §6.2.3 F8 identity gate: a dial-on-demand payload is released only to
+    // the identity it was addressed to. A mismatch (a lying `Direct` advert
+    // that resolves to a different node) drops it undelivered.
+    if let Some(expected) = connection.expect_pubkey
+        && connection.peer_pubkey != Some(expected)
+    {
+        connection.pending.clear();
         return;
     }
 
