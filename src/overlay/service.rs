@@ -81,16 +81,13 @@ pub enum CoreEvent {
     /// A repair stream this node opened concluded with the peer's answer
     /// (`None` = NotFound).
     RepairResponse {
-        #[allow(dead_code)] // requester wiring lands in P2 step 3
         stream: OverlayStreamId,
         peer: Pubkey,
-        #[allow(dead_code)] // requester wiring lands in P2 step 3
         shred: Option<Vec<u8>>,
     },
     /// A repair stream this node opened died without an answer (reset,
     /// disconnect, malformed response, or timeout).
     RepairFailed {
-        #[allow(dead_code)] // requester wiring lands in P2 step 3
         stream: OverlayStreamId,
         peer: Pubkey,
     },
@@ -328,7 +325,6 @@ impl<T: OverlayTransport> OverlayCore<T> {
     /// identity, its advertised repair endpoint, and whether an overlay
     /// connection currently exists. The driver republishes this to the
     /// repair manager's `RepairPeerSource`.
-    #[allow(dead_code)] // consumed by the requester wiring (P2 step 3)
     pub fn repair_peer_view(&mut self, now: Instant) -> Vec<RepairPeerEntry> {
         let connected: BTreeSet<Pubkey> = self.transport.connected_peers().into_iter().collect();
         self.gossip
@@ -347,7 +343,6 @@ impl<T: OverlayTransport> OverlayCore<T> {
     /// connection: encoded request, then FIN. Never dials — an unconnected
     /// target is dropped and counted (`dropped_unreachable`), and the
     /// requester's retry samples someone else.
-    #[allow(dead_code)] // requester wiring lands in P2 step 3
     pub fn request_repair(
         &mut self,
         env: &mut dyn OverlayEnv,

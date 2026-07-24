@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
@@ -10,20 +10,34 @@ use glommio::{net::UdpSocket, spawn_local, timer::timeout};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use solana_sdk::signature::Keypair;
 
-use crate::{thread_manager::CancelRx, types::PacketInfo};
+use crate::{
+    thread_manager::CancelRx,
+    types::{PacketInfo, PacketView},
+};
 
 use super::{
     OverlayConfig, OverlayIdentity, OverlayMode,
     env::{OverlayEnv, SocketId},
-    repair::RepairStore,
+    repair::{OverlayRepairCommand, RepairRoute, RepairStore, SharedRepairView},
     service::{CoreEvent, OverlayCore},
-    transport::{OverlayQuicTransport, TransportOptions},
+    transport::{OverlayQuicTransport, OverlayStreamId, TransportOptions},
 };
 
 const RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const MIN_RECEIVE_WAIT: Duration = Duration::from_micros(100);
 const UDP_BUFFER_SIZE: usize = 65_535;
+/// Cadence for republishing the repair peer view to the repair manager.
+const REPAIR_VIEW_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Sink-mode requester wiring (nat-traversal.md §6.4): repair commands in
+/// from the sink demux, nonce-tagged responses back to the repair manager,
+/// and the sampled peer view published for `OverlayRepairPeerSource`.
+pub struct OverlayRepairRequester {
+    pub cmd_rx: kanal::AsyncReceiver<OverlayRepairCommand>,
+    pub resp_tx: kanal::AsyncSender<(RepairRoute, PacketInfo)>,
+    pub view: SharedRepairView,
+}
 
 /// Production side of the `OverlayEnv` seam: real sockets, the OS clock, and
 /// OS-seeded randomness. `send` only queues; the driver loop flushes between
@@ -90,6 +104,7 @@ async fn run_driver(
     source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
     filter_tx: kanal::AsyncSender<PacketInfo>,
     repair_store: impl RepairStore,
+    repair_requester: Option<OverlayRepairRequester>,
 ) -> Result<()> {
     let mut env = GlommioEnv::bind_primary(config.bind_addr)?;
     let transport =
@@ -97,6 +112,9 @@ async fn run_driver(
     let source_mode = config.mode == OverlayMode::Source && source_rx.is_some();
     let mut core = OverlayCore::new(transport, &config, keypair, Instant::now());
     let mut buffer = vec![0u8; UDP_BUFFER_SIZE];
+    // Stream handle → the local nonce the repair manager matches on.
+    let mut outstanding_nonces: BTreeMap<OverlayStreamId, u32> = BTreeMap::new();
+    let mut next_view_publish = Instant::now();
 
     loop {
         core.on_timer(&mut env);
@@ -110,6 +128,27 @@ async fn run_driver(
                         log::warn!("overlay: source shred channel closed: {e}");
                         break;
                     }
+                }
+            }
+        }
+
+        if let Some(requester) = &repair_requester {
+            while let Ok(Some(command)) = requester.cmd_rx.try_recv() {
+                match core.request_repair(&mut env, command.peer, &command.request) {
+                    Some(stream) => {
+                        outstanding_nonces.insert(stream, command.nonce);
+                    }
+                    // No connection (or caps): silence is fine — the repair
+                    // manager's 200ms timeout re-samples another peer.
+                    None => {}
+                }
+            }
+            let now = Instant::now();
+            if now >= next_view_publish {
+                next_view_publish = now + REPAIR_VIEW_INTERVAL;
+                let view = core.repair_peer_view(now);
+                if let Ok(mut shared) = requester.view.write() {
+                    *shared = view;
                 }
             }
         }
@@ -134,12 +173,35 @@ async fn run_driver(
                 CoreEvent::RepairRequest { stream, request, .. } => {
                     core.on_repair_response(&mut env, stream, repair_store.lookup(&request));
                 }
-                // Requester side lands with the sink repair wiring; nothing
-                // opens repair streams from this driver yet.
-                CoreEvent::RepairResponse { peer, .. } => {
-                    log::debug!("overlay: unexpected repair response from {peer}");
+                // Requester side: a concluded stream becomes a UDP-shaped
+                // response (shred ‖ nonce LE) so the repair manager's
+                // outstanding store and packet-filter path treat both
+                // worlds identically. NotFound and failures stay silent —
+                // the manager's 200ms timeout re-samples another peer.
+                CoreEvent::RepairResponse { stream, peer, shred } => {
+                    let nonce = outstanding_nonces.remove(&stream);
+                    let (Some(nonce), Some(bytes), Some(requester)) =
+                        (nonce, shred, repair_requester.as_ref())
+                    else {
+                        continue;
+                    };
+                    let mut tagged = bytes;
+                    tagged.extend_from_slice(&nonce.to_le_bytes());
+                    let Ok(view) = PacketView::try_from(tagged.as_slice()) else {
+                        log::debug!("overlay: oversized repair response from {peer}; dropped");
+                        continue;
+                    };
+                    let packet = PacketInfo::new(view);
+                    if let Err(e) = requester
+                        .resp_tx
+                        .send((RepairRoute::Peer(peer), packet))
+                        .await
+                    {
+                        log::warn!("overlay: failed to forward repair response: {e}");
+                    }
                 }
-                CoreEvent::RepairFailed { peer, .. } => {
+                CoreEvent::RepairFailed { stream, peer } => {
+                    outstanding_nonces.remove(&stream);
                     log::debug!("overlay: repair stream to {peer} failed");
                 }
             }
@@ -180,13 +242,22 @@ pub async fn start_overlay_runner(
     source_rx: Option<kanal::AsyncReceiver<PacketInfo>>,
     filter_tx: kanal::AsyncSender<PacketInfo>,
     repair_store: impl RepairStore + 'static,
+    repair_requester: Option<OverlayRepairRequester>,
 ) -> Result<()> {
     let identity = OverlayIdentity::from_keypair(&keypair)?;
     log::info!("overlay identity: {}", identity.pubkey);
 
     let runner_task = spawn_local(async move {
-        if let Err(e) =
-            run_driver(&identity, keypair, config, source_rx, filter_tx, repair_store).await
+        if let Err(e) = run_driver(
+            &identity,
+            keypair,
+            config,
+            source_rx,
+            filter_tx,
+            repair_store,
+            repair_requester,
+        )
+        .await
         {
             log::error!("overlay: driver stopped: {e}");
         }

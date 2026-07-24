@@ -9,12 +9,16 @@ use solana_gossip::ping_pong::Pong;
 use solana_sdk::signature::{Keypair, Signable};
 
 use crate::{
+    overlay::repair::{RepairRoute, RepairTarget},
     thread_manager::CancelRx,
     turbine_manager::recv_shred,
     types::{PacketInfo, PacketView},
 };
 
-pub type RepairSocketRequestBatch = Vec<(SocketAddr, Vec<u8>)>;
+/// `(target, local nonce, wire bytes)` — UDP targets carry the nonce inside
+/// the signed Solana packet as well; overlay targets need it out-of-band so
+/// the stream driver can tag the response for the outstanding store.
+pub type RepairSocketRequestBatch = Vec<(RepairTarget, u32, Vec<u8>)>;
 
 // attempt to handle ping packet,
 // returning true if handled, false if not a ping
@@ -49,7 +53,7 @@ pub async fn start_repair_socket_runner(
     kp: Arc<Keypair>,
     socket: UdpSocket,
     req_rx: kanal::AsyncReceiver<RepairSocketRequestBatch>,
-    repair_manager_tx: kanal::AsyncSender<(SocketAddr, PacketInfo)>,
+    repair_manager_tx: kanal::AsyncSender<(RepairRoute, PacketInfo)>,
 ) {
     let socket = Rc::new(socket);
 
@@ -58,6 +62,13 @@ pub async fn start_repair_socket_runner(
         while let Ok(requests) = req_rx.recv().await {
             let mut res = requests
                 .into_iter()
+                .filter_map(|(target, _nonce, packet)| match target {
+                    RepairTarget::Udp(addr, _) => Some((addr, packet)),
+                    RepairTarget::Overlay(pubkey) => {
+                        log::warn!("overlay repair target {pubkey} on the UDP socket; dropped");
+                        None
+                    }
+                })
                 .map(async |(add, packet)| {
                     if let Err(e) = req_socket.send_to(&packet, add).await {
                         log::error!("failed to send repair packet to {add}: {e}");
@@ -80,7 +91,10 @@ pub async fn start_repair_socket_runner(
             }
 
             let packet = PacketInfo::new(packet);
-            if let Err(e) = repair_manager_tx.send((send_addr, packet)).await {
+            if let Err(e) = repair_manager_tx
+                .send((RepairRoute::Addr(send_addr), packet))
+                .await
+            {
                 log::warn!("failed to send packet to repair manager: {e}");
             }
         }

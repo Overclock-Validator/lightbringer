@@ -20,9 +20,11 @@ mod types;
 mod util;
 
 use std::{
+    cell::RefCell,
     io::{ErrorKind, Write},
     net::SocketAddr,
     path::PathBuf,
+    rc::Rc,
     sync::{Arc, atomic::AtomicU64},
 };
 
@@ -30,6 +32,7 @@ use fjall::Database;
 use glommio::enclose;
 use gossip_manager::{GossipManager, Sockets};
 use repair::{
+    SolanaRepairPeers,
     request::{RepairManager, RepairReq},
     socket::RepairSocketRequestBatch,
 };
@@ -52,7 +55,11 @@ use crate::{
         confirmed_slot_shreds_glommio_runner,
     },
     metrics::{MetricsSender, start_metrics_thread},
-    overlay::{OverlayMode, start_overlay_runner},
+    overlay::{
+        OverlayMode, OverlayRepairRequester,
+        repair::{OverlayRepairCommand, OverlayRepairPeerSource, PeerSample, RepairTarget},
+        start_overlay_runner,
+    },
     packet_filter::packet_filter_loop,
     repair::socket::start_repair_socket_runner,
     repair_delivery::start_serve_repair,
@@ -208,8 +215,8 @@ fn start_solana_services(
     repair_rx: kanal::AsyncReceiver<RepairReq>,
     repair_socket_tx: kanal::AsyncSender<RepairSocketRequestBatch>,
     repair_socket_rx: kanal::AsyncReceiver<RepairSocketRequestBatch>,
-    repair_manager_tx: kanal::AsyncSender<(SocketAddr, types::PacketInfo)>,
-    repair_manager_rx: kanal::AsyncReceiver<(SocketAddr, types::PacketInfo)>,
+    repair_manager_tx: kanal::AsyncSender<(overlay::repair::RepairRoute, types::PacketInfo)>,
+    repair_manager_rx: kanal::AsyncReceiver<(overlay::repair::RepairRoute, types::PacketInfo)>,
     shred_store: ShredStore,
     metrics: MetricsSender,
 ) -> RunningSolanaServices {
@@ -230,13 +237,16 @@ fn start_solana_services(
     let repair_keypair = keypair.clone();
     threadpool.spawn(
         enclose!((cluster_info, repair_keypair, repair_socket_tx, filter_tx, metrics) move |exit| async {
+            let peer_sample = Rc::new(RefCell::new(PeerSample::new()));
+            let peer_source = SolanaRepairPeers::new(cluster_info, peer_sample.clone());
             let repair_manager =
                 RepairManager::new(
                     repair_rx,
                     repair_socket_tx,
                     repair_manager_rx,
                     filter_tx,
-                    cluster_info,
+                    peer_source,
+                    peer_sample,
                     repair_keypair,
                     metrics,
                 );
@@ -338,12 +348,27 @@ fn main() {
     )
     .unwrap();
 
+    // Slot repair channels (created before the overlay runner: the sink-mode
+    // requester routes repair through the overlay driver).
+    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
+    // Allow up to 20 slots to queue for repair.
+    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
+    let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
+    // Sink-mode only: stream repair commands into the overlay driver.
+    let (overlay_repair_cmd_tx, overlay_repair_cmd_rx) = kanal::bounded_async(1024);
+    let repair_view: overlay::repair::SharedRepairView = Default::default();
+
     if let Some(overlay_config) = overlay_config.clone() {
         let overlay_keypair = keypair.clone();
         let overlay_output_tx = filter_tx.clone();
+        let overlay_repair_requester = (!solana_services_enabled).then(|| OverlayRepairRequester {
+            cmd_rx: overlay_repair_cmd_rx,
+            resp_tx: repair_manager_tx.clone(),
+            view: repair_view.clone(),
+        });
         threadpool.spawn(enclose!((overlay_output_tx, shred_store) move |exit| async move {
             if let Err(e) =
-                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, overlay_output_tx, shred_store).await
+                start_overlay_runner(exit, overlay_keypair, overlay_config, overlay_source_rx, overlay_output_tx, shred_store, overlay_repair_requester).await
             {
                 log::error!("overlay runner stopped with error: {e}");
             }
@@ -367,12 +392,6 @@ fn main() {
         enclose!((shred_store) move |exit| shred_store.batch_listener_loop(exit, slot_store_rx)),
     );
 
-    // Slot repair
-    let (repair_tx, repair_rx) = kanal::bounded_async(10000);
-    // Allow up to 20 slots to queue for repair.
-    let (repair_socket_tx, repair_socket_rx) = kanal::bounded_async(20);
-    let (repair_manager_tx, repair_manager_rx) = kanal::unbounded_async();
-
     let solana_services = if let Some(solana_context) = solana_context {
         Some(start_solana_services(
             &mut threadpool,
@@ -388,16 +407,89 @@ fn main() {
             metrics.clone(),
         ))
     } else {
+        // Sink-mode repair requester (nat-traversal.md §6.4): the same
+        // RepairManager loop as Solana mode, sampling the overlay gossip
+        // view instead of ClusterInfo. Udp-advertising peers are dialed
+        // from this node's own repair socket (request/response over one
+        // 4-tuple traverses any NAT on our side); InConnection peers ride
+        // overlay QUIC streams through the driver.
+        let overlay_conf = overlay_config
+            .as_ref()
+            .expect("sink mode implies an enabled overlay");
+        if overlay_conf.repair_addr.is_some() {
+            log::warn!(
+                "overlay.repair_addr is advertised but sink mode serves repair only over overlay streams; peers dialing the advertised UDP endpoint will get no answers"
+            );
+        }
+        let repair_bind = overlay_conf
+            .repair_addr
+            .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
+        let repair_socket = std::net::UdpSocket::bind(repair_bind)
+            .expect("failed to bind overlay repair request socket");
+
+        let manager_keypair = keypair.clone();
+        threadpool.spawn(
+            enclose!((filter_tx, repair_socket_tx, metrics, repair_view) move |exit| async move {
+                let peer_sample = Rc::new(RefCell::new(PeerSample::new()));
+                let peer_source =
+                    OverlayRepairPeerSource::new(repair_view, peer_sample.clone());
+                let repair_manager = RepairManager::new(
+                    repair_rx,
+                    repair_socket_tx,
+                    repair_manager_rx,
+                    filter_tx,
+                    peer_source,
+                    peer_sample,
+                    manager_keypair,
+                    metrics,
+                );
+                repair_manager.start_repair_manager_loop(exit).await
+            }),
+        );
+
+        // Demux mapper output: Udp targets to the UDP socket runner,
+        // Overlay targets to the driver's stream requester.
+        let (udp_batch_tx, udp_batch_rx) = kanal::bounded_async(20);
         threadpool.spawn(move |exit| async move {
             let task = glommio::spawn_local(async move {
-                while repair_rx.recv().await.is_ok() {
-                    log::error!(
-                        "overlay sink repair request generated but overlay repair requester is not wired yet"
-                    );
+                while let Ok(batch) = repair_socket_rx.recv().await {
+                    let mut udp = RepairSocketRequestBatch::new();
+                    for (target, nonce, bytes) in batch {
+                        match target {
+                            RepairTarget::Udp(..) => udp.push((target, nonce, bytes)),
+                            RepairTarget::Overlay(peer) => {
+                                match overlay::repair::decode_request(&bytes) {
+                                    Ok(request) => {
+                                        _ = overlay_repair_cmd_tx
+                                            .send(OverlayRepairCommand { peer, nonce, request })
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("invalid overlay repair request bytes: {e}")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !udp.is_empty() {
+                        _ = udp_batch_tx.send(udp).await;
+                    }
                 }
             });
             exit.await;
             task.cancel().await;
+        });
+
+        let socket_keypair = keypair.clone();
+        threadpool.spawn(move |exit| async move {
+            start_repair_socket_runner(
+                exit,
+                socket_keypair,
+                std_to_glommio_socket(repair_socket),
+                udp_batch_rx,
+                repair_manager_tx,
+            )
+            .await
         });
         None
     };

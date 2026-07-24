@@ -12,6 +12,6 @@ mod transport;
 mod turbine;
 
 pub use config::{OverlayConfig, OverlayMode};
-pub use driver_glommio::start_overlay_runner;
+pub use driver_glommio::{OverlayRepairRequester, start_overlay_runner};
 pub use identity::OverlayIdentity;
 pub use turbine::TurbineTree;

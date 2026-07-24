@@ -246,25 +246,14 @@ impl TryFrom<ConfigRaw> for Config {
     type Error = anyhow::Error;
 
     fn try_from(value: ConfigRaw) -> Result<Self, Self::Error> {
-        let overlay_enabled = value
-            .overlay
-            .as_ref()
-            .is_some_and(|overlay| overlay.enabled);
         let overlay_sink = value
             .overlay
             .as_ref()
             .is_some_and(|overlay| overlay.enabled && overlay.mode == OverlayMode::Sink);
-        if overlay_enabled
-            && value
-                .overlay
-                .as_ref()
-                .and_then(|overlay| overlay.repair_addr)
-                .is_none()
-        {
-            return Err(anyhow!(
-                "`overlay.repair_addr` must be specified when overlay is enabled"
-            ));
-        }
+        // `overlay.repair_addr` is optional since P2: without it the node
+        // advertises `RepairEndpoint::InConnection` and serves repair over
+        // overlay QUIC streams (nat-traversal.md §6.4). Setting it
+        // advertises a Solana-format UDP endpoint instead.
         if overlay_sink
             && value
                 .overlay
@@ -555,17 +544,16 @@ shred_version = 42
         assert_eq!(cfg.overlay.expect("overlay").mode, OverlayMode::Sink);
     }
 
+    /// Since P2, `repair_addr` is optional: without it the node advertises
+    /// `RepairEndpoint::InConnection` and serves repair over overlay streams.
     #[test]
-    fn overlay_requires_repair_addr_when_enabled() {
+    fn overlay_repair_addr_is_optional() {
         let toml = format!(
             "{REQUIRED}\n[overlay]\nenabled = true\nmode = \"source\"\nbind_addr = \"127.0.0.1:65410\"\n"
         );
         let raw = parse_toml(&toml);
-        let result: Result<Config, _> = raw.try_into();
-        assert!(
-            result.is_err(),
-            "expected missing overlay repair_addr to fail"
-        );
+        let cfg: Config = raw.try_into().expect("validate");
+        assert!(cfg.overlay.expect("overlay").repair_addr.is_none());
     }
 
     #[test]

@@ -3,10 +3,11 @@ use solana_ledger::shred::Nonce;
 use crate::types::PacketView;
 
 mod outstanding_timers;
-mod peer_cache;
 mod peer_manager;
 pub mod request;
 pub mod socket;
+
+pub use peer_manager::SolanaRepairPeers;
 
 pub fn repair_nonce(packet: &PacketView) -> Option<Nonce> {
     let nonce_offset = packet.len().checked_sub(4)?;

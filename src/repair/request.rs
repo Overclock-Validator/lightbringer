@@ -1,4 +1,4 @@
-use std::{cell::RefCell, net::SocketAddr, rc::Rc, sync::Arc, time::Instant};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use glommio::{
     Latency, Shares,
@@ -6,19 +6,18 @@ use glommio::{
     executor, spawn_local_into,
 };
 use kanal::{AsyncReceiver, AsyncSender};
-use solana_gossip::cluster_info::ClusterInfo;
 use solana_ledger::shred::{self, ShredFlags, layout};
 use solana_sdk::signature::Keypair;
 
 use crate::{
     metrics::{MetricsSender, points::SlotMeasurement},
+    overlay::repair::{PeerSample, RepairPeerSource, RepairRoute, RepairTarget},
     repair::{
         OutstandingRequestKind,
         outstanding_timers::{
             OutstandingRequest, OutstandingRequestMsg, OutstandingTimerStore,
             start_outstanding_requests_loop,
         },
-        peer_cache::PeerSample,
         peer_manager::RepairRequestMapper,
         repair_nonce,
         socket::RepairSocketRequestBatch,
@@ -42,23 +41,29 @@ pub enum RepairReq {
     },
 }
 
-pub struct RepairManager {
+/// The repair requester loop, identical in both worlds (nat-traversal.md
+/// §6.4): only the peer source differs — `SolanaRepairPeers` over
+/// `ClusterInfo`, `OverlayRepairPeerSource` over the overlay gossip view.
+pub struct RepairManager<S> {
     req_rx: AsyncReceiver<RepairReq>,
     send_socket: AsyncSender<RepairSocketRequestBatch>,
-    recv_socket: AsyncReceiver<(SocketAddr, PacketInfo)>,
+    recv_socket: AsyncReceiver<(RepairRoute, PacketInfo)>,
     filter_shred_tx: AsyncSender<PacketInfo>,
-    cluster_info: Arc<ClusterInfo>,
+    peer_source: S,
+    peer_sample: Rc<RefCell<PeerSample>>,
     keypair: Arc<Keypair>,
     metrics: MetricsSender,
 }
 
-impl RepairManager {
+impl<S: RepairPeerSource + Clone + 'static> RepairManager<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         req_rx: AsyncReceiver<RepairReq>,
         send_socket: AsyncSender<RepairSocketRequestBatch>,
-        recv_socket: AsyncReceiver<(SocketAddr, PacketInfo)>,
+        recv_socket: AsyncReceiver<(RepairRoute, PacketInfo)>,
         filter_shred_tx: AsyncSender<PacketInfo>,
-        cluster_info: Arc<ClusterInfo>,
+        peer_source: S,
+        peer_sample: Rc<RefCell<PeerSample>>,
         keypair: Arc<Keypair>,
         metrics: MetricsSender,
     ) -> Self {
@@ -67,14 +72,15 @@ impl RepairManager {
             send_socket,
             recv_socket,
             filter_shred_tx,
-            cluster_info,
+            peer_source,
+            peer_sample,
             keypair,
             metrics,
         }
     }
 
     pub async fn start_repair_manager_loop(self, exit: CancelRx) {
-        let peer_sample = Rc::new(RefCell::new(PeerSample::new()));
+        let peer_sample = self.peer_sample;
 
         let exec = executor();
         let main_task_tq = exec.create_task_queue(
@@ -94,11 +100,7 @@ impl RepairManager {
 
         let outstanding_requests_task = spawn_local_into(
             start_outstanding_requests_loop(
-                RepairRequestMapper::new(
-                    self.cluster_info.clone(),
-                    self.keypair.clone(),
-                    peer_sample.clone(),
-                ),
+                RepairRequestMapper::new(self.peer_source.clone(), self.keypair.clone()),
                 outstanding_store.clone(),
                 outstanding_request_tx.clone(),
                 outstanding_request_rx,
@@ -111,11 +113,7 @@ impl RepairManager {
 
         let request_processor_task = spawn_local_into(
             Self::request_processor_loop(
-                RepairRequestMapper::new(
-                    self.cluster_info.clone(),
-                    self.keypair.clone(),
-                    peer_sample.clone(),
-                ),
+                RepairRequestMapper::new(self.peer_source.clone(), self.keypair.clone()),
                 self.req_rx,
                 outstanding_store.clone(),
                 outstanding_request_tx.clone(),
@@ -126,11 +124,10 @@ impl RepairManager {
         )
         .unwrap();
 
-        let mut mapper =
-            RepairRequestMapper::new(self.cluster_info, self.keypair, peer_sample.clone());
+        let mut mapper = RepairRequestMapper::new(self.peer_source, self.keypair);
         let repair_recv_task = spawn_local_into(
             async move {
-                while let Ok((socket_addr, packet)) = self.recv_socket.recv().await {
+                while let Ok((route, packet)) = self.recv_socket.recv().await {
                     let Some(nonce) = repair_nonce(&packet) else {
                         continue;
                     };
@@ -138,9 +135,9 @@ impl RepairManager {
                         continue;
                     };
                     // TODO: add more filters e.g shred should sig verify
-                    let Some((req_kind, req_shred_index, sent_at)) = outstanding_store
+                    let Some((req_kind, req_shred_index, sent_at, target)) = outstanding_store
                         .borrow_mut()
-                        .remove(slot, nonce, socket_addr)
+                        .remove(slot, nonce, route)
                     else {
                         continue;
                     };
@@ -148,7 +145,7 @@ impl RepairManager {
                     let latency_ms = sent_at.elapsed().as_millis() as f64;
                     peer_sample
                         .borrow_mut()
-                        .record_response(socket_addr, latency_ms);
+                        .record_response(target.pubkey(), latency_ms);
 
                     if req_kind == OutstandingRequestKind::HighestWindowIndex {
                         let res = Self::handle_unbounded_packet_response(
@@ -181,7 +178,7 @@ impl RepairManager {
     // handle an unbounded packet response
     // returning None if packet is invalid
     async fn handle_unbounded_packet_response(
-        mapper: &mut RepairRequestMapper,
+        mapper: &mut RepairRequestMapper<S>,
         outstanding_tx: &LocalSender<OutstandingRequestMsg>,
         socket_tx: &AsyncSender<RepairSocketRequestBatch>,
         packet: &PacketInfo,
@@ -202,30 +199,30 @@ impl RepairManager {
         };
         let reqs = range
             .filter_map(move |shred_index| {
-                let (socket, nonce, shred) = mapper.map_bounded_shred(shred_slot, shred_index)?;
+                let (target, nonce, shred) = mapper.map_bounded_shred(shred_slot, shred_index)?;
                 _ = outstanding_tx.try_send(OutstandingRequestMsg::New(OutstandingRequest {
                     kind: OutstandingRequestKind::WindowIndex,
                     nonce,
                     slot: shred_slot,
                     shred: shred_index,
-                    socket,
+                    target,
                     sent_at: Instant::now(),
                 }));
-                Some((socket, shred))
+                Some((target, nonce, shred))
             })
             .chain(
                 std::iter::once_with(move || {
-                    let (socket, nonce, shred) = last_shred_req.take()?;
+                    let (target, nonce, shred) = last_shred_req.take()?;
                     _ = outstanding_tx.try_send(OutstandingRequestMsg::New(OutstandingRequest {
                         kind: OutstandingRequestKind::HighestWindowIndex,
                         nonce,
                         slot: shred_slot,
                         shred: shred_index,
-                        socket,
+                        target,
                         sent_at: Instant::now(),
                     }));
 
-                    Some((socket, shred))
+                    Some((target, nonce, shred))
                 })
                 .flatten(),
             )
@@ -237,27 +234,27 @@ impl RepairManager {
     }
 
     fn process_missing_shreds(
-        mapper: &mut RepairRequestMapper,
+        mapper: &mut RepairRequestMapper<S>,
         outstanding_tx: &LocalSender<OutstandingRequestMsg>,
         slot: u64,
         shreds: Vec<u32>,
-    ) -> impl Iterator<Item = (SocketAddr, Vec<u8>)> {
+    ) -> impl Iterator<Item = (RepairTarget, u32, Vec<u8>)> {
         shreds.into_iter().filter_map(move |shred| {
-            let (socket, nonce, packet) = mapper.map_bounded_shred(slot, shred)?;
+            let (target, nonce, packet) = mapper.map_bounded_shred(slot, shred)?;
             _ = outstanding_tx.try_send(OutstandingRequestMsg::New(OutstandingRequest {
                 kind: OutstandingRequestKind::WindowIndex,
                 nonce,
                 slot,
                 shred,
-                socket,
+                target,
                 sent_at: Instant::now(),
             }));
-            Some((socket, packet))
+            Some((target, nonce, packet))
         })
     }
 
     async fn request_processor_loop(
-        mut mapper: RepairRequestMapper,
+        mut mapper: RepairRequestMapper<S>,
         req_rx: AsyncReceiver<RepairReq>,
         store: Rc<RefCell<OutstandingTimerStore>>,
         outstanding_tx: Rc<LocalSender<OutstandingRequestMsg>>,
@@ -292,7 +289,7 @@ impl RepairManager {
                             continue;
                         }
 
-                        let Some((req_socket, nonce, raw)) =
+                        let Some((req_target, nonce, raw)) =
                             mapper.map_unbounded_shred(slot, max_inclusive_shred)
                         else {
                             continue;
@@ -307,14 +304,14 @@ impl RepairManager {
                             shreds,
                         )
                         .collect::<Vec<_>>();
-                        reqs.push((req_socket, raw));
+                        reqs.push((req_target, nonce, raw));
                         _ = outstanding_tx.try_send(OutstandingRequestMsg::New(
                             OutstandingRequest {
                                 kind: OutstandingRequestKind::HighestWindowIndex,
                                 nonce,
                                 slot,
                                 shred: max_inclusive_shred,
-                                socket: req_socket,
+                                target: req_target,
                                 sent_at: Instant::now(),
                             },
                         ));
