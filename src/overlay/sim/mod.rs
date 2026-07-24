@@ -38,8 +38,8 @@ use super::{
     identity::OverlayIdentity,
     service::{CoreEvent, OverlayCore},
     transport::{
-        OVERLAY_INITIAL_MTU, OverlayQuicTransport, OverlayTransport, TransportEvent,
-        TransportOptions,
+        OVERLAY_INITIAL_MTU, OverlayQuicTransport, OverlayStreamId, OverlayTransport,
+        StreamEvent, TransportEvent, TransportOptions,
     },
 };
 
@@ -181,6 +181,7 @@ struct TransportNode {
     keypair: Keypair,
     pubkey: Pubkey,
     received: Vec<(SocketAddr, Vec<u8>)>,
+    stream_events: Vec<StreamEvent>,
 }
 
 enum HostKind {
@@ -421,6 +422,7 @@ impl SimWorld {
                 pubkey: keypair.pubkey(),
                 keypair,
                 received: Vec::new(),
+                stream_events: Vec::new(),
             })),
             timer_generation: 0,
             next_timer: None,
@@ -464,6 +466,43 @@ impl SimWorld {
         match &self.hosts[host.0 as usize].kind {
             HostKind::Transport(node) => node.transport.pending_datagrams(),
             _ => 0,
+        }
+    }
+
+    /// Open a bidi stream from a bare-transport host to an established peer.
+    pub fn transport_open_stream(&mut self, host: HostId, peer: &Pubkey) -> Option<OverlayStreamId> {
+        let mut opened = None;
+        self.with_host(host.0, |kind, _env| {
+            if let HostKind::Transport(node) = kind {
+                opened = node.transport.open_stream(peer);
+            }
+        });
+        opened
+    }
+
+    pub fn transport_write_stream(&mut self, host: HostId, stream: OverlayStreamId, bytes: &[u8]) {
+        self.with_host(host.0, |kind, env| {
+            if let HostKind::Transport(node) = kind {
+                node.transport.write_stream(env, stream, bytes);
+            }
+        });
+        self.post_process(host.0);
+    }
+
+    pub fn transport_finish_stream(&mut self, host: HostId, stream: OverlayStreamId) {
+        self.with_host(host.0, |kind, env| {
+            if let HostKind::Transport(node) = kind {
+                node.transport.finish_stream(env, stream);
+            }
+        });
+        self.post_process(host.0);
+    }
+
+    /// Stream events observed by a bare-transport host, in arrival order.
+    pub fn transport_stream_events(&self, host: HostId) -> &[StreamEvent] {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Transport(node) => &node.stream_events,
+            _ => &[],
         }
     }
 
@@ -730,6 +769,11 @@ impl SimWorld {
                         );
                         if node.received.len() < MAX_DELIVERED_SHREDS {
                             node.received.push((from, payload));
+                        }
+                    }
+                    while let Some(event) = node.transport.poll_stream_event() {
+                        if node.stream_events.len() < MAX_DELIVERED_SHREDS {
+                            node.stream_events.push(event);
                         }
                     }
                 }

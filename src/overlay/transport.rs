@@ -10,8 +10,9 @@ use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
 use quinn_proto::{
     ClientConfig as QuicClientConfig, Connection, ConnectionEvent, ConnectionHandle,
-    ConnectionIdGenerator, DatagramEvent, Endpoint, EndpointConfig, Event, IdleTimeout,
-    ServerConfig as QuicServerConfig, Transmit, TransportConfig, crypto::HmacKey,
+    ConnectionIdGenerator, DatagramEvent, Dir, Endpoint, EndpointConfig, Event, IdleTimeout,
+    ReadError, ServerConfig as QuicServerConfig, Transmit, TransportConfig, VarInt,
+    WriteError, crypto::HmacKey,
 };
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use rustls::{
@@ -44,6 +45,13 @@ const MAX_CONNECTIONS: usize = 1024;
 const MAX_PENDING_DATAGRAMS: usize = 1024;
 const MAX_INBOUND_FRAMES: usize = 8192;
 const MAX_TRANSPORT_EVENTS: usize = 1024;
+const MAX_STREAM_EVENTS: usize = 8192;
+/// Total live stream handles across all connections; per-connection inbound
+/// concurrency is additionally capped by [`MAX_CONCURRENT_BIDI_STREAMS`].
+const MAX_STREAM_STATES: usize = 4096;
+/// Per-connection inbound bidi stream cap (QUIC flow control refuses the
+/// excess remotely, before it costs us state).
+const MAX_CONCURRENT_BIDI_STREAMS: u32 = 64;
 const SEEDED_CID_LEN: usize = 8;
 
 /// Construction-time knobs for the QUIC transport. Production uses
@@ -94,10 +102,43 @@ pub enum TransportEvent {
     },
 }
 
-/// High seam per nat-traversal.md §6.9: the connection/datagram surface the
-/// overlay core programs against. `OverlayQuicTransport` is the real
-/// implementation; protocol-scale simulation can substitute an in-memory
-/// fake. Streams join this trait with overlay repair (P2).
+/// Handle for a bidirectional stream, unique for the life of the transport
+/// (never reused, even across reconnects to the same peer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OverlayStreamId(pub u64);
+
+impl fmt::Display for OverlayStreamId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stream#{}", self.0)
+    }
+}
+
+/// Stream lifecycle, polled sans-IO like every other transport output
+/// (nat-traversal.md §6.4/§6.9). Data arrives ordered; a `Finished` event
+/// means every byte of the peer's send side has already been surfaced.
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    /// The remote peer opened a bidirectional stream toward us.
+    Opened {
+        stream: OverlayStreamId,
+        peer: Pubkey,
+    },
+    /// Ordered bytes received on the stream.
+    Data {
+        stream: OverlayStreamId,
+        bytes: Vec<u8>,
+    },
+    /// Clean remote FIN.
+    Finished { stream: OverlayStreamId },
+    /// The stream (or its connection) died without a clean remote FIN.
+    Failed { stream: OverlayStreamId },
+}
+
+/// High seam per nat-traversal.md §6.9: the connection/datagram/stream
+/// surface the overlay core programs against. `OverlayQuicTransport` is the
+/// real implementation; protocol-scale simulation substitutes an in-memory
+/// fake (`sim::highseam::MemTransport`). Bidirectional streams carry the
+/// overlay repair sub-protocol (§6.4); datagrams carry everything else.
 pub trait OverlayTransport {
     /// Queue an unreliable datagram to `to`, dialing if no connection exists.
     fn queue_datagram(&mut self, env: &mut dyn OverlayEnv, to: SocketAddr, payload: Vec<u8>)
@@ -132,6 +173,24 @@ pub trait OverlayTransport {
     fn connection_addr(&self, pubkey: &Pubkey) -> Option<SocketAddr>;
     /// TLS-verified identities of all established connections.
     fn connected_peers(&self) -> Vec<Pubkey>;
+    /// Open a bidirectional stream on the established connection with
+    /// `pubkey` (overlay repair, §6.4). Returns `None` when no connection
+    /// exists or stream limits are exhausted — dialing is never implied.
+    fn open_stream(&mut self, pubkey: &Pubkey) -> Option<OverlayStreamId>;
+    /// Queue bytes on the stream's send side; flushed as flow control
+    /// allows. Returns false when the handle is no longer live.
+    fn write_stream(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        stream: OverlayStreamId,
+        bytes: &[u8],
+    ) -> bool;
+    /// FIN the send side once every queued byte has flushed.
+    fn finish_stream(&mut self, env: &mut dyn OverlayEnv, stream: OverlayStreamId);
+    /// Tear the stream down in both directions (refusals, timeouts). No
+    /// event is emitted for a locally reset stream.
+    fn reset_stream(&mut self, env: &mut dyn OverlayEnv, stream: OverlayStreamId);
+    fn poll_stream_event(&mut self) -> Option<StreamEvent>;
 }
 
 pub struct OverlayQuicTransport {
@@ -145,6 +204,9 @@ pub struct OverlayQuicTransport {
     handles: HashMap<ConnectionHandle, SocketAddr>,
     inbound_frames: VecDeque<(SocketAddr, Vec<u8>)>,
     events: VecDeque<TransportEvent>,
+    stream_events: VecDeque<StreamEvent>,
+    stream_states: BTreeMap<OverlayStreamId, StreamState>,
+    next_stream: u64,
     endpoint_buf: Vec<u8>,
     transmit_buf: Vec<u8>,
 }
@@ -155,6 +217,21 @@ struct QuicConnection {
     established: bool,
     peer_pubkey: Option<Pubkey>,
     pending: VecDeque<Vec<u8>>,
+    /// Live streams on this connection, quinn id → transport handle.
+    streams: BTreeMap<quinn_proto::StreamId, OverlayStreamId>,
+}
+
+struct StreamState {
+    peer_addr: SocketAddr,
+    quic_id: quinn_proto::StreamId,
+    /// Send-side bytes quinn refused (flow control); retried on `Writable`.
+    send_buf: Vec<u8>,
+    /// FIN requested; applied once `send_buf` drains.
+    fin_pending: bool,
+    /// FIN handed to quinn (delivery from here on is quinn's problem).
+    fin_done: bool,
+    /// Remote send side finished or failed; no more inbound bytes.
+    recv_done: bool,
 }
 
 impl OverlayQuicTransport {
@@ -181,6 +258,9 @@ impl OverlayQuicTransport {
             handles: HashMap::new(),
             inbound_frames: VecDeque::new(),
             events: VecDeque::new(),
+            stream_events: VecDeque::new(),
+            stream_states: BTreeMap::new(),
+            next_stream: 0,
             endpoint_buf: Vec::with_capacity(UDP_BUFFER_SIZE),
             transmit_buf: Vec::with_capacity(UDP_BUFFER_SIZE),
         })
@@ -209,6 +289,7 @@ impl OverlayQuicTransport {
                 established: false,
                 peer_pubkey: None,
                 pending: VecDeque::new(),
+                streams: BTreeMap::new(),
             },
         );
         Ok(())
@@ -251,6 +332,7 @@ impl OverlayQuicTransport {
                                 established: false,
                                 peer_pubkey: None,
                                 pending: VecDeque::new(),
+                                streams: BTreeMap::new(),
                             },
                         );
                     }
@@ -305,6 +387,10 @@ impl OverlayQuicTransport {
     }
 
     fn handle_connection_event(&mut self, peer: SocketAddr, event: Event) {
+        if let Event::Stream(stream_event) = event {
+            self.handle_stream_event(peer, stream_event);
+            return;
+        }
         let mut remove = false;
         if let Some(connection) = self.connections.get_mut(&peer) {
             match event {
@@ -359,7 +445,7 @@ impl OverlayQuicTransport {
                     );
                     remove = true;
                 }
-                Event::Stream(_) => {}
+                Event::Stream(_) => unreachable!("stream events handled above"),
             }
         }
 
@@ -370,6 +456,214 @@ impl OverlayQuicTransport {
             {
                 self.by_pubkey.remove(&pubkey);
             }
+            // Every stream on the connection dies with it.
+            for (_, stream) in connection.streams {
+                if self.stream_states.remove(&stream).is_some() {
+                    push_bounded(
+                        &mut self.stream_events,
+                        StreamEvent::Failed { stream },
+                        MAX_STREAM_EVENTS,
+                        "stream events",
+                    );
+                }
+            }
+        }
+    }
+
+    fn handle_stream_event(&mut self, peer: SocketAddr, event: quinn_proto::StreamEvent) {
+        match event {
+            quinn_proto::StreamEvent::Opened { dir: Dir::Bi } => self.accept_streams(peer),
+            quinn_proto::StreamEvent::Opened { dir: Dir::Uni } => {
+                // The overlay speaks no unidirectional streams; drain and
+                // refuse them so they cost no state.
+                if let Some(connection) = self.connections.get_mut(&peer) {
+                    while let Some(id) = connection.conn.streams().accept(Dir::Uni) {
+                        _ = connection.conn.recv_stream(id).stop(VarInt::from_u32(0));
+                    }
+                }
+            }
+            quinn_proto::StreamEvent::Readable { id } => self.read_stream(peer, id),
+            quinn_proto::StreamEvent::Writable { id } => {
+                if let Some(stream) = self
+                    .connections
+                    .get(&peer)
+                    .and_then(|connection| connection.streams.get(&id))
+                    .copied()
+                {
+                    self.flush_stream(stream);
+                }
+            }
+            // Send side fully acknowledged; delivery was already quinn's
+            // problem the moment finish() succeeded.
+            quinn_proto::StreamEvent::Finished { id: _ } => {}
+            quinn_proto::StreamEvent::Stopped { id, error_code: _ } => {
+                self.fail_stream(peer, id);
+            }
+            quinn_proto::StreamEvent::Available { .. } => {}
+        }
+    }
+
+    fn accept_streams(&mut self, peer: SocketAddr) {
+        loop {
+            let Some(connection) = self.connections.get_mut(&peer) else {
+                return;
+            };
+            let Some(id) = connection.conn.streams().accept(Dir::Bi) else {
+                return;
+            };
+            let Some(pubkey) = connection.peer_pubkey else {
+                // No verified identity, no stream (cannot happen after the
+                // handshake, but refuse rather than trust).
+                _ = connection.conn.recv_stream(id).stop(VarInt::from_u32(0));
+                _ = connection.conn.send_stream(id).reset(VarInt::from_u32(0));
+                continue;
+            };
+            if self.stream_states.len() >= MAX_STREAM_STATES {
+                log::debug!("overlay: stream limit {MAX_STREAM_STATES} reached; refusing inbound");
+                _ = connection.conn.recv_stream(id).stop(VarInt::from_u32(0));
+                _ = connection.conn.send_stream(id).reset(VarInt::from_u32(0));
+                continue;
+            }
+            let stream = OverlayStreamId(self.next_stream);
+            self.next_stream += 1;
+            connection.streams.insert(id, stream);
+            self.stream_states.insert(
+                stream,
+                StreamState {
+                    peer_addr: peer,
+                    quic_id: id,
+                    send_buf: Vec::new(),
+                    fin_pending: false,
+                    fin_done: false,
+                    recv_done: false,
+                },
+            );
+            push_bounded(
+                &mut self.stream_events,
+                StreamEvent::Opened { stream, peer: pubkey },
+                MAX_STREAM_EVENTS,
+                "stream events",
+            );
+        }
+    }
+
+    fn read_stream(&mut self, peer: SocketAddr, id: quinn_proto::StreamId) {
+        let Some(connection) = self.connections.get_mut(&peer) else {
+            return;
+        };
+        let Some(&stream) = connection.streams.get(&id) else {
+            return;
+        };
+        let mut recv = connection.conn.recv_stream(id);
+        let mut chunks = match recv.read(true) {
+            Ok(chunks) => chunks,
+            Err(_) => return,
+        };
+        let mut bytes = Vec::new();
+        let mut outcome = None;
+        loop {
+            match chunks.next(usize::MAX) {
+                Ok(Some(chunk)) => bytes.extend_from_slice(&chunk.bytes),
+                Ok(None) => {
+                    outcome = Some(StreamEvent::Finished { stream });
+                    break;
+                }
+                Err(ReadError::Blocked) => break,
+                Err(ReadError::Reset(_)) => {
+                    outcome = Some(StreamEvent::Failed { stream });
+                    break;
+                }
+            }
+        }
+        // Flow-control frames this read released go out with the caller's
+        // drive().
+        _ = chunks.finalize();
+        if !bytes.is_empty() {
+            push_bounded(
+                &mut self.stream_events,
+                StreamEvent::Data { stream, bytes },
+                MAX_STREAM_EVENTS,
+                "stream events",
+            );
+        }
+        if let Some(event) = outcome {
+            if let Some(state) = self.stream_states.get_mut(&stream) {
+                state.recv_done = true;
+            }
+            push_bounded(
+                &mut self.stream_events,
+                event,
+                MAX_STREAM_EVENTS,
+                "stream events",
+            );
+            self.reap_stream(stream);
+        }
+    }
+
+    /// The peer refused our send side (STOP_SENDING) — the exchange is dead.
+    fn fail_stream(&mut self, peer: SocketAddr, id: quinn_proto::StreamId) {
+        let Some(connection) = self.connections.get_mut(&peer) else {
+            return;
+        };
+        let Some(stream) = connection.streams.remove(&id) else {
+            return;
+        };
+        _ = connection.conn.recv_stream(id).stop(VarInt::from_u32(0));
+        if self.stream_states.remove(&stream).is_some() {
+            push_bounded(
+                &mut self.stream_events,
+                StreamEvent::Failed { stream },
+                MAX_STREAM_EVENTS,
+                "stream events",
+            );
+        }
+    }
+
+    /// Flush buffered send bytes and any pending FIN; quinn signals
+    /// `Writable` when a `Blocked` write is worth retrying.
+    fn flush_stream(&mut self, stream: OverlayStreamId) {
+        let Some(state) = self.stream_states.get_mut(&stream) else {
+            return;
+        };
+        let Some(connection) = self.connections.get_mut(&state.peer_addr) else {
+            return;
+        };
+        while !state.send_buf.is_empty() {
+            match connection.conn.send_stream(state.quic_id).write(&state.send_buf) {
+                Ok(written) => {
+                    state.send_buf.drain(..written);
+                }
+                Err(WriteError::Blocked) => return,
+                Err(_) => {
+                    // Stopped/closed; the Stopped event path emits Failed.
+                    state.send_buf.clear();
+                    return;
+                }
+            }
+        }
+        if state.fin_pending && !state.fin_done {
+            // A stopped stream surfaces through the Stopped event; either
+            // way no more sends happen here.
+            _ = connection.conn.send_stream(state.quic_id).finish();
+            state.fin_done = true;
+            self.reap_stream(stream);
+        }
+    }
+
+    /// Drop bookkeeping once both directions are done. quinn keeps
+    /// retransmitting finished data on its own.
+    fn reap_stream(&mut self, stream: OverlayStreamId) {
+        let done = self
+            .stream_states
+            .get(&stream)
+            .is_some_and(|state| state.recv_done && state.fin_done);
+        if !done {
+            return;
+        }
+        if let Some(state) = self.stream_states.remove(&stream)
+            && let Some(connection) = self.connections.get_mut(&state.peer_addr)
+        {
+            connection.streams.remove(&state.quic_id);
         }
     }
 
@@ -517,6 +811,81 @@ impl OverlayTransport for OverlayQuicTransport {
     fn connected_peers(&self) -> Vec<Pubkey> {
         self.by_pubkey.keys().copied().collect()
     }
+
+    fn open_stream(&mut self, pubkey: &Pubkey) -> Option<OverlayStreamId> {
+        if self.stream_states.len() >= MAX_STREAM_STATES {
+            return None;
+        }
+        let addr = *self.by_pubkey.get(pubkey)?;
+        let connection = self.connections.get_mut(&addr)?;
+        if !connection.established {
+            return None;
+        }
+        let id = connection.conn.streams().open(Dir::Bi)?;
+        let stream = OverlayStreamId(self.next_stream);
+        self.next_stream += 1;
+        connection.streams.insert(id, stream);
+        self.stream_states.insert(
+            stream,
+            StreamState {
+                peer_addr: addr,
+                quic_id: id,
+                send_buf: Vec::new(),
+                fin_pending: false,
+                fin_done: false,
+                recv_done: false,
+            },
+        );
+        Some(stream)
+    }
+
+    fn write_stream(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        stream: OverlayStreamId,
+        bytes: &[u8],
+    ) -> bool {
+        let Some(state) = self.stream_states.get_mut(&stream) else {
+            return false;
+        };
+        if state.fin_pending {
+            return false;
+        }
+        state.send_buf.extend_from_slice(bytes);
+        self.flush_stream(stream);
+        self.drive(env);
+        true
+    }
+
+    fn finish_stream(&mut self, env: &mut dyn OverlayEnv, stream: OverlayStreamId) {
+        let Some(state) = self.stream_states.get_mut(&stream) else {
+            return;
+        };
+        state.fin_pending = true;
+        self.flush_stream(stream);
+        self.drive(env);
+    }
+
+    fn reset_stream(&mut self, env: &mut dyn OverlayEnv, stream: OverlayStreamId) {
+        if let Some(state) = self.stream_states.remove(&stream)
+            && let Some(connection) = self.connections.get_mut(&state.peer_addr)
+        {
+            connection.streams.remove(&state.quic_id);
+            _ = connection
+                .conn
+                .send_stream(state.quic_id)
+                .reset(VarInt::from_u32(0));
+            _ = connection
+                .conn
+                .recv_stream(state.quic_id)
+                .stop(VarInt::from_u32(0));
+            self.drive(env);
+        }
+    }
+
+    fn poll_stream_event(&mut self) -> Option<StreamEvent> {
+        self.stream_events.pop_front()
+    }
 }
 
 #[cfg(feature = "sim")]
@@ -628,6 +997,8 @@ fn overlay_transport_config(options: &TransportOptions) -> Arc<TransportConfig> 
     let mut transport = TransportConfig::default();
     transport.datagram_receive_buffer_size(Some(8 * 1024 * 1024));
     transport.datagram_send_buffer_size(8 * 1024 * 1024);
+    transport.max_concurrent_bidi_streams(MAX_CONCURRENT_BIDI_STREAMS.into());
+    transport.max_concurrent_uni_streams(0u32.into());
     transport.keep_alive_interval(options.keep_alive_interval);
     let max_idle = options.max_idle_timeout.map(|timeout| {
         IdleTimeout::try_from(timeout).expect("overlay max_idle_timeout out of range")

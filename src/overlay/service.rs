@@ -181,6 +181,13 @@ impl<T: OverlayTransport> OverlayCore<T> {
         &mut self.transport
     }
 
+    /// Process transport activity injected outside the datagram path (the
+    /// high-seam harness feeds MemTransport stream ops directly).
+    #[allow(dead_code)]
+    pub fn on_transport_activity(&mut self, env: &mut dyn OverlayEnv) {
+        self.pump(env);
+    }
+
     /// Live gossip adverts, for simulator oracles.
     #[allow(dead_code)]
     pub fn gossip_snapshot(&self, now: Instant) -> Vec<PeerAdvert> {

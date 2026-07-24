@@ -25,31 +25,74 @@ use crate::overlay::{
     OverlayConfig, OverlayMode,
     env::{OverlayEnv, SocketId},
     service::{CoreEvent, OverlayCore},
-    transport::{OverlayTransport, TransportEvent},
+    transport::{OverlayStreamId, OverlayTransport, StreamEvent, TransportEvent},
 };
 
 use super::crypto;
 
 const TICK: Duration = Duration::from_secs(1);
 
+/// A stream operation the harness carries between `MemTransport`s. Streams
+/// mirror QUIC's *contract*: reliable and ordered, so ops are never dropped
+/// by the fault model (on real QUIC, link loss shows up as stream latency,
+/// never as stream data loss). A stream is globally named by
+/// `(initiator, seq)`; `initiator_is_sender` says which side of that pair
+/// sent this op.
+#[derive(Clone, Debug)]
+pub struct MemStreamOp {
+    initiator_is_sender: bool,
+    seq: u64,
+    kind: MemStreamOpKind,
+}
+
+#[derive(Clone, Debug)]
+enum MemStreamOpKind {
+    Open,
+    Data(Vec<u8>),
+    Fin,
+    Reset,
+}
+
+struct MemStream {
+    peer: Pubkey,
+    seq: u64,
+    /// The remote side opened this stream.
+    remote_initiated: bool,
+    fin_sent: bool,
+    fin_recvd: bool,
+}
+
 /// In-memory authenticated transport: connections are (pubkey, addr) pairs
 /// established by the harness, datagrams pass through untouched, and the
 /// peer identity is simply asserted — the fake models QUIC's *contract*
-/// (mutually authenticated, unreliable datagrams), not its mechanics.
+/// (mutually authenticated, unreliable datagrams + reliable ordered bidi
+/// streams), not its mechanics.
 pub struct MemTransport {
     established: BTreeMap<Pubkey, SocketAddr>,
     by_addr: BTreeMap<SocketAddr, Pubkey>,
     inbound: VecDeque<(SocketAddr, Vec<u8>)>,
     events: VecDeque<TransportEvent>,
+    next_stream: u64,
+    streams: BTreeMap<OverlayStreamId, MemStream>,
+    /// `(peer, seq, remote_initiated)` → local handle.
+    stream_index: BTreeMap<(Pubkey, u64, bool), OverlayStreamId>,
+    stream_events: VecDeque<StreamEvent>,
+    /// Outbound ops the harness drains and delivers next tick.
+    stream_ops: VecDeque<(Pubkey, MemStreamOp)>,
 }
 
 impl MemTransport {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             established: BTreeMap::new(),
             by_addr: BTreeMap::new(),
             inbound: VecDeque::new(),
             events: VecDeque::new(),
+            next_stream: 0,
+            streams: BTreeMap::new(),
+            stream_index: BTreeMap::new(),
+            stream_events: VecDeque::new(),
+            stream_ops: VecDeque::new(),
         }
     }
 
@@ -66,7 +109,7 @@ impl MemTransport {
         });
     }
 
-    /// Harness-side: drop the connection with `pubkey`.
+    /// Harness-side: drop the connection with `pubkey`. Streams die with it.
     pub fn disconnect(&mut self, pubkey: &Pubkey) {
         if let Some(addr) = self.established.remove(pubkey) {
             self.by_addr.remove(&addr);
@@ -74,11 +117,104 @@ impl MemTransport {
                 peer: addr,
                 reason: "harness disconnect".to_string(),
             });
+            let dead: Vec<OverlayStreamId> = self
+                .streams
+                .iter()
+                .filter(|(_, stream)| stream.peer == *pubkey)
+                .map(|(&handle, _)| handle)
+                .collect();
+            for handle in dead {
+                self.drop_stream(handle);
+                self.stream_events.push_back(StreamEvent::Failed { stream: handle });
+            }
         }
     }
 
     pub fn is_connected_to(&self, pubkey: &Pubkey) -> bool {
         self.established.contains_key(pubkey)
+    }
+
+    /// Harness-side: pull the ops queued since the last drain.
+    pub fn take_stream_ops(&mut self) -> Vec<(Pubkey, MemStreamOp)> {
+        std::mem::take(&mut self.stream_ops).into()
+    }
+
+    /// Harness-side: deliver an op sent by `from`.
+    pub fn deliver_stream_op(&mut self, from: Pubkey, op: MemStreamOp) {
+        let key = (from, op.seq, op.initiator_is_sender);
+        match op.kind {
+            MemStreamOpKind::Open => {
+                if self.stream_index.contains_key(&key) || !self.established.contains_key(&from) {
+                    return;
+                }
+                let handle = OverlayStreamId(self.next_stream);
+                self.next_stream += 1;
+                self.stream_index.insert(key, handle);
+                self.streams.insert(
+                    handle,
+                    MemStream {
+                        peer: from,
+                        seq: op.seq,
+                        remote_initiated: true,
+                        fin_sent: false,
+                        fin_recvd: false,
+                    },
+                );
+                self.stream_events
+                    .push_back(StreamEvent::Opened { stream: handle, peer: from });
+            }
+            MemStreamOpKind::Data(bytes) => {
+                if let Some(&handle) = self.stream_index.get(&key) {
+                    self.stream_events
+                        .push_back(StreamEvent::Data { stream: handle, bytes });
+                }
+            }
+            MemStreamOpKind::Fin => {
+                if let Some(&handle) = self.stream_index.get(&key) {
+                    if let Some(stream) = self.streams.get_mut(&handle) {
+                        stream.fin_recvd = true;
+                    }
+                    self.stream_events
+                        .push_back(StreamEvent::Finished { stream: handle });
+                    self.reap_stream(handle);
+                }
+            }
+            MemStreamOpKind::Reset => {
+                if let Some(&handle) = self.stream_index.get(&key) {
+                    self.drop_stream(handle);
+                    self.stream_events
+                        .push_back(StreamEvent::Failed { stream: handle });
+                }
+            }
+        }
+    }
+
+    fn push_op(&mut self, stream: &MemStream, kind: MemStreamOpKind) {
+        self.stream_ops.push_back((
+            stream.peer,
+            MemStreamOp {
+                initiator_is_sender: !stream.remote_initiated,
+                seq: stream.seq,
+                kind,
+            },
+        ));
+    }
+
+    fn drop_stream(&mut self, handle: OverlayStreamId) {
+        if let Some(stream) = self.streams.remove(&handle) {
+            self.stream_index
+                .remove(&(stream.peer, stream.seq, stream.remote_initiated));
+        }
+    }
+
+    fn reap_stream(&mut self, handle: OverlayStreamId) {
+        let done = self
+            .streams
+            .get(&handle)
+            .is_some_and(|stream| stream.fin_sent && stream.fin_recvd);
+        if done {
+            self.drop_stream(handle);
+        }
     }
 }
 
@@ -142,6 +278,90 @@ impl OverlayTransport for MemTransport {
 
     fn connected_peers(&self) -> Vec<Pubkey> {
         self.established.keys().copied().collect()
+    }
+
+    fn open_stream(&mut self, pubkey: &Pubkey) -> Option<OverlayStreamId> {
+        if !self.established.contains_key(pubkey) {
+            return None;
+        }
+        let handle = OverlayStreamId(self.next_stream);
+        self.next_stream += 1;
+        let stream = MemStream {
+            peer: *pubkey,
+            seq: handle.0,
+            remote_initiated: false,
+            fin_sent: false,
+            fin_recvd: false,
+        };
+        self.stream_index
+            .insert((*pubkey, handle.0, false), handle);
+        self.push_op(&stream, MemStreamOpKind::Open);
+        self.streams.insert(handle, stream);
+        Some(handle)
+    }
+
+    fn write_stream(
+        &mut self,
+        _env: &mut dyn OverlayEnv,
+        stream: OverlayStreamId,
+        bytes: &[u8],
+    ) -> bool {
+        let Some(state) = self.streams.get(&stream) else {
+            return false;
+        };
+        if state.fin_sent {
+            return false;
+        }
+        let (peer, seq, remote_initiated) = (state.peer, state.seq, state.remote_initiated);
+        self.stream_ops.push_back((
+            peer,
+            MemStreamOp {
+                initiator_is_sender: !remote_initiated,
+                seq,
+                kind: MemStreamOpKind::Data(bytes.to_vec()),
+            },
+        ));
+        true
+    }
+
+    fn finish_stream(&mut self, _env: &mut dyn OverlayEnv, stream: OverlayStreamId) {
+        let Some(state) = self.streams.get_mut(&stream) else {
+            return;
+        };
+        if state.fin_sent {
+            return;
+        }
+        state.fin_sent = true;
+        let (peer, seq, remote_initiated) = (state.peer, state.seq, state.remote_initiated);
+        self.stream_ops.push_back((
+            peer,
+            MemStreamOp {
+                initiator_is_sender: !remote_initiated,
+                seq,
+                kind: MemStreamOpKind::Fin,
+            },
+        ));
+        self.reap_stream(stream);
+    }
+
+    fn reset_stream(&mut self, _env: &mut dyn OverlayEnv, stream: OverlayStreamId) {
+        let Some(state) = self.streams.get(&stream) else {
+            return;
+        };
+        let (peer, seq, remote_initiated) = (state.peer, state.seq, state.remote_initiated);
+        self.stream_ops.push_back((
+            peer,
+            MemStreamOp {
+                initiator_is_sender: !remote_initiated,
+                seq,
+                kind: MemStreamOpKind::Reset,
+            },
+        ));
+        self.drop_stream(stream);
+    }
+
+    fn poll_stream_event(&mut self) -> Option<StreamEvent> {
+        self.stream_events.pop_front()
     }
 }
 
@@ -208,7 +428,11 @@ pub struct HighSeamNet {
     ticks: u64,
     nodes: Vec<HighSeamNode>,
     by_addr: BTreeMap<SocketAddr, usize>,
+    by_pubkey: BTreeMap<Pubkey, usize>,
     in_flight: VecDeque<(SocketAddr, SocketAddr, Vec<u8>)>,
+    /// Stream ops travel one tick like datagrams but are never dropped:
+    /// streams model QUIC's reliable contract (loss = latency, not loss).
+    in_flight_ops: VecDeque<(usize, Pubkey, MemStreamOp)>,
     drop_probability: f64,
     rng: StdRng,
 }
@@ -221,7 +445,9 @@ impl HighSeamNet {
             ticks: 0,
             nodes: Vec::new(),
             by_addr: BTreeMap::new(),
+            by_pubkey: BTreeMap::new(),
             in_flight: VecDeque::new(),
+            in_flight_ops: VecDeque::new(),
             drop_probability: 0.0,
             rng: StdRng::seed_from_u64(seed),
         }
@@ -275,6 +501,7 @@ impl HighSeamNet {
             up: true,
         });
         self.by_addr.insert(addr, index);
+        self.by_pubkey.insert(pubkey, index);
         index
     }
 
@@ -381,6 +608,33 @@ impl HighSeamNet {
                 .on_datagram(&mut node.env, SocketId::PRIMARY, from, &bytes);
             self.drain_node(target);
         }
+
+        // Stream ops travel with the same one-tick latency but are never
+        // dropped (QUIC streams are reliable); a down target loses them,
+        // which the sender observes as a failed/timed-out stream.
+        let ops = std::mem::take(&mut self.in_flight_ops);
+        let mut touched = std::collections::BTreeSet::new();
+        for (from, to, op) in ops {
+            let Some(&target) = self.by_pubkey.get(&to) else {
+                continue;
+            };
+            if !self.nodes[target].up {
+                continue;
+            }
+            let from_pk = self.nodes[from].pubkey;
+            self.nodes[target]
+                .core
+                .transport_mut()
+                .deliver_stream_op(from_pk, op);
+            touched.insert(target);
+        }
+        for target in touched {
+            let now = self.now();
+            let node = &mut self.nodes[target];
+            node.env.now = now;
+            node.core.on_transport_activity(&mut node.env);
+            self.drain_node(target);
+        }
     }
 
     pub fn run_ticks(&mut self, count: u64) {
@@ -393,6 +647,9 @@ impl HighSeamNet {
         let from = self.nodes[index].addr;
         while let Some((to, bytes)) = self.nodes[index].env.outbox.pop_front() {
             self.in_flight.push_back((from, to, bytes));
+        }
+        for (to, op) in self.nodes[index].core.transport_mut().take_stream_ops() {
+            self.in_flight_ops.push_back((index, to, op));
         }
         while let Some(event) = self.nodes[index].core.poll_event() {
             if let CoreEvent::ShredForFilter(packet) = event {
