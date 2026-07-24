@@ -60,6 +60,50 @@ lied-about address (address-keyed, so an innocent node answering there is
 never fanned to either). A superseding advert for a different address is
 re-confirmable.
 
+Port mapping (nat-traversal.md §6.3, phase P4) upgrades reach for homes
+with a cooperative gateway. `src/overlay/portmap.rs` is a sans-IO client
+that walks **PCP → NAT-PMP → UPnP IGD** against `overlay.gateway_addr`
+(auto-discovered from the default route by the driver when unset): PCP and
+NAT-PMP are fixed-layout datagrams on gateway:5351 riding the existing
+`OverlayEnv` seam from a dedicated helper socket; SSDP is one more datagram
+exchange (the `LOCATION` host is pinned to the gateway IP — an SSDP frame
+must never steer HTTP at a third party, §9); the UPnP describe/SOAP
+conversation rides a new TCP byte-stream lane on the seam
+(`tcp_connect`/`tcp_send`/`tcp_close` + driver-fed `TcpEvent`s — glommio
+spawns one task per conn; the sim's gateway answers in-world). Leases renew
+at half-life through the granting rung; an unrenewable lease expires and
+withdraws the candidate; malformed or spoofed gateway bytes drop inertly
+and are counted. A grant alone is NEVER advertised: the §6.2.3 dial-back
+grew a candidate kind — the port-mapped candidate is (observed external
+IP, granted port), and `DialBackRequest` carries an optional
+`probe_port` override (the probe IP stays pinned to the request's own
+source; helpers now probe the datagram source rather than the
+identity-indexed connection address, which also keeps multi-connection
+peers correct). A gateway that grants a port the world cannot reach — CGN,
+or a lying gateway — fails the fresh-source probe and the node stays
+`Coordinated`. Auto-advert order: operator `advertised_addr` →
+dial-back-confirmed observed mapping → dial-back-confirmed port-mapped
+address → `Coordinated`.
+
+IPv6 dual advertisement (§6.3 step 2, phase P4): `overlay.bind_addr_v6`
+binds a second overlay socket on the same QUIC endpoint (transport egress
+picks the socket by destination family). Address observations are
+family-split into a second `AddressDiscovery` store. Each advert cycle an
+unconfirmed dual-stack node dials up to three peers advertising a v6
+`Direct` address over its v6 socket (identity-gated, payload = the cycle's
+signed advert) so helpers observe its v6 source; the port mapper requests
+a PCP pinhole for the v6 port alongside the v4 mapping. The v6 dial-back
+request rides the v6 connection (address-directed), so the helper's
+fresh-source probe exercises the RFC 6092 firewall for real — without a
+pinhole (or open firewall) it fails and the v6 address is never
+advertised, the §4 punchr caution as an invariant. A confirmed (or
+operator `advertised_addr_v6`) address rides `Reachability::Direct` listed
+BEFORE v4, and the dial path in `send_to_peer` prefers a v6 entry whenever
+the node holds a v6 socket, falling back to v4 when the preferred address
+is quarantined. No protocol bump: dual addresses ride the existing Direct
+`ArrayVec` and the `DialBackRequest` body extension stays inside unfrozen
+v1.
+
 Gossip is identity-first (nat-traversal.md §6.1, phase P1).
 `LightbringerGossip` keys peers by Ed25519 pubkey in a bounded
 `LruBTreeMap` — one entry per node no matter how many addresses it is seen
@@ -142,6 +186,25 @@ scenarios with `cargo run --bin overlay-sim --features sim -- --seed N`; the
 printed trace hash is the reproducibility witness. Note trace hashes cover
 timing/endpoints/sizes/app payloads, not ciphertext bytes — ring generates
 ECDHE keys from its own entropy outside the rustls SecureRandom seam.
+
+Since P4 the sim world is dual-stack: every host gets a global v6 address
+(2001:db8::/32 scheme) and a second overlay socket unless `ipv6: false`;
+NATed hosts' v6 sits behind an RFC 6092 default-deny `FirewallBox` (flow
+tracking + PCP pinholes — no rewriting), public hosts' v6 is open. A
+NATed host may attach a `Gateway` model (`sim/gateway.rs`) at
+10.<id>.0.1: it answers real PCP/NAT-PMP bytes on :5351, SSDP on :1900
+(and the multicast group), and UPnP HTTP/SOAP over the sim TCP model, with
+per-tier modes Off/Grant/Deny/GrantFake/Malformed; grants install
+lease-based static mappings on the innermost `NatBox` (so mapping stays
+useless behind CGN by construction) or pinholes on the firewall. Static
+mappings are full-cone and give the mapped internal socket DNAT flow
+symmetry — outbound from a port-forwarded socket egresses the mapped port,
+as conntrack does, which is what makes even a symmetric NAT probeable once
+mapped. Gateway responses are hand-built independently of the client
+codecs (the NatBox-vs-classifier ground-truth split). P4 scenarios in
+`SCENARIOS`: `portmap-matrix`, `portmap-lease`, `ipv6-dual-advert`, plus
+the v6-family rows `two-node-lossy-v6` and
+`keepalive-firewall-v6`/`-control`.
 
 The high-seam tier (`src/overlay/sim/highseam.rs`) swaps the QUIC transport
 for `MemTransport`, an in-memory authenticated fake, so hundreds of

@@ -24,9 +24,12 @@ use crate::overlay::{
 
 pub const SCENARIOS: &[&str] = &[
     "two-node-lossy",
+    "two-node-lossy-v6",
     "two-node-nat-sink",
     "keepalive-nat",
     "keepalive-nat-control",
+    "keepalive-firewall-v6",
+    "keepalive-firewall-v6-control",
     "nat-classify",
     "nat-classify-inproto",
     "dialback-reachability",
@@ -53,9 +56,12 @@ pub struct ScenarioOutcome {
 pub fn run(name: &str, seed: u64, verbose: bool) -> Option<ScenarioOutcome> {
     match name {
         "two-node-lossy" => Some(two_node_lossy(seed, verbose)),
+        "two-node-lossy-v6" => Some(two_node_lossy_v6(seed, verbose)),
         "two-node-nat-sink" => Some(two_node_nat_sink(seed, verbose)),
         "keepalive-nat" => Some(keepalive_nat(seed, verbose, true)),
         "keepalive-nat-control" => Some(keepalive_nat(seed, verbose, false)),
+        "keepalive-firewall-v6" => Some(keepalive_firewall_v6(seed, verbose, true)),
+        "keepalive-firewall-v6-control" => Some(keepalive_firewall_v6(seed, verbose, false)),
         "nat-classify" => Some(nat_classify(seed, verbose)),
         "nat-classify-inproto" => Some(nat_classify_inproto(seed, verbose)),
         "dialback-reachability" => Some(dialback_reachability(seed, verbose)),
@@ -85,13 +91,24 @@ struct ExchangeResult {
     source_converged: bool,
 }
 
-fn two_node_exchange(seed: u64, verbose: bool, sink_nat: Vec<NatConfig>) -> ExchangeResult {
+fn two_node_exchange(
+    seed: u64,
+    verbose: bool,
+    sink_nat: Vec<NatConfig>,
+    over_v6: bool,
+) -> ExchangeResult {
     let mut world = SimWorld::with_trace(seed, verbose);
     let source = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
         ..NodeOptions::default()
     });
-    let source_addr = world.public_addr(source);
+    // Bootstrapping through the source's v6 address puts the whole exchange
+    // on the v6 path (§6.3: same overlay, second family).
+    let source_addr = if over_v6 {
+        world.addr_v6(source)
+    } else {
+        world.public_addr(source)
+    };
     let sink = world.add_node(NodeOptions {
         mode: OverlayMode::Source,
         nat: sink_nat,
@@ -149,9 +166,24 @@ fn exchange_summary(result: &ExchangeResult) -> String {
 /// datagrams are unreliable by design) is covered by redundancy, the same
 /// role FEC plays on the real flood path.
 pub fn two_node_lossy(seed: u64, verbose: bool) -> ScenarioOutcome {
-    let result = two_node_exchange(seed, verbose, Vec::new());
+    let result = two_node_exchange(seed, verbose, Vec::new(), false);
     ScenarioOutcome {
         name: "two-node-lossy",
+        seed,
+        trace_hash: result.world.trace_hash(),
+        events: result.world.trace.events(),
+        ok: result.sink_converged && result.source_converged,
+        summary: exchange_summary(&result),
+    }
+}
+
+/// The same convergence contract with every datagram riding the v6 path
+/// (§6.3): the dual-stack transport must carry the flood identically on the
+/// second family.
+pub fn two_node_lossy_v6(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let result = two_node_exchange(seed, verbose, Vec::new(), true);
+    ScenarioOutcome {
+        name: "two-node-lossy-v6",
         seed,
         trace_hash: result.world.trace_hash(),
         events: result.world.trace.events(),
@@ -169,7 +201,7 @@ pub fn two_node_lossy(seed: u64, verbose: bool) -> ScenarioOutcome {
 /// over its single outbound connection (§5): both sides must now converge
 /// fully, exactly like the public-public exchange.
 pub fn two_node_nat_sink(seed: u64, verbose: bool) -> ScenarioOutcome {
-    let result = two_node_exchange(seed, verbose, vec![NatConfig::port_restricted_cone()]);
+    let result = two_node_exchange(seed, verbose, vec![NatConfig::port_restricted_cone()], false);
     ScenarioOutcome {
         name: "two-node-nat-sink",
         seed,
@@ -248,6 +280,76 @@ pub fn keepalive_nat(seed: u64, verbose: bool, keepalive: bool) -> ScenarioOutco
         summary: format!(
             "delivered_after_idle={delivered_after_idle} expired_drops={} no_mapping_drops={}",
             nat_stats.expired_drops, nat_stats.no_mapping_drops,
+        ),
+    }
+}
+
+/// The v6 analogue of `keepalive-nat` (nat-traversal.md §4/§6.3): IPv6
+/// removes the NAT but not the stateful firewall, whose flow state expires
+/// idle exactly like a mapping. With the 10s QUIC keepalive the flow
+/// survives a long idle and the public side still reaches the firewalled
+/// side; without it the flow dies and the post-idle datagram is filtered.
+pub fn keepalive_firewall_v6(seed: u64, verbose: bool, keepalive: bool) -> ScenarioOutcome {
+    let name: &'static str = if keepalive {
+        "keepalive-firewall-v6"
+    } else {
+        "keepalive-firewall-v6-control"
+    };
+    let tuning = |nat: Vec<NatConfig>| NodeOptions {
+        nat,
+        keep_alive_interval: keepalive.then(|| Duration::from_secs(10)),
+        max_idle_timeout: keepalive.then(|| Duration::from_secs(30)),
+        v6_firewall_idle: Some(Duration::from_secs(60)),
+        ..NodeOptions::default()
+    };
+
+    let mut world = SimWorld::with_trace(seed, verbose);
+    let public = world.add_transport_node(tuning(Vec::new()));
+    let public_v6 = world.addr_v6(public);
+    // The NAT chain puts the RFC 6092 firewall in front of the host's v6;
+    // its v4 side is unused in this scenario.
+    let firewalled = world.add_transport_node(tuning(vec![NatConfig::port_restricted_cone()]));
+
+    world.transport_send(firewalled, public_v6, b"hello-through-firewall".to_vec());
+    world.run_for(Duration::from_secs(5));
+    let Some(&(source, _)) = world.transport_received(public).first() else {
+        return ScenarioOutcome {
+            name,
+            seed,
+            trace_hash: world.trace_hash(),
+            events: world.trace.events(),
+            ok: false,
+            summary: "v6 handshake/datagram never reached the public node".into(),
+        };
+    };
+
+    world.run_for(Duration::from_secs(300));
+
+    world.transport_send(public, source, b"after-idle".to_vec());
+    world.run_for(Duration::from_secs(5));
+
+    let delivered_after_idle = world
+        .transport_received(firewalled)
+        .iter()
+        .any(|(_, payload)| payload == b"after-idle");
+    let filtered = world
+        .firewall_stats(firewalled)
+        .map(|stats| stats.filtered_drops)
+        .unwrap_or(0);
+    let ok = if keepalive {
+        delivered_after_idle
+    } else {
+        !delivered_after_idle && filtered > 0
+    };
+
+    ScenarioOutcome {
+        name,
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok,
+        summary: format!(
+            "source={source} delivered_after_idle={delivered_after_idle} filtered_drops={filtered}"
         ),
     }
 }

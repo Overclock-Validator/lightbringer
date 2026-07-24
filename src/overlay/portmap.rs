@@ -671,7 +671,11 @@ impl PortMapper {
                     self.ladder_failed(now);
                     return;
                 }
-                if parse_http_response(&self.http_buf).is_some() {
+                // Only a declared content-length proves completeness here; a
+                // response without one is EOF-delimited and must wait for
+                // `Closed` (finalizing at the header boundary would truncate
+                // a body split across chunks).
+                if http_response_complete(&self.http_buf) {
                     env.tcp_close(active);
                     self.finish_http(env, now);
                 }
@@ -874,6 +878,28 @@ fn parse_ssdp_location(text: &str) -> Option<(SocketAddr, String)> {
     };
     let endpoint: SocketAddr = host.parse().ok()?;
     Some((endpoint, path.to_string()))
+}
+
+/// The buffered response is provably complete without an EOF: a declared
+/// content-length, fully buffered. Responses without one are EOF-delimited
+/// and finalize on `TcpEvent::Closed`.
+fn http_response_complete(buf: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(buf) else {
+        return false;
+    };
+    let Some(header_end) = text.find("\r\n\r\n") else {
+        return false;
+    };
+    let headers = &text[..header_end];
+    let Some(length) = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+    else {
+        return false;
+    };
+    text.len() - (header_end + 4) >= length
 }
 
 /// One complete HTTP response: `(status, body)`. `None` while incomplete
