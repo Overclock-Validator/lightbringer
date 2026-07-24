@@ -1,4 +1,5 @@
 mod config;
+mod env;
 mod gossip;
 mod identity;
 mod packet;

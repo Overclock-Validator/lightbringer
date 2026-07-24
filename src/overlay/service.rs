@@ -63,15 +63,19 @@ impl OverlayRunner {
         filter_tx: kanal::AsyncSender<PacketInfo>,
     ) -> Result<Self> {
         let advertised_addr = config.advertised_addr.unwrap_or(config.bind_addr);
+        let now = Instant::now();
         let mut gossip = LightbringerGossip::new(config.peer_ttl());
         for peer in config.static_peers.iter().copied() {
-            gossip.observe(OverlayPeer {
-                overlay_addr: peer,
-                repair_addr: None,
-            });
+            gossip.observe(
+                OverlayPeer {
+                    overlay_addr: peer,
+                    repair_addr: None,
+                },
+                now,
+            );
         }
         if let Some(repair_addr) = config.repair_addr {
-            gossip.observe_repair(advertised_addr, repair_addr);
+            gossip.observe_repair(advertised_addr, repair_addr, now);
         }
 
         Ok(Self {
@@ -117,7 +121,7 @@ impl OverlayRunner {
     }
 
     async fn handle_source_packet(&mut self, packet: PacketInfo) {
-        let peers = self.gossip.peers();
+        let peers = self.gossip.peers(Instant::now());
         let peer_addrs = peers
             .iter()
             .map(|peer| peer.overlay_addr)
@@ -145,10 +149,13 @@ impl OverlayRunner {
             }
         };
 
-        self.gossip.observe(OverlayPeer {
-            overlay_addr: from,
-            repair_addr: None,
-        });
+        self.gossip.observe(
+            OverlayPeer {
+                overlay_addr: from,
+                repair_addr: None,
+            },
+            Instant::now(),
+        );
 
         match frame {
             OverlayFrame::Shred {
@@ -160,7 +167,7 @@ impl OverlayRunner {
                     log::warn!("overlay: failed to forward shred to filter: {e}");
                 }
 
-                let peers = self.gossip.peers();
+                let peers = self.gossip.peers(Instant::now());
                 let peer_addrs = peers
                     .iter()
                     .map(|peer| peer.overlay_addr)
@@ -176,7 +183,7 @@ impl OverlayRunner {
                 }
             }
             OverlayFrame::PeerAdvertisement { peer, .. } => {
-                self.gossip.observe(peer);
+                self.gossip.observe(peer, Instant::now());
                 self.advertise_except(Some(from)).await;
             }
         }
@@ -191,7 +198,7 @@ impl OverlayRunner {
     }
 
     async fn advertise_except(&mut self, excluded_peer: Option<SocketAddr>) {
-        let peers = self.gossip.peers();
+        let peers = self.gossip.peers(Instant::now());
         let advert = OverlayFrame::peer_advertisement(self.local_peer.clone());
         for peer in peers.into_iter().map(|peer| peer.overlay_addr) {
             if Some(peer) != excluded_peer {
