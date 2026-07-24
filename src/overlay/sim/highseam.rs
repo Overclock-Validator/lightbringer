@@ -26,7 +26,7 @@ use crate::overlay::{
     env::{OverlayEnv, SocketId},
     repair::RepairReq,
     service::{CoreEvent, OverlayCore},
-    transport::{OverlayStreamId, OverlayTransport, StreamEvent, TransportEvent},
+    transport::{OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, StreamEvent, TransportEvent},
 };
 
 use super::{SimRepairEvent, SimShredStore, crypto, lookup_repair};
@@ -80,6 +80,9 @@ pub struct MemTransport {
     stream_events: VecDeque<StreamEvent>,
     /// Outbound ops the harness drains and delivers next tick.
     stream_ops: VecDeque<(Pubkey, MemStreamOp)>,
+    /// No-payload dials the harness turns into established connections (the
+    /// §6.2.3 receiver-side confirmation; the high seam has no real sockets).
+    dial_requests: VecDeque<SocketAddr>,
 }
 
 impl MemTransport {
@@ -94,7 +97,13 @@ impl MemTransport {
             stream_index: BTreeMap::new(),
             stream_events: VecDeque::new(),
             stream_ops: VecDeque::new(),
+            dial_requests: VecDeque::new(),
         }
+    }
+
+    /// Harness-side: pull the no-payload dials queued since the last drain.
+    pub fn take_dial_requests(&mut self) -> Vec<SocketAddr> {
+        std::mem::take(&mut self.dial_requests).into()
     }
 
     /// Harness-side: a connection to `pubkey`@`addr` is now established.
@@ -364,6 +373,48 @@ impl OverlayTransport for MemTransport {
     fn poll_stream_event(&mut self) -> Option<StreamEvent> {
         self.stream_events.pop_front()
     }
+
+    fn dial(&mut self, _env: &mut dyn OverlayEnv, addr: SocketAddr) -> Result<()> {
+        // No payload: the harness establishes the connection pair (with the
+        // real identity of whoever owns `addr`) on the next tick.
+        self.dial_requests.push_back(addr);
+        Ok(())
+    }
+
+    fn start_probe(
+        &mut self,
+        _env: &mut dyn OverlayEnv,
+        _socket: SocketId,
+        _addr: SocketAddr,
+    ) -> Result<ProbeId> {
+        // The high seam has no real sockets; §6.2.3 dial-back outcomes are
+        // harness-injected at the requester (advert-policy state machine).
+        Err(anyhow::anyhow!("high-seam transport runs no dial-back probes"))
+    }
+
+    fn poll_probe_event(&mut self) -> Option<ProbeEvent> {
+        None
+    }
+
+    fn close_probe(&mut self, _env: &mut dyn OverlayEnv, _probe: ProbeId) {}
+
+    fn drop_connection(&mut self, _env: &mut dyn OverlayEnv, addr: SocketAddr) {
+        let Some(pubkey) = self.by_addr.remove(&addr) else {
+            return;
+        };
+        self.established.remove(&pubkey);
+        let dead: Vec<OverlayStreamId> = self
+            .streams
+            .iter()
+            .filter(|(_, stream)| stream.peer == pubkey)
+            .map(|(&handle, _)| handle)
+            .collect();
+        for handle in dead {
+            self.drop_stream(handle);
+            self.stream_events
+                .push_back(StreamEvent::Failed { stream: handle });
+        }
+    }
 }
 
 struct HighSeamEnv {
@@ -388,6 +439,8 @@ impl OverlayEnv for HighSeamEnv {
     fn bind(&mut self, _port: Option<u16>) -> Result<SocketId> {
         Err(anyhow::anyhow!("high-seam harness has no helper sockets"))
     }
+
+    fn close(&mut self, _socket: SocketId) {}
 }
 
 #[derive(Clone, Debug)]
@@ -436,6 +489,10 @@ pub struct HighSeamNet {
     /// Stream ops travel one tick like datagrams but are never dropped:
     /// streams model QUIC's reliable contract (loss = latency, not loss).
     in_flight_ops: VecDeque<(usize, Pubkey, MemStreamOp)>,
+    /// No-payload §6.2.3 confirm-dials: `(dialer, target address)`. Resolved
+    /// next tick to an established connection (with the real identity of the
+    /// address's owner), or dropped if the address owns nothing.
+    in_flight_dials: VecDeque<(usize, SocketAddr)>,
     drop_probability: f64,
     rng: StdRng,
 }
@@ -451,6 +508,7 @@ impl HighSeamNet {
             by_pubkey: BTreeMap::new(),
             in_flight: VecDeque::new(),
             in_flight_ops: VecDeque::new(),
+            in_flight_dials: VecDeque::new(),
             drop_probability: 0.0,
             rng: StdRng::seed_from_u64(seed),
         }
@@ -674,6 +732,31 @@ impl HighSeamNet {
             node.core.on_transport_activity(&mut node.env);
             self.drain_node(target);
         }
+
+        // §6.2.3 confirm-dials: establish the connection pair (with the
+        // real identity of whoever owns the address) one tick later, exactly
+        // like a completed handshake. A dial to an address no node owns
+        // establishes nothing — the requester's confirm deadline expires and
+        // it quarantines the advert.
+        let dials = std::mem::take(&mut self.in_flight_dials);
+        let mut dialed = std::collections::BTreeSet::new();
+        for (from, addr) in dials {
+            let Some(&target) = self.by_addr.get(&addr) else {
+                continue;
+            };
+            if !self.nodes[target].up || from == target {
+                continue;
+            }
+            if self.nodes[from].core.transport().peer_identity(addr).is_some() {
+                continue;
+            }
+            self.connect(from, target);
+            dialed.insert(from);
+            dialed.insert(target);
+        }
+        for node in dialed {
+            self.drain_node(node);
+        }
     }
 
     pub fn run_ticks(&mut self, count: u64) {
@@ -692,6 +775,9 @@ impl HighSeamNet {
             }
             for (to, op) in self.nodes[index].core.transport_mut().take_stream_ops() {
                 self.in_flight_ops.push_back((index, to, op));
+            }
+            for addr in self.nodes[index].core.transport_mut().take_dial_requests() {
+                self.in_flight_dials.push_back((index, addr));
             }
             let mut lookups = Vec::new();
             let ticks = self.ticks;

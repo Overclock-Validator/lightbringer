@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt,
     net::SocketAddr,
     sync::Arc,
@@ -52,6 +52,10 @@ const MAX_STREAM_STATES: usize = 4096;
 /// Per-connection inbound bidi stream cap (QUIC flow control refuses the
 /// excess remotely, before it costs us state).
 const MAX_CONCURRENT_BIDI_STREAMS: u32 = 64;
+/// Live §6.2.3 dial-back probes across all helper sockets. Small: the core
+/// rate-limits helper binds per requester and reclaims each probe promptly.
+const MAX_PROBES: usize = 256;
+const MAX_PROBE_EVENTS: usize = 1024;
 const SEEDED_CID_LEN: usize = 8;
 
 /// Construction-time knobs for the QUIC transport. Production uses
@@ -100,6 +104,21 @@ pub enum TransportEvent {
         peer: SocketAddr,
         reason: String,
     },
+}
+
+/// Handle for a §6.2.3 fresh-source dial-back probe, unique for the life of
+/// the transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProbeId(pub u64);
+
+/// Outcome of a fresh-source dial-back probe (nat-traversal.md §6.2.3): the
+/// candidate answered with `identity` (success only when it matches the
+/// expected node) or the handshake never completed (`None`).
+#[derive(Clone, Copy, Debug)]
+pub struct ProbeEvent {
+    pub probe: ProbeId,
+    pub addr: SocketAddr,
+    pub identity: Option<Pubkey>,
 }
 
 /// Handle for a bidirectional stream, unique for the life of the transport
@@ -191,6 +210,30 @@ pub trait OverlayTransport {
     /// event is emitted for a locally reset stream.
     fn reset_stream(&mut self, env: &mut dyn OverlayEnv, stream: OverlayStreamId);
     fn poll_stream_event(&mut self) -> Option<StreamEvent>;
+    /// Dial `addr` to establish a connection without sending payload — the
+    /// receiver-side identity confirmation of a `Direct` advert (§6.2.3, the
+    /// F8 closure). The normal `Connected`/`Disconnected` events report it.
+    fn dial(&mut self, env: &mut dyn OverlayEnv, addr: SocketAddr) -> Result<()>;
+    /// Start a §6.2.3 fresh-source dial-back probe: a one-shot QUIC handshake
+    /// to `addr` egressing from helper socket `socket` (bound fresh, so a
+    /// candidate's restricted filtering is genuinely exercised). Isolated
+    /// from the main connection table so it coexists with an existing
+    /// connection to the same address. The outcome arrives via
+    /// [`Self::poll_probe_event`].
+    fn start_probe(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
+        addr: SocketAddr,
+    ) -> Result<ProbeId>;
+    fn poll_probe_event(&mut self) -> Option<ProbeEvent>;
+    /// Tear down a probe connection; the caller closes its socket separately.
+    fn close_probe(&mut self, env: &mut dyn OverlayEnv, probe: ProbeId);
+    /// Drop the connection at `addr` without emitting a `Disconnected` event
+    /// (a §6.2.3 identity-mismatch on a receiver-side confirm-dial: the peer
+    /// that answered is not the advertised identity, so we must not keep it
+    /// as a fan-out target). A no-op if no such connection exists.
+    fn drop_connection(&mut self, env: &mut dyn OverlayEnv, addr: SocketAddr);
 }
 
 pub struct OverlayQuicTransport {
@@ -207,8 +250,28 @@ pub struct OverlayQuicTransport {
     stream_events: VecDeque<StreamEvent>,
     stream_states: BTreeMap<OverlayStreamId, StreamState>,
     next_stream: u64,
+    /// §6.2.3 fresh-source dial-back probes, isolated from `connections` so a
+    /// probe can target an address we already hold a connection to. Each
+    /// egresses from its own helper socket.
+    probes: BTreeMap<ProbeId, ProbeConn>,
+    probe_handles: HashMap<ConnectionHandle, ProbeId>,
+    probe_sockets: BTreeSet<SocketId>,
+    probe_events: VecDeque<ProbeEvent>,
+    next_probe: u64,
     endpoint_buf: Vec<u8>,
     transmit_buf: Vec<u8>,
+}
+
+/// An isolated dial-back probe connection (§6.2.3). Egresses from `socket`
+/// (a fresh helper bind) so the candidate's filtering is exercised against a
+/// source it has never been primed with.
+struct ProbeConn {
+    handle: ConnectionHandle,
+    conn: Connection,
+    socket: SocketId,
+    remote: SocketAddr,
+    /// A terminal outcome has already been reported.
+    resolved: bool,
 }
 
 struct QuicConnection {
@@ -261,6 +324,11 @@ impl OverlayQuicTransport {
             stream_events: VecDeque::new(),
             stream_states: BTreeMap::new(),
             next_stream: 0,
+            probes: BTreeMap::new(),
+            probe_handles: HashMap::new(),
+            probe_sockets: BTreeSet::new(),
+            probe_events: VecDeque::new(),
+            next_probe: 0,
             endpoint_buf: Vec::with_capacity(UDP_BUFFER_SIZE),
             transmit_buf: Vec::with_capacity(UDP_BUFFER_SIZE),
         })
@@ -407,7 +475,12 @@ impl OverlayQuicTransport {
                         connection.peer_pubkey
                     );
                     if let Some(pubkey) = connection.peer_pubkey {
-                        self.by_pubkey.insert(pubkey, peer);
+                        // Keep the first live connection per identity: a
+                        // second connection for the same pubkey (e.g. an
+                        // inbound §6.2.3 dial-back probe from a peer we
+                        // already hold) must not repoint the mapping, or its
+                        // teardown would orphan the primary connection.
+                        self.by_pubkey.entry(pubkey).or_insert(peer);
                     }
                     push_bounded(
                         &mut self.events,
@@ -672,10 +745,107 @@ impl OverlayQuicTransport {
         handle: ConnectionHandle,
         event: ConnectionEvent,
     ) {
-        if let Some(peer) = self.handles.get(&handle).copied()
-            && let Some(connection) = self.connections.get_mut(&peer)
+        if let Some(peer) = self.handles.get(&handle).copied() {
+            if let Some(connection) = self.connections.get_mut(&peer) {
+                connection.conn.handle_event(event);
+            }
+        } else if let Some(&probe) = self.probe_handles.get(&handle)
+            && let Some(conn) = self.probes.get_mut(&probe)
         {
-            connection.conn.handle_event(event);
+            conn.conn.handle_event(event);
+        }
+    }
+
+    /// Pump probe connection state machines (§6.2.3) and flush their
+    /// transmits through the helper socket each was bound to.
+    fn drive_probes(&mut self, env: &mut dyn OverlayEnv) {
+        if self.probes.is_empty() {
+            return;
+        }
+        let mut endpoint_events = Vec::new();
+        let mut app_events = Vec::new();
+        for (&probe, conn) in self.probes.iter_mut() {
+            while let Some(event) = conn.conn.poll() {
+                app_events.push((probe, event));
+            }
+            while let Some(event) = conn.conn.poll_endpoint_events() {
+                endpoint_events.push((conn.handle, event));
+            }
+        }
+        for (probe, event) in app_events {
+            self.handle_probe_event(probe, event);
+        }
+        for (handle, event) in endpoint_events {
+            if let Some(connection_event) = self.endpoint.handle_event(handle, event) {
+                self.handle_connection_event_for_handle(handle, connection_event);
+            }
+        }
+        self.flush_probe_transmits(env);
+    }
+
+    fn handle_probe_event(&mut self, probe: ProbeId, event: Event) {
+        let outcome = {
+            let Some(conn) = self.probes.get_mut(&probe) else {
+                return;
+            };
+            match event {
+                Event::Connected if !conn.resolved => {
+                    conn.resolved = true;
+                    Some(ProbeEvent {
+                        probe,
+                        addr: conn.remote,
+                        identity: peer_pubkey(&conn.conn),
+                    })
+                }
+                Event::ConnectionLost { .. } if !conn.resolved => {
+                    conn.resolved = true;
+                    Some(ProbeEvent {
+                        probe,
+                        addr: conn.remote,
+                        identity: None,
+                    })
+                }
+                // A probe carries no application data; drain any stray
+                // datagrams and ignore streams.
+                Event::DatagramReceived => {
+                    let mut datagrams = conn.conn.datagrams();
+                    while datagrams.recv().is_some() {}
+                    None
+                }
+                _ => None,
+            }
+        };
+        if let Some(event) = outcome {
+            push_bounded(
+                &mut self.probe_events,
+                event,
+                MAX_PROBE_EVENTS,
+                "probe events",
+            );
+        }
+    }
+
+    fn flush_probe_transmits(&mut self, env: &mut dyn OverlayEnv) {
+        loop {
+            let now = env.now();
+            let mut transmits = Vec::new();
+            for conn in self.probes.values_mut() {
+                while let Some(transmit) = conn.conn.poll_transmit(
+                    now,
+                    MAX_DATAGRAMS_PER_TRANSMIT,
+                    &mut self.transmit_buf,
+                ) {
+                    let bytes = self.transmit_buf[..transmit.size].to_vec();
+                    self.transmit_buf.clear();
+                    transmits.push((conn.socket, transmit, bytes));
+                }
+            }
+            if transmits.is_empty() {
+                return;
+            }
+            for (socket, transmit, bytes) in transmits {
+                send_transmit(env, socket, &transmit, &bytes);
+            }
         }
     }
 
@@ -711,6 +881,11 @@ impl OverlayQuicTransport {
                 connection.conn.handle_timeout(now);
             }
         }
+        for conn in self.probes.values_mut() {
+            if conn.conn.poll_timeout().is_some_and(|due| due <= now) {
+                conn.conn.handle_timeout(now);
+            }
+        }
     }
 }
 
@@ -741,7 +916,7 @@ impl OverlayTransport for OverlayQuicTransport {
         from: SocketAddr,
         datagram: &[u8],
     ) {
-        if socket != self.socket {
+        if socket != self.socket && !self.probe_sockets.contains(&socket) {
             log::debug!("overlay: dropping datagram from {from} on unexpected {socket}");
             return;
         }
@@ -756,17 +931,24 @@ impl OverlayTransport for OverlayQuicTransport {
         );
         self.handle_datagram_event(env, event);
         self.drive(env);
+        self.drive_probes(env);
     }
 
     fn on_timer(&mut self, env: &mut dyn OverlayEnv) {
         self.handle_timeouts(env.now());
         self.drive(env);
+        self.drive_probes(env);
     }
 
     fn poll_timeout(&mut self) -> Option<Instant> {
         self.connections
             .values_mut()
             .filter_map(|connection| connection.conn.poll_timeout())
+            .chain(
+                self.probes
+                    .values_mut()
+                    .filter_map(|conn| conn.conn.poll_timeout()),
+            )
             .min()
     }
 
@@ -885,6 +1067,78 @@ impl OverlayTransport for OverlayQuicTransport {
 
     fn poll_stream_event(&mut self) -> Option<StreamEvent> {
         self.stream_events.pop_front()
+    }
+
+    fn dial(&mut self, env: &mut dyn OverlayEnv, addr: SocketAddr) -> Result<()> {
+        self.ensure_connection(env.now(), addr)?;
+        self.drive(env);
+        Ok(())
+    }
+
+    fn start_probe(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        socket: SocketId,
+        addr: SocketAddr,
+    ) -> Result<ProbeId> {
+        if self.probes.len() >= MAX_PROBES {
+            return Err(anyhow!("overlay dial-back probe limit reached ({MAX_PROBES})"));
+        }
+        let now = env.now();
+        let (handle, conn) = self
+            .endpoint
+            .connect(now, self.client_config.clone(), addr, OVERLAY_SERVER_NAME)
+            .map_err(|e| anyhow!("failed to start dial-back probe to {addr}: {e}"))?;
+        let probe = ProbeId(self.next_probe);
+        self.next_probe += 1;
+        self.probe_handles.insert(handle, probe);
+        self.probe_sockets.insert(socket);
+        self.probes.insert(
+            probe,
+            ProbeConn {
+                handle,
+                conn,
+                socket,
+                remote: addr,
+                resolved: false,
+            },
+        );
+        self.drive_probes(env);
+        Ok(probe)
+    }
+
+    fn poll_probe_event(&mut self) -> Option<ProbeEvent> {
+        self.probe_events.pop_front()
+    }
+
+    fn close_probe(&mut self, _env: &mut dyn OverlayEnv, probe: ProbeId) {
+        if let Some(conn) = self.probes.remove(&probe) {
+            self.probe_handles.remove(&conn.handle);
+            // Stop accepting inbound on the (about-to-be-closed) helper
+            // socket; the core releases it via OverlayEnv::close.
+            self.probe_sockets.remove(&conn.socket);
+        }
+    }
+
+    fn drop_connection(&mut self, _env: &mut dyn OverlayEnv, addr: SocketAddr) {
+        if let Some(connection) = self.connections.remove(&addr) {
+            self.handles.remove(&connection.handle);
+            if let Some(pubkey) = connection.peer_pubkey
+                && self.by_pubkey.get(&pubkey) == Some(&addr)
+            {
+                self.by_pubkey.remove(&pubkey);
+            }
+            for (_, stream) in connection.streams {
+                if self.stream_states.remove(&stream).is_some() {
+                    push_bounded(
+                        &mut self.stream_events,
+                        StreamEvent::Failed { stream },
+                        MAX_STREAM_EVENTS,
+                        "stream events",
+                    );
+                }
+            }
+        }
     }
 }
 

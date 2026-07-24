@@ -173,6 +173,7 @@ fn mem_transport_stream_mirror() {
         fn bind(&mut self, _port: Option<u16>) -> Result<SocketId> {
             unreachable!()
         }
+        fn close(&mut self, _socket: SocketId) {}
     }
     let mut env = NullEnv {
         now: Instant::now(),

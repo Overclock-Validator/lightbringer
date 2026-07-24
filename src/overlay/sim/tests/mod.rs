@@ -5,6 +5,7 @@
 mod advert_security;
 mod convergence;
 mod determinism;
+mod dialback_core;
 mod gossip_oracles;
 mod keepalive;
 mod mtu;

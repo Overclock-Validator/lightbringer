@@ -82,6 +82,11 @@ pub struct NodeOptions {
     /// off unless a test wants dead-Udp-target behavior; `false` advertises
     /// `InConnection` (the §6.4 stream path).
     pub udp_repair: bool,
+    /// Zero-config P3 node: even when publicly routable, do NOT pre-set
+    /// `advertised_addr`; the node must discover, classify, and dial-back
+    /// confirm its own reachability (nat-traversal.md §6.2/§7, S2). Ignored
+    /// when `advertised_addr` is set explicitly.
+    pub zero_config: bool,
 }
 
 impl Default for NodeOptions {
@@ -99,6 +104,7 @@ impl Default for NodeOptions {
             max_idle_timeout: Some(Duration::from_secs(30)),
             initial_mtu: Some(OVERLAY_INITIAL_MTU),
             udp_repair: false,
+            zero_config: false,
         }
     }
 }
@@ -114,7 +120,9 @@ pub struct ProbeDatagram {
 
 struct HostEnvState {
     lan_ip: IpAddr,
-    sockets: Vec<SocketAddr>,
+    /// Indexed by `SocketId`; tombstoned (never shifted) on `close` so ids
+    /// stay stable. Slot 0 is the primary socket.
+    sockets: Vec<Option<SocketAddr>>,
     outbox: VecDeque<(SocketId, SocketAddr, Vec<u8>)>,
     rng: StdRng,
     next_ephemeral: u16,
@@ -131,12 +139,24 @@ impl HostEnvState {
             }
         };
         let addr = SocketAddr::new(self.lan_ip, port);
-        if self.sockets.contains(&addr) {
+        if self.sockets.iter().flatten().any(|&bound| bound == addr) {
             return Err(anyhow!("sim socket {addr} already bound"));
         }
         let id = SocketId(u32::try_from(self.sockets.len())?);
-        self.sockets.push(addr);
+        self.sockets.push(Some(addr));
         Ok(id)
+    }
+
+    fn close(&mut self, socket: SocketId) {
+        if socket != SocketId::PRIMARY
+            && let Some(slot) = self.sockets.get_mut(socket.0 as usize)
+        {
+            *slot = None;
+        }
+    }
+
+    fn addr_of(&self, socket: SocketId) -> Option<SocketAddr> {
+        self.sockets.get(socket.0 as usize).copied().flatten()
     }
 }
 
@@ -162,6 +182,10 @@ impl OverlayEnv for SimEnv<'_> {
 
     fn bind(&mut self, port: Option<u16>) -> Result<SocketId> {
         self.state.bind(port)
+    }
+
+    fn close(&mut self, socket: SocketId) {
+        self.state.close(socket);
     }
 }
 
@@ -368,7 +392,7 @@ impl SimWorld {
     fn env_state(&self, id: u32, lan_ip: IpAddr, sockets: Vec<SocketAddr>) -> HostEnvState {
         HostEnvState {
             lan_ip,
-            sockets,
+            sockets: sockets.into_iter().map(Some).collect(),
             outbox: VecDeque::new(),
             rng: StdRng::from_seed(crypto::derive_bytes(self.seed, id, "env-rng")),
             next_ephemeral: EPHEMERAL_PORT_START,
@@ -399,9 +423,9 @@ impl SimWorld {
             options.bind_port - 1
         };
 
-        let advertised_addr = options
-            .advertised_addr
-            .or_else(|| options.nat.is_empty().then_some(bind_addr));
+        let advertised_addr = options.advertised_addr.or_else(|| {
+            (!options.zero_config && options.nat.is_empty()).then_some(bind_addr)
+        });
         let config = OverlayConfig {
             enabled: true,
             mode: options.mode,
@@ -589,7 +613,10 @@ impl SimWorld {
     }
 
     pub fn probe_send(&mut self, host: HostId, socket: SocketId, to: SocketAddr, payload: Vec<u8>) {
-        let from = self.hosts[host.0 as usize].env.sockets[socket.0 as usize];
+        let from = self.hosts[host.0 as usize]
+            .env
+            .addr_of(socket)
+            .expect("probe socket is bound");
         self.route(host.0, from, to, payload);
     }
 
@@ -608,11 +635,11 @@ impl SimWorld {
             entry.nat_chain.is_empty(),
             "host {host:?} is NATed and has no dialable public address"
         );
-        entry.env.sockets[0]
+        entry.env.sockets[0].expect("primary socket bound")
     }
 
     pub fn local_addr(&self, host: HostId) -> SocketAddr {
-        self.hosts[host.0 as usize].env.sockets[0]
+        self.hosts[host.0 as usize].env.sockets[0].expect("primary socket bound")
     }
 
     pub fn overlay_pubkey(&self, host: HostId) -> Pubkey {
@@ -783,6 +810,46 @@ impl SimWorld {
         }
     }
 
+    /// The §6.2 NAT class a host's core has inferred, if any.
+    pub fn nat_class(&self, host: HostId) -> Option<super::nat::NatClass> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.nat_class(),
+            _ => None,
+        }
+    }
+
+    /// The §6.2 allocator calibration a host's core has inferred, if any.
+    pub fn calibrated_allocator(&mut self, host: HostId) -> Option<super::nat::AllocatorProfile> {
+        match &mut self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.calibrated_allocator(),
+            _ => None,
+        }
+    }
+
+    /// The §6.2.3 dial-back-confirmed Direct candidate a host holds, if any.
+    pub fn confirmed_direct(&self, host: HostId) -> Option<SocketAddr> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.confirmed_direct(),
+            _ => None,
+        }
+    }
+
+    /// Dial-back requests a host refused as a helper (§9 hardening).
+    pub fn dialbacks_refused(&self, host: HostId) -> u64 {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.dialbacks_refused(),
+            _ => 0,
+        }
+    }
+
+    /// Fresh-source helper probes a host currently has in flight.
+    pub fn active_helper_probes(&self, host: HostId) -> usize {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node.core.active_helper_probes(),
+            _ => 0,
+        }
+    }
+
     pub fn run_for(&mut self, duration: Duration) {
         let target = self.now_nanos + duration.as_nanos() as u64;
         loop {
@@ -882,7 +949,7 @@ impl SimWorld {
             let Self { hosts, trace, .. } = self;
             let entry = &mut hosts[host as usize];
             while let Some((socket, to, bytes)) = entry.env.outbox.pop_front() {
-                let Some(&from) = entry.env.sockets.get(socket.0 as usize) else {
+                let Some(from) = entry.env.addr_of(socket) else {
                     continue;
                 };
                 outbox.push((from, to, bytes));
@@ -1180,7 +1247,7 @@ impl SimWorld {
             if !admitted {
                 None
             } else {
-                match entry.env.sockets.iter().position(|&socket| socket == dst) {
+                match entry.env.sockets.iter().position(|&socket| socket == Some(dst)) {
                     Some(index) => Some((SocketId(index as u32), dst)),
                     None => {
                         trace.record(now, &TraceEvent::NoSocket { host: to_host, dst });

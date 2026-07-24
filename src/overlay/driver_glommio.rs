@@ -1,12 +1,14 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, VecDeque},
     net::{Ipv4Addr, SocketAddr},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
-use glommio::{net::UdpSocket, spawn_local, timer::timeout};
+use glommio::{Task, net::UdpSocket, spawn_local, timer::timeout};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use solana_sdk::signature::Keypair;
 
@@ -43,10 +45,12 @@ pub struct OverlayRepairRequester {
 /// OS-seeded randomness. `send` only queues; the driver loop flushes between
 /// core events so the core itself never blocks.
 struct GlommioEnv {
-    sockets: Vec<UdpSocket>,
+    /// Indexed by `SocketId`; slots are tombstoned (never shifted) on
+    /// `close` so ids stay stable. Slot 0 is always the primary socket.
+    /// `Rc` so per-helper-socket forwarder tasks can share the socket with
+    /// the driver's send path (§6.2.3 fresh-source dial-back binds).
+    sockets: Vec<Option<Rc<UdpSocket>>>,
     out: VecDeque<(SocketId, SocketAddr, Vec<u8>)>,
-    // Read through OverlayEnv::rng once P3+ core code draws randomness.
-    #[allow(dead_code)]
     rng: StdRng,
 }
 
@@ -55,16 +59,22 @@ impl GlommioEnv {
         let socket = UdpSocket::bind(addr)
             .map_err(|e| anyhow!("failed to bind overlay QUIC socket {addr}: {e}"))?;
         Ok(Self {
-            sockets: vec![socket],
+            sockets: vec![Some(Rc::new(socket))],
             out: VecDeque::new(),
             rng: StdRng::from_os_rng(),
         })
     }
 
+    fn primary(&self) -> Rc<UdpSocket> {
+        self.sockets[0]
+            .clone()
+            .expect("primary overlay socket is never closed")
+    }
+
     async fn flush(&mut self) {
         while let Some((from, to, bytes)) = self.out.pop_front() {
-            let Some(socket) = self.sockets.get(from.0 as usize) else {
-                log::warn!("overlay: dropping datagram to {to} from unknown {from}");
+            let Some(Some(socket)) = self.sockets.get(from.0 as usize) else {
+                log::warn!("overlay: dropping datagram to {to} from closed/unknown {from}");
                 continue;
             };
             if let Err(e) = socket.send_to(&bytes, to).await {
@@ -92,8 +102,69 @@ impl OverlayEnv for GlommioEnv {
         let socket = UdpSocket::bind(addr)
             .map_err(|e| anyhow!("failed to bind overlay helper socket {addr}: {e}"))?;
         let id = SocketId(u32::try_from(self.sockets.len())?);
-        self.sockets.push(socket);
+        self.sockets.push(Some(Rc::new(socket)));
         Ok(id)
+    }
+
+    fn close(&mut self, socket: SocketId) {
+        // Slot 0 is the primary socket and outlives the process.
+        if socket != SocketId::PRIMARY
+            && let Some(slot) = self.sockets.get_mut(socket.0 as usize)
+        {
+            *slot = None;
+        }
+    }
+}
+
+/// Datagrams read off helper sockets by their forwarder tasks, drained by the
+/// driver loop into the core.
+type HelperInbound = Rc<RefCell<VecDeque<(SocketId, SocketAddr, Vec<u8>)>>>;
+
+/// Spawn a forwarder task for every open helper socket (index ≥ 1) that lacks
+/// one, and cancel forwarders whose socket the core has closed. Helper sockets
+/// are short-lived (a dial-back probe), so this set is normally empty.
+async fn reconcile_helper_readers(
+    env: &GlommioEnv,
+    readers: &mut HashMap<u32, Task<()>>,
+    inbound: &HelperInbound,
+) {
+    let closed: Vec<u32> = readers
+        .keys()
+        .copied()
+        .filter(|&idx| !matches!(env.sockets.get(idx as usize), Some(Some(_))))
+        .collect();
+    for idx in closed {
+        if let Some(task) = readers.remove(&idx) {
+            task.cancel().await;
+        }
+    }
+    for idx in 1..env.sockets.len() {
+        if readers.contains_key(&(idx as u32)) {
+            continue;
+        }
+        let Some(Some(socket)) = env.sockets.get(idx) else {
+            continue;
+        };
+        let socket = socket.clone();
+        let inbound = inbound.clone();
+        let socket_id = SocketId(idx as u32);
+        let task = spawn_local(async move {
+            let mut buf = vec![0u8; UDP_BUFFER_SIZE];
+            loop {
+                match socket.recv_from(&mut buf).await {
+                    Ok((len, from)) => {
+                        inbound
+                            .borrow_mut()
+                            .push_back((socket_id, from, buf[..len].to_vec()));
+                    }
+                    Err(e) => {
+                        log::debug!("overlay: helper {socket_id} recv ended: {e}");
+                        break;
+                    }
+                }
+            }
+        });
+        readers.insert(idx as u32, task);
     }
 }
 
@@ -115,8 +186,17 @@ async fn run_driver(
     // Stream handle → the local nonce the repair manager matches on.
     let mut outstanding_nonces: BTreeMap<OverlayStreamId, u32> = BTreeMap::new();
     let mut next_view_publish = Instant::now();
+    // §6.2.3 fresh-source dial-back binds a helper socket; a per-socket
+    // forwarder task reads it into this shared queue, drained each loop.
+    let helper_inbound: HelperInbound = Rc::new(RefCell::new(VecDeque::new()));
+    let mut helper_readers: HashMap<u32, Task<()>> = HashMap::new();
 
     loop {
+        for (socket, from, bytes) in helper_inbound.borrow_mut().drain(..).collect::<Vec<_>>() {
+            core.on_datagram(&mut env, socket, from, &bytes);
+        }
+        env.flush().await;
+
         core.on_timer(&mut env);
 
         if let Some(source_rx) = &source_rx {
@@ -207,6 +287,9 @@ async fn run_driver(
             }
         }
         env.flush().await;
+        // Spawn/cancel forwarder tasks for helper sockets the core bound or
+        // closed this iteration (§6.2.3 dial-back).
+        reconcile_helper_readers(&env, &mut helper_readers, &helper_inbound).await;
 
         let now = Instant::now();
         let mut wait = core
@@ -217,11 +300,8 @@ async fn run_driver(
         if source_mode {
             wait = wait.min(SOURCE_POLL_INTERVAL);
         }
-        let received = timeout(
-            wait.max(MIN_RECEIVE_WAIT),
-            env.sockets[0].recv_from(&mut buffer),
-        )
-        .await;
+        let primary = env.primary();
+        let received = timeout(wait.max(MIN_RECEIVE_WAIT), primary.recv_from(&mut buffer)).await;
         match received {
             Ok((len, from)) => {
                 core.on_datagram(&mut env, SocketId::PRIMARY, from, &buffer[..len]);

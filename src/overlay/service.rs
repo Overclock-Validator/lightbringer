@@ -26,7 +26,9 @@ use super::{
         self, MAX_REPAIR_REQ_WIRE, MAX_REPAIR_REQUESTS_PER_SECOND, MAX_REPAIR_RESP_WIRE,
         RepairPeerEntry, RepairRateLimiter, RepairReq,
     },
-    transport::{OverlayStreamId, OverlayTransport, StreamEvent, TransportEvent},
+    transport::{
+        OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, StreamEvent, TransportEvent,
+    },
 };
 
 const ADVERT_INTERVAL: Duration = Duration::from_secs(10);
@@ -43,6 +45,16 @@ const REPAIR_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
 /// bounded per connection by the transport's concurrent-stream limit.
 const MAX_OUTBOUND_REPAIRS: usize = 1024;
 const MAX_INBOUND_REPAIRS: usize = 1024;
+/// A §6.2.3 dial-back (requester request or helper probe) that has not
+/// concluded by this deadline is abandoned/failed.
+const DIALBACK_TIMEOUT: Duration = Duration::from_secs(3);
+/// Per-requester dial-back rate cap (§9: dial-back is a socket-exhaustion and
+/// reflection lever). A node only needs to (re)confirm rarely.
+const MAX_DIALBACK_PER_SECOND: u32 = 4;
+/// Helper refuses to probe a candidate on a privileged port (§9).
+const MIN_UNPRIVILEGED_PORT: u16 = 1024;
+/// Concurrent helper probes this node will run (bounds fresh-socket binds).
+const MAX_HELPER_PROBES: usize = 64;
 
 fn packet_view(payload: Vec<u8>) -> Option<PacketView> {
     if payload.len() > solana_packet::PACKET_DATA_SIZE {
@@ -101,6 +113,24 @@ struct OutboundRepair {
     deadline: Instant,
 }
 
+/// Requester side of a §6.2.3 dial-back: the candidate address we asked a
+/// helper to confirm, awaiting its verdict.
+struct DialBackPending {
+    #[allow(dead_code)] // recorded for diagnostics; matched by nonce
+    helper: Pubkey,
+    candidate: SocketAddr,
+    deadline: Instant,
+}
+
+/// Helper side of a §6.2.3 dial-back: a fresh-source probe in flight toward
+/// the requester's own observed source, bound to its own short-lived socket.
+struct HelperProbe {
+    requester: Pubkey,
+    nonce: u64,
+    socket: SocketId,
+    deadline: Instant,
+}
+
 struct InboundRepair {
     peer: Pubkey,
     buf: Vec<u8>,
@@ -137,10 +167,20 @@ pub struct OverlayCore<T> {
     outbound_repairs: BTreeMap<OverlayStreamId, OutboundRepair>,
     inbound_repairs: BTreeMap<OverlayStreamId, InboundRepair>,
     repair_rate: RepairRateLimiter,
+    /// §6.2.3 dial-back confirmed candidate (requester side): the address a
+    /// helper's fresh-source probe reached us on. Consumed by the auto-advert
+    /// policy (P3) to advertise `Direct`.
+    confirmed_direct: Option<SocketAddr>,
+    dialback_pending: BTreeMap<u64, DialBackPending>,
+    next_dialback_nonce: u64,
+    /// Helper side: probes in flight, keyed by transport probe handle.
+    helper_probes: BTreeMap<ProbeId, HelperProbe>,
+    dialback_rate: RepairRateLimiter,
     dropped_unreachable: u64,
     invalid_adverts: u64,
     repairs_refused: u64,
     repairs_malformed: u64,
+    dialbacks_refused: u64,
     events: VecDeque<CoreEvent>,
 }
 
@@ -168,10 +208,16 @@ impl<T: OverlayTransport> OverlayCore<T> {
             outbound_repairs: BTreeMap::new(),
             inbound_repairs: BTreeMap::new(),
             repair_rate: RepairRateLimiter::new(MAX_REPAIR_REQUESTS_PER_SECOND),
+            confirmed_direct: None,
+            dialback_pending: BTreeMap::new(),
+            next_dialback_nonce: 0,
+            helper_probes: BTreeMap::new(),
+            dialback_rate: RepairRateLimiter::new(MAX_DIALBACK_PER_SECOND),
             dropped_unreachable: 0,
             invalid_adverts: 0,
             repairs_refused: 0,
             repairs_malformed: 0,
+            dialbacks_refused: 0,
             events: VecDeque::new(),
         }
     }
@@ -195,8 +241,10 @@ impl<T: OverlayTransport> OverlayCore<T> {
             self.next_advert = now + ADVERT_INTERVAL;
             self.advertise(env);
             self.broadcast_observations(env);
+            self.maybe_request_dialback(env);
         }
         self.expire_repairs(env, now);
+        self.expire_dialbacks(env, now);
         self.pump(env);
     }
 
@@ -259,6 +307,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
         for repair in self.inbound_repairs.values() {
             deadline = deadline.min(repair.deadline);
+        }
+        for pending in self.dialback_pending.values() {
+            deadline = deadline.min(pending.deadline);
+        }
+        for probe in self.helper_probes.values() {
+            deadline = deadline.min(probe.deadline);
         }
         Some(deadline)
     }
@@ -436,6 +490,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
         }
         while let Some(event) = self.transport.poll_stream_event() {
             self.handle_stream_event(env, event);
+        }
+        while let Some(event) = self.transport.poll_probe_event() {
+            self.on_probe_event(env, event);
         }
     }
 
@@ -620,6 +677,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
                     self.discovery.record(observer, from, observed);
                 }
             }
+            OverlayFrame::DialBackRequest { nonce } => {
+                self.handle_dialback_request(env, from, nonce);
+            }
+            OverlayFrame::DialBackResult { nonce, ok } => {
+                self.handle_dialback_result(nonce, ok);
+            }
         }
     }
 
@@ -692,6 +755,192 @@ impl<T: OverlayTransport> OverlayCore<T> {
                 self.send_address_observation(env, &pubkey, addr);
             }
         }
+    }
+
+    /// Requester side of §6.2.3: if this node has a single stable Direct
+    /// candidate (Public/EIM) that is not yet dial-back-confirmed, ask a
+    /// connected helper to confirm it from a fresh source. Operator-config
+    /// `advertised_addr` needs no confirmation and clears any prior one.
+    fn maybe_request_dialback(&mut self, env: &mut dyn OverlayEnv) {
+        if self.advertised_addr.is_some() {
+            self.confirmed_direct = None;
+            return;
+        }
+        let candidate = self.discovery.consistent_mapping();
+        // Drop a stale confirmation when the candidate mapping changed or the
+        // class is no longer endpoint-independent.
+        if self.confirmed_direct != candidate {
+            self.confirmed_direct = None;
+        }
+        if self.confirmed_direct.is_some() || !self.dialback_pending.is_empty() {
+            return;
+        }
+        let Some(candidate) = candidate else {
+            return;
+        };
+        let Some(helper) = self
+            .transport
+            .connected_peers()
+            .into_iter()
+            .find(|pubkey| *pubkey != self.local_pubkey)
+        else {
+            return;
+        };
+        let nonce = self.next_dialback_nonce;
+        self.next_dialback_nonce += 1;
+        match OverlayFrame::dialback_request(nonce).encode() {
+            Ok(raw) => {
+                if self.transport.queue_datagram_to_peer(env, &helper, raw) {
+                    self.dialback_pending.insert(
+                        nonce,
+                        DialBackPending {
+                            helper,
+                            candidate,
+                            deadline: env.now() + DIALBACK_TIMEOUT,
+                        },
+                    );
+                }
+            }
+            Err(e) => log::warn!("overlay: failed to encode dial-back request: {e}"),
+        }
+    }
+
+    /// Helper side of §6.2.3: dial the requester's *own* observed source from
+    /// a fresh short-lived socket, so its restricted filtering is genuinely
+    /// exercised. Hardened per §9: per-requester rate limit, no privileged
+    /// ports, and — because we only ever target the address we already see
+    /// the requester at — no reflection at third parties.
+    fn handle_dialback_request(&mut self, env: &mut dyn OverlayEnv, from: SocketAddr, nonce: u64) {
+        let Some(requester) = self.transport.peer_identity(from) else {
+            return;
+        };
+        let now = env.now();
+        if !self.dialback_rate.check_and_increment(requester, now)
+            || self.helper_probes.len() >= MAX_HELPER_PROBES
+        {
+            self.dialbacks_refused += 1;
+            self.send_dialback_result(env, &requester, nonce, false);
+            return;
+        }
+        // Reflection-safe: the probe target is the requester's own mapping as
+        // we observe it, never an address it supplied.
+        let Some(target) = self.transport.connection_addr(&requester) else {
+            self.send_dialback_result(env, &requester, nonce, false);
+            return;
+        };
+        if target.port() < MIN_UNPRIVILEGED_PORT {
+            self.dialbacks_refused += 1;
+            self.send_dialback_result(env, &requester, nonce, false);
+            return;
+        }
+        let socket = match env.bind(None) {
+            Ok(socket) => socket,
+            Err(e) => {
+                log::debug!("overlay: dial-back helper bind failed: {e}");
+                self.send_dialback_result(env, &requester, nonce, false);
+                return;
+            }
+        };
+        match self.transport.start_probe(env, socket, target) {
+            Ok(probe) => {
+                self.helper_probes.insert(
+                    probe,
+                    HelperProbe {
+                        requester,
+                        nonce,
+                        socket,
+                        deadline: now + DIALBACK_TIMEOUT,
+                    },
+                );
+            }
+            Err(e) => {
+                log::debug!("overlay: dial-back probe start failed: {e}");
+                env.close(socket);
+                self.send_dialback_result(env, &requester, nonce, false);
+            }
+        }
+    }
+
+    /// A helper probe concluded: report success only when the candidate
+    /// answered with the requester's expected identity (§6.2.3), then reclaim
+    /// the short-lived socket (§9).
+    fn on_probe_event(&mut self, env: &mut dyn OverlayEnv, event: ProbeEvent) {
+        let Some(probe) = self.helper_probes.remove(&event.probe) else {
+            return;
+        };
+        let ok = event.identity == Some(probe.requester);
+        self.send_dialback_result(env, &probe.requester, probe.nonce, ok);
+        self.transport.close_probe(env, event.probe);
+        env.close(probe.socket);
+    }
+
+    /// Requester side: record a helper's verdict. A success confirms the
+    /// candidate as our Direct address.
+    fn handle_dialback_result(&mut self, nonce: u64, ok: bool) {
+        if let Some(pending) = self.dialback_pending.remove(&nonce)
+            && ok
+        {
+            self.confirmed_direct = Some(pending.candidate);
+        }
+    }
+
+    fn send_dialback_result(
+        &mut self,
+        env: &mut dyn OverlayEnv,
+        requester: &Pubkey,
+        nonce: u64,
+        ok: bool,
+    ) {
+        match OverlayFrame::dialback_result(nonce, ok).encode() {
+            Ok(raw) => {
+                self.transport.queue_datagram_to_peer(env, requester, raw);
+            }
+            Err(e) => log::warn!("overlay: failed to encode dial-back result: {e}"),
+        }
+    }
+
+    /// Reclaim timed-out dial-backs on both sides (§6.9 deadline discipline).
+    fn expire_dialbacks(&mut self, env: &mut dyn OverlayEnv, now: Instant) {
+        let expired: Vec<u64> = self
+            .dialback_pending
+            .iter()
+            .filter(|(_, pending)| now >= pending.deadline)
+            .map(|(&nonce, _)| nonce)
+            .collect();
+        for nonce in expired {
+            self.dialback_pending.remove(&nonce);
+        }
+        let expired_probes: Vec<ProbeId> = self
+            .helper_probes
+            .iter()
+            .filter(|(_, probe)| now >= probe.deadline)
+            .map(|(&id, _)| id)
+            .collect();
+        for probe in expired_probes {
+            let helper = self.helper_probes.remove(&probe).expect("collected above");
+            self.send_dialback_result(env, &helper.requester, helper.nonce, false);
+            self.transport.close_probe(env, probe);
+            env.close(helper.socket);
+        }
+    }
+
+    /// The §6.2.3 dial-back-confirmed Direct candidate, if any. Oracle surface.
+    #[allow(dead_code)]
+    pub fn confirmed_direct(&self) -> Option<SocketAddr> {
+        self.confirmed_direct
+    }
+
+    /// Dial-back requests this node refused as a helper (rate/port/caps, §9).
+    #[allow(dead_code)]
+    pub fn dialbacks_refused(&self) -> u64 {
+        self.dialbacks_refused
+    }
+
+    /// Fresh-source helper probes currently in flight. Oracle surface for the
+    /// short-lived-socket bound (§9).
+    #[allow(dead_code)]
+    pub fn active_helper_probes(&self) -> usize {
+        self.helper_probes.len()
     }
 
     /// The §6.2 NAT class inferred from peer observations, or `None` while

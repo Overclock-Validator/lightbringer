@@ -20,6 +20,8 @@ pub const SHRED_FRAME_OVERHEAD: usize = 2;
 const FRAME_SHRED: u8 = 0;
 const FRAME_PEER_ADVERTISEMENT: u8 = 1;
 const FRAME_ADDRESS_OBSERVATION: u8 = 2;
+const FRAME_DIALBACK_REQUEST: u8 = 3;
+const FRAME_DIALBACK_RESULT: u8 = 4;
 
 #[derive(Clone, Debug)]
 pub enum OverlayFrame {
@@ -31,6 +33,14 @@ pub enum OverlayFrame {
     /// signature — the QUIC connection already authenticates the observer,
     /// and a lie only misinforms the observed node about its own address.
     AddressObservation { observed: SocketAddr },
+    /// nat-traversal.md §6.2 step 3: "please confirm my reachability." The
+    /// helper dials the requester's *own* observed source from a fresh port
+    /// (§9: never a third-party address — no reflection vector), so the
+    /// request carries only a correlation nonce.
+    DialBackRequest { nonce: u64 },
+    /// The helper's verdict: `ok` iff the fresh-source handshake completed
+    /// with the requester's expected identity.
+    DialBackResult { nonce: u64, ok: bool },
 }
 
 impl OverlayFrame {
@@ -44,6 +54,14 @@ impl OverlayFrame {
 
     pub fn address_observation(observed: SocketAddr) -> Self {
         Self::AddressObservation { observed }
+    }
+
+    pub fn dialback_request(nonce: u64) -> Self {
+        Self::DialBackRequest { nonce }
+    }
+
+    pub fn dialback_result(nonce: u64, ok: bool) -> Self {
+        Self::DialBackResult { nonce, ok }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -63,6 +81,16 @@ impl OverlayFrame {
             Self::AddressObservation { observed } => {
                 let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_ADDRESS_OBSERVATION];
                 bincode::serialize_into(&mut out, observed)?;
+                Ok(out)
+            }
+            Self::DialBackRequest { nonce } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_DIALBACK_REQUEST];
+                bincode::serialize_into(&mut out, nonce)?;
+                Ok(out)
+            }
+            Self::DialBackResult { nonce, ok } => {
+                let mut out = vec![OVERLAY_PROTOCOL_VERSION, FRAME_DIALBACK_RESULT];
+                bincode::serialize_into(&mut out, &(nonce, ok))?;
                 Ok(out)
             }
         }
@@ -85,6 +113,13 @@ impl OverlayFrame {
             FRAME_ADDRESS_OBSERVATION => Ok(Self::AddressObservation {
                 observed: bincode::deserialize(body)?,
             }),
+            FRAME_DIALBACK_REQUEST => Ok(Self::DialBackRequest {
+                nonce: bincode::deserialize(body)?,
+            }),
+            FRAME_DIALBACK_RESULT => {
+                let (nonce, ok) = bincode::deserialize(body)?;
+                Ok(Self::DialBackResult { nonce, ok })
+            }
             other => Err(anyhow!("unknown overlay frame type {other}")),
         }
     }
