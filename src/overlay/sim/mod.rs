@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod crypto;
+pub mod gateway;
 pub mod highseam;
 pub mod nat;
 pub mod net;
@@ -44,6 +45,7 @@ use super::{
     },
 };
 
+use gateway::{Gateway, GatewayConfig, GatewayStats};
 use nat::{FirewallBox, FirewallConfig, NatBox, NatConfig, NatStats};
 use net::LinkParams;
 use trace::{Trace, TraceEvent};
@@ -52,6 +54,9 @@ const MAX_HOSTS: usize = 200;
 const MAX_DELIVERED_SHREDS: usize = 65_536;
 const MAX_PROBE_RECEIVED: usize = 8_192;
 const EPHEMERAL_PORT_START: u16 = 49_152;
+/// Fixed LAN round-trip half for host↔gateway datagrams (§6.3): the gateway
+/// conversation never crosses the fault-modeled WAN links.
+const GATEWAY_DELAY_NANOS: u64 = 1_000_000;
 /// Timers never fire at or before the current instant; this keeps virtual
 /// time strictly advancing even for already-due deadlines.
 const TIMER_MIN_ADVANCE_NANOS: u64 = 1_000;
@@ -93,6 +98,10 @@ pub struct NodeOptions {
     pub ipv6: bool,
     /// Idle timeout of the v6 firewall's flow state (`None` = 30s default).
     pub v6_firewall_idle: Option<Duration>,
+    /// LAN gateway model for the §6.3 port-mapping ladder. Requires a NATed
+    /// host; the gateway programs the innermost NAT box (PCP/UPnP never
+    /// traverses a CGN). `Some` also feeds `gateway_addr` to the node.
+    pub gateway: Option<GatewayConfig>,
 }
 
 impl Default for NodeOptions {
@@ -113,6 +122,7 @@ impl Default for NodeOptions {
             zero_config: false,
             ipv6: true,
             v6_firewall_idle: None,
+            gateway: None,
         }
     }
 }
@@ -303,6 +313,8 @@ struct Host {
     up: bool,
     nat_chain: Vec<NatBox>,
     v6: Option<HostV6>,
+    /// LAN gateway (§6.3), programming `nat_chain[0]` / the v6 firewall.
+    gateway: Option<Gateway>,
     env: HostEnvState,
     kind: HostKind,
     timer_generation: u64,
@@ -485,6 +497,15 @@ impl SimWorld {
         }
     }
 
+    /// Build the LAN gateway model (§6.3). It lives at 10.<id>.0.1 — the
+    /// same LAN the NATed host's 10.<id>.0.2 sits on.
+    fn host_gateway(id: u32, nat: &[NatConfig], config: Option<GatewayConfig>) -> Option<Gateway> {
+        config.map(|config| {
+            assert!(!nat.is_empty(), "a gateway model requires a NATed host");
+            Gateway::new(config, IpAddr::from([10, id as u8, 0, 1]))
+        })
+    }
+
     fn nat_chain(&self, id: u32, nat: &[NatConfig], externals: &[IpAddr]) -> Vec<NatBox> {
         nat.iter()
             .zip(externals)
@@ -521,6 +542,7 @@ impl SimWorld {
         let advertised_addr_v6 = (advertised_addr.is_some() && options.advertised_addr.is_none())
             .then_some(bind_addr_v6)
             .flatten();
+        let gateway = Self::host_gateway(id, &options.nat, options.gateway.clone());
         let config = OverlayConfig {
             enabled: true,
             mode: options.mode,
@@ -528,7 +550,7 @@ impl SimWorld {
             bind_addr_v6,
             advertised_addr,
             advertised_addr_v6,
-            gateway_addr: None,
+            gateway_addr: gateway.as_ref().map(|gateway| gateway.udp_endpoint()),
             static_peers: options.static_peers.clone(),
             fanout: options.fanout,
             repair_addr: options
@@ -555,6 +577,7 @@ impl SimWorld {
             up: true,
             nat_chain: self.nat_chain(id, &options.nat, &externals),
             v6,
+            gateway,
             env: self.env_state(id, host_ip, lan_ip_v6, sockets),
             kind: HostKind::Overlay(Box::new(OverlayNode {
                 core,
@@ -603,6 +626,7 @@ impl SimWorld {
             up: true,
             nat_chain: self.nat_chain(id, &options.nat, &externals),
             v6,
+            gateway: Self::host_gateway(id, &options.nat, options.gateway.clone()),
             env: self.env_state(id, host_ip, lan_ip_v6, sockets),
             kind: HostKind::Transport(Box::new(TransportNode {
                 transport,
@@ -705,6 +729,7 @@ impl SimWorld {
             up: true,
             nat_chain: self.nat_chain(id, &nat, &externals),
             v6: None,
+            gateway: None,
             env: self.env_state(id, host_ip, None, Vec::new()),
             kind: HostKind::Probe(ProbeNode {
                 received: Vec::new(),
@@ -774,6 +799,28 @@ impl SimWorld {
             .as_ref()
             .and_then(|v6| v6.firewall.as_ref())
             .map(|firewall| firewall.stats)
+    }
+
+    /// Request counters of a host's LAN gateway model (§6.3).
+    pub fn gateway_stats(&self, host: HostId) -> Option<GatewayStats> {
+        self.hosts[host.0 as usize]
+            .gateway
+            .as_ref()
+            .map(|gateway| gateway.stats)
+    }
+
+    /// A live gateway lease mapping exists for `port` on NAT `level`.
+    pub fn static_map_live(&self, host: HostId, level: usize, port: u16) -> bool {
+        self.hosts[host.0 as usize].nat_chain[level].static_map_live(self.now_nanos, port)
+    }
+
+    /// A live v6 firewall pinhole exists for `port`.
+    pub fn pinhole_live(&self, host: HostId, port: u16) -> bool {
+        self.hosts[host.0 as usize]
+            .v6
+            .as_ref()
+            .and_then(|v6| v6.firewall.as_ref())
+            .is_some_and(|firewall| firewall.pinhole_live(self.now_nanos, port))
     }
 
     pub fn overlay_pubkey(&self, host: HostId) -> Pubkey {
@@ -1213,6 +1260,41 @@ impl SimWorld {
     /// can expire mid-flight).
     fn route(&mut self, sender: u32, from: SocketAddr, to: SocketAddr, payload: Vec<u8>) {
         let now = self.now_nanos;
+        // §6.3: datagrams addressed to the LAN gateway (PCP/NAT-PMP/SSDP)
+        // never reach the WAN — the gateway model answers on the LAN with a
+        // fixed tiny delay and programs the innermost NAT / v6 firewall.
+        let gateway_responses = {
+            let entry = &mut self.hosts[sender as usize];
+            match entry.gateway.as_mut() {
+                Some(gateway) if gateway.is_gateway_dst(to) => {
+                    let firewall = entry.v6.as_mut().and_then(|v6| v6.firewall.as_mut());
+                    let nat = entry.nat_chain.first_mut().expect("gateway requires NAT");
+                    Some(gateway.handle_udp(now, from, to, &payload, nat, firewall))
+                }
+                _ => None,
+            }
+        };
+        if let Some(responses) = gateway_responses {
+            self.trace.record(
+                now,
+                &TraceEvent::GatewayRequest {
+                    host: sender,
+                    len: payload.len(),
+                },
+            );
+            for (gw_src, bytes) in responses {
+                self.push_event(
+                    now + GATEWAY_DELAY_NANOS,
+                    EventKind::Delivery {
+                        to_host: sender,
+                        src: gw_src,
+                        dst: from,
+                        payload: bytes,
+                    },
+                );
+            }
+            return;
+        }
         let mut src = from;
         {
             let Self { hosts, trace, .. } = self;

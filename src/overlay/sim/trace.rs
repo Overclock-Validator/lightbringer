@@ -114,6 +114,12 @@ pub enum TraceEvent {
         host: u32,
         reason: &'static str,
     },
+    /// A datagram addressed to the host's LAN gateway model (§6.3
+    /// PCP/NAT-PMP/SSDP) was consumed by it.
+    GatewayRequest {
+        host: u32,
+        len: usize,
+    },
 }
 
 pub struct Trace {
@@ -305,6 +311,11 @@ fn encode_event(buf: &mut Vec<u8>, event: &TraceEvent) {
             buf.push(20);
             buf.extend_from_slice(&host.to_le_bytes());
             buf.extend_from_slice(reason.as_bytes());
+        }
+        TraceEvent::GatewayRequest { host, len } => {
+            buf.push(21);
+            buf.extend_from_slice(&host.to_le_bytes());
+            buf.extend_from_slice(&(*len as u64).to_le_bytes());
         }
     }
 }

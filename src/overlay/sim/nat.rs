@@ -197,6 +197,19 @@ pub struct NatStats {
     pub filtered_drops: u64,
     pub no_mapping_drops: u64,
     pub pool_exhausted_drops: u64,
+    /// Lease-based static mappings installed/renewed via the gateway
+    /// (§6.3 PCP/NAT-PMP/UPnP). The re-lease oracle counts these.
+    pub static_installs: u64,
+}
+
+/// A port mapping installed through the gateway (§6.3): inbound to the
+/// external port forwards to `internal` from ANY source (full-cone for that
+/// port), until the lease expires. Traffic never refreshes it — renewal at
+/// half-life is the client's job.
+#[derive(Clone, Copy, Debug)]
+struct StaticMap {
+    internal: SocketAddr,
+    expires_at: u64,
 }
 
 pub struct OutboundPass {
@@ -213,6 +226,8 @@ pub struct NatBox {
     /// socket (port-preserving symmetric NATs reuse the port per
     /// destination; inbound disambiguates by remote endpoint).
     by_port: BTreeMap<u16, Vec<(SocketAddr, MapKey)>>,
+    /// Gateway-installed lease-based mappings, keyed by external port.
+    static_maps: BTreeMap<u16, StaticMap>,
     next_port: u16,
     rng: StdRng,
     pub stats: NatStats,
@@ -226,10 +241,77 @@ impl NatBox {
             external_ip,
             mappings: BTreeMap::new(),
             by_port: BTreeMap::new(),
+            static_maps: BTreeMap::new(),
             next_port,
             rng: StdRng::seed_from_u64(rng_seed),
             stats: NatStats::default(),
         }
+    }
+
+    /// Install (or renew) a gateway lease mapping `external port → internal`
+    /// (§6.3). Prefers the requested port; a port held by a live dynamic
+    /// mapping or another internal's static map falls forward through the
+    /// pool. Returns the assigned external port, or `None` when exhausted.
+    pub fn install_static(
+        &mut self,
+        now: u64,
+        internal: SocketAddr,
+        requested: u16,
+        lifetime: Duration,
+    ) -> Option<u16> {
+        let expires_at = now + lifetime.as_nanos() as u64;
+        // Renewal of an existing lease for the same internal socket.
+        if let Some(existing) = self.static_maps.get_mut(&requested)
+            && existing.internal == internal
+        {
+            existing.expires_at = expires_at;
+            self.stats.static_installs += 1;
+            return Some(requested);
+        }
+        let (lo, hi) = self.config.port_range;
+        let span = u32::from(hi - lo) + 1;
+        let candidates = std::iter::once(requested).chain((0..span).map(|offset| {
+            let base = if (lo..=hi).contains(&requested) { requested } else { lo };
+            lo + ((u32::from(base - lo) + offset) % span) as u16
+        }));
+        for port in candidates {
+            let static_free = match self.static_maps.get(&port) {
+                Some(map) if now <= map.expires_at => false,
+                Some(_) => {
+                    self.static_maps.remove(&port);
+                    true
+                }
+                None => true,
+            };
+            if static_free && self.port_available(now, port, Some(internal)) {
+                self.static_maps.insert(
+                    port,
+                    StaticMap {
+                        internal,
+                        expires_at,
+                    },
+                );
+                self.stats.static_installs += 1;
+                return Some(port);
+            }
+        }
+        None
+    }
+
+    /// Drop a lease mapping (a lifetime-0 PCP/NAT-PMP request).
+    pub fn remove_static(&mut self, internal: SocketAddr, external_port: u16) {
+        if let Some(map) = self.static_maps.get(&external_port)
+            && map.internal == internal
+        {
+            self.static_maps.remove(&external_port);
+        }
+    }
+
+    /// A live gateway lease exists for `external_port` (oracle surface).
+    pub fn static_map_live(&self, now: u64, external_port: u16) -> bool {
+        self.static_maps
+            .get(&external_port)
+            .is_some_and(|map| now <= map.expires_at)
     }
 
     fn expired(&self, mapping: &Mapping, now: u64) -> bool {
@@ -306,6 +388,15 @@ impl NatBox {
         src: SocketAddr,
         dst: SocketAddr,
     ) -> Result<SocketAddr, NatDropReason> {
+        // Gateway lease mappings admit any source (§6.3: a mapped port is
+        // full-cone); expiry is by lease, never refreshed by traffic.
+        match self.static_maps.get(&dst.port()) {
+            Some(map) if now <= map.expires_at => return Ok(map.internal),
+            Some(_) => {
+                self.static_maps.remove(&dst.port());
+            }
+            None => {}
+        }
         let Some(slots) = self.by_port.get(&dst.port()) else {
             self.stats.no_mapping_drops += 1;
             return Err(NatDropReason::NoMapping);
@@ -398,6 +489,19 @@ impl NatBox {
     /// port-preserving path), the port may already carry live mappings of
     /// that same internal socket — inbound resolves by remote endpoint.
     fn port_available(&mut self, now: u64, port: u16, share_with: Option<SocketAddr>) -> bool {
+        // A live gateway lease occupies the port for everyone but its own
+        // internal socket.
+        match self.static_maps.get(&port) {
+            Some(map) if now <= map.expires_at => {
+                if share_with != Some(map.internal) {
+                    return false;
+                }
+            }
+            Some(_) => {
+                self.static_maps.remove(&port);
+            }
+            None => {}
+        }
         let Some(slots) = self.by_port.get(&port) else {
             return true;
         };
