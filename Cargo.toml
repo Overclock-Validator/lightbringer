@@ -8,6 +8,11 @@ default-run = "lightbringer"
 name = "lightbringer-grpc-client"
 path = "src/grpc_client.rs"
 
+[[bin]]
+name = "overlay-sim"
+path = "src/overlay_sim.rs"
+required-features = ["sim"]
+
 [dependencies]
 solana-gossip = { git = "https://github.com/Overclock-Validator/agave.git", rev = "68a2a6687d7547730c31de87638776276cc0c079", features = ["agave-unstable-api"] }
 solana-sdk = "4.0.1"

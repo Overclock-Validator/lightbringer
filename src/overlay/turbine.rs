@@ -30,6 +30,25 @@ impl TurbineTree {
             .collect()
     }
 
+    /// Peers for a locally-originated shred. The origin acts as the leader
+    /// for this shred: when the shuffle makes it the tree root it fans out
+    /// to the first layer, otherwise it hands the shred to the shuffled
+    /// root (which then retransmits through `retransmit_peers`). Reusing
+    /// the child fan-out here would silently drop every shred whose
+    /// shuffle placed the origin off-root.
+    pub fn origin_peers(&self, payload: &[u8], peers: &[SocketAddr]) -> Vec<SocketAddr> {
+        let Some((local_index, shuffled)) = self.indexed_tree(payload, peers) else {
+            return Vec::new();
+        };
+        if local_index == 0 {
+            retransmit_indices(0, self.fanout, shuffled.len())
+                .filter_map(|index| shuffled.get(index).copied())
+                .collect()
+        } else {
+            shuffled.first().copied().into_iter().collect()
+        }
+    }
+
     fn indexed_tree(
         &self,
         payload: &[u8],
@@ -100,5 +119,19 @@ mod tests {
     fn non_root_retransmits_next_layer_stride() {
         let got = retransmit_indices(2, 3, 20).collect::<Vec<_>>();
         assert_eq!(got, vec![5, 8, 11]);
+    }
+
+    #[test]
+    fn origin_always_emits_somewhere() {
+        let local: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let peer: SocketAddr = "127.0.0.1:2".parse().unwrap();
+        let tree = TurbineTree::new(local, 8);
+        // Whatever position the shuffle assigns, an originated shred must
+        // leave the source when at least one peer exists.
+        for byte in 0u8..32 {
+            let payload = vec![byte; 64];
+            let got = tree.origin_peers(&payload, &[peer]);
+            assert_eq!(got, vec![peer], "payload seed {byte}");
+        }
     }
 }

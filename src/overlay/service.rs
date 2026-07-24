@@ -124,7 +124,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             .map(|peer| peer.overlay_addr)
             .collect::<Vec<_>>();
         let frame = OverlayFrame::shred(self.advertised_addr, packet.to_vec());
-        for peer in self.tree.retransmit_peers(packet.as_slice(), &peer_addrs) {
+        for peer in self.tree.origin_peers(packet.as_slice(), &peer_addrs) {
             self.send_frame(env, peer, &frame);
         }
         self.pump(env);
@@ -142,7 +142,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
         self.events.pop_front()
     }
 
-    #[cfg_attr(not(feature = "sim"), allow(dead_code))]
+    #[allow(dead_code)]
     pub fn transport(&self) -> &T {
         &self.transport
     }

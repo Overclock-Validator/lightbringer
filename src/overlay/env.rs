@@ -26,9 +26,13 @@ impl fmt::Display for SocketId {
 /// (`driver_glommio`), tests wire it to the deterministic simulator.
 pub trait OverlayEnv {
     fn now(&self) -> Instant;
+    // rng/bind are seam surface consumed from P3+ (address discovery,
+    // §6.5.1 helper binds); nothing calls them yet.
+    #[allow(dead_code)]
     fn rng(&mut self) -> &mut dyn RngCore;
     /// Queue `datagram` for transmission from local socket `from` to `to`.
     fn send(&mut self, from: SocketId, to: SocketAddr, datagram: &[u8]);
     /// Bind an additional UDP socket (`None` = ephemeral port).
+    #[allow(dead_code)]
     fn bind(&mut self, port: Option<u16>) -> anyhow::Result<SocketId>;
 }

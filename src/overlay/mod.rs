@@ -5,6 +5,8 @@ mod gossip;
 mod identity;
 mod packet;
 mod service;
+#[cfg(feature = "sim")]
+pub mod sim;
 mod transport;
 mod turbine;
 

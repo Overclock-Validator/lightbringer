@@ -30,6 +30,8 @@ const UDP_BUFFER_SIZE: usize = 65_535;
 struct GlommioEnv {
     sockets: Vec<UdpSocket>,
     out: VecDeque<(SocketId, SocketAddr, Vec<u8>)>,
+    // Read through OverlayEnv::rng once P3+ core code draws randomness.
+    #[allow(dead_code)]
     rng: StdRng,
 }
 

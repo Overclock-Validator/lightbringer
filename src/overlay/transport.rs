@@ -48,6 +48,10 @@ pub struct TransportOptions {
     /// participation) alive. See nat-traversal.md §6.6 (fixes F7).
     pub keep_alive_interval: Option<Duration>,
     pub max_idle_timeout: Option<Duration>,
+    /// Fixed path MTU (MTU discovery is disabled). `None` keeps quinn's
+    /// 1200-byte default, which cannot carry a full-size shred datagram —
+    /// the known limitation tracked in nat-traversal.md §8.
+    pub initial_mtu: Option<u16>,
     /// Seeds quinn's endpoint-internal RNG.
     pub rng_seed: Option<[u8; 32]>,
     /// Seeds local connection-id generation.
@@ -63,6 +67,7 @@ impl Default for TransportOptions {
         Self {
             keep_alive_interval: Some(KEEP_ALIVE_INTERVAL),
             max_idle_timeout: Some(MAX_IDLE_TIMEOUT),
+            initial_mtu: None,
             rng_seed: None,
             cid_seed: None,
             reset_key: None,
@@ -106,6 +111,8 @@ pub trait OverlayTransport {
     fn poll_inbound(&mut self) -> Option<(SocketAddr, Vec<u8>)>;
     fn poll_event(&mut self) -> Option<TransportEvent>;
     /// TLS-verified Ed25519 identity bound to the connection with `peer`.
+    /// Consumed by identity-keyed gossip from P1.
+    #[allow(dead_code)]
     fn peer_identity(&self, peer: SocketAddr) -> Option<Pubkey>;
 }
 
@@ -452,6 +459,25 @@ impl OverlayTransport for OverlayQuicTransport {
     }
 }
 
+#[cfg(feature = "sim")]
+impl OverlayQuicTransport {
+    /// quinn's own per-connection counters, for simulator diagnostics.
+    pub fn connection_stats(&self) -> Vec<(SocketAddr, quinn_proto::ConnectionStats)> {
+        self.connections
+            .iter()
+            .map(|(peer, connection)| (*peer, connection.conn.stats()))
+            .collect()
+    }
+
+    /// Datagrams still queued app-side (not yet handed to quinn).
+    pub fn pending_datagrams(&self) -> usize {
+        self.connections
+            .values()
+            .map(|connection| connection.pending.len())
+            .sum()
+    }
+}
+
 fn send_transmit(env: &mut dyn OverlayEnv, socket: SocketId, transmit: &Transmit, bytes: &[u8]) {
     if let Some(segment_size) = transmit.segment_size {
         for chunk in bytes.chunks(segment_size) {
@@ -547,6 +573,9 @@ fn overlay_transport_config(options: &TransportOptions) -> Arc<TransportConfig> 
         IdleTimeout::try_from(timeout).expect("overlay max_idle_timeout out of range")
     });
     transport.max_idle_timeout(max_idle);
+    if let Some(mtu) = options.initial_mtu {
+        transport.initial_mtu(mtu);
+    }
     Arc::new(transport)
 }
 
