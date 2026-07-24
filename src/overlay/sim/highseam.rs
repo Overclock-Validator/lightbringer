@@ -23,7 +23,7 @@ use solana_sdk::{pubkey::Pubkey, signer::Signer};
 
 use crate::overlay::{
     OverlayConfig, OverlayMode,
-    env::{OverlayEnv, SocketId},
+    env::{IpFamily, OverlayEnv, SocketId, TcpId},
     repair::RepairReq,
     service::{CoreEvent, OverlayCore},
     transport::{OverlayStreamId, OverlayTransport, ProbeEvent, ProbeId, StreamEvent, TransportEvent},
@@ -320,6 +320,13 @@ impl OverlayTransport for MemTransport {
         self.established.keys().copied().collect()
     }
 
+    fn connections(&self) -> Vec<(Pubkey, SocketAddr)> {
+        self.established
+            .iter()
+            .map(|(&pubkey, &addr)| (pubkey, addr))
+            .collect()
+    }
+
     fn open_stream(&mut self, pubkey: &Pubkey) -> Option<OverlayStreamId> {
         if !self.established.contains_key(pubkey) {
             return None;
@@ -487,11 +494,19 @@ impl OverlayEnv for HighSeamEnv {
         self.outbox.push_back((to, datagram.to_vec()));
     }
 
-    fn bind(&mut self, _port: Option<u16>) -> Result<SocketId> {
+    fn bind(&mut self, _port: Option<u16>, _family: IpFamily) -> Result<SocketId> {
         Err(anyhow::anyhow!("high-seam harness has no helper sockets"))
     }
 
     fn close(&mut self, _socket: SocketId) {}
+
+    fn tcp_connect(&mut self, _to: SocketAddr) -> Result<TcpId> {
+        Err(anyhow::anyhow!("high-seam harness has no TCP streams"))
+    }
+
+    fn tcp_send(&mut self, _conn: TcpId, _bytes: &[u8]) {}
+
+    fn tcp_close(&mut self, _conn: TcpId) {}
 }
 
 #[derive(Clone, Debug)]
@@ -591,7 +606,10 @@ impl HighSeamNet {
             enabled: true,
             mode: options.mode,
             bind_addr: addr,
+            bind_addr_v6: None,
             advertised_addr: options.direct.then_some(addr),
+            advertised_addr_v6: None,
+            gateway_addr: None,
             static_peers: options.static_peers,
             fanout: options.fanout,
             repair_addr: None,

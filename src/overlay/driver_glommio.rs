@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     OverlayConfig, OverlayIdentity, OverlayMode,
-    env::{OverlayEnv, SocketId},
+    env::{IpFamily, OverlayEnv, SocketId, TcpId},
     repair::{OverlayRepairCommand, RepairRoute, RepairStore, SharedRepairView},
     service::{CoreEvent, OverlayCore},
     transport::{OverlayQuicTransport, OverlayStreamId, TransportOptions},
@@ -41,6 +41,22 @@ pub struct OverlayRepairRequester {
     pub view: SharedRepairView,
 }
 
+/// Live TCP conns the env may hold (§6.3 UPnP: the port-map client opens at
+/// most one or two at a time).
+const MAX_TCP_CONNS: usize = 8;
+
+/// Env-side state of one production TCP stream (§6.3 UPnP). The driver
+/// spawns a task owning the `glommio::net::TcpStream`; this shared cell
+/// carries the core's queued writes and close request to it.
+#[allow(dead_code)] // driver task wiring lands with the port-map client
+struct TcpConnState {
+    to: SocketAddr,
+    out: VecDeque<Vec<u8>>,
+    closed: bool,
+    /// A driver task has been spawned for this conn.
+    spawned: bool,
+}
+
 /// Production side of the `OverlayEnv` seam: real sockets, the OS clock, and
 /// OS-seeded randomness. `send` only queues; the driver loop flushes between
 /// core events so the core itself never blocks.
@@ -51,18 +67,37 @@ struct GlommioEnv {
     /// the driver's send path (§6.2.3 fresh-source dial-back binds).
     sockets: Vec<Option<Rc<UdpSocket>>>,
     out: VecDeque<(SocketId, SocketAddr, Vec<u8>)>,
+    /// TCP streams keyed by id; tasks are reconciled by the driver loop.
+    tcp: BTreeMap<TcpId, Rc<RefCell<TcpConnState>>>,
+    next_tcp: u64,
     rng: StdRng,
 }
 
 impl GlommioEnv {
-    fn bind_primary(addr: SocketAddr) -> Result<Self> {
+    /// Bind the primary v4 socket and, when configured, the secondary v6
+    /// socket (§6.3 dual-stack). Returns the v6 socket's id for the
+    /// transport's egress selection.
+    fn bind_primary(addr: SocketAddr, addr_v6: Option<SocketAddr>) -> Result<(Self, Option<SocketId>)> {
         let socket = UdpSocket::bind(addr)
             .map_err(|e| anyhow!("failed to bind overlay QUIC socket {addr}: {e}"))?;
-        Ok(Self {
-            sockets: vec![Some(Rc::new(socket))],
-            out: VecDeque::new(),
-            rng: StdRng::from_os_rng(),
-        })
+        let mut sockets = vec![Some(Rc::new(socket))];
+        let mut socket_v6 = None;
+        if let Some(addr_v6) = addr_v6 {
+            let socket = UdpSocket::bind(addr_v6)
+                .map_err(|e| anyhow!("failed to bind overlay IPv6 socket {addr_v6}: {e}"))?;
+            socket_v6 = Some(SocketId(sockets.len() as u32));
+            sockets.push(Some(Rc::new(socket)));
+        }
+        Ok((
+            Self {
+                sockets,
+                out: VecDeque::new(),
+                tcp: BTreeMap::new(),
+                next_tcp: 0,
+                rng: StdRng::from_os_rng(),
+            },
+            socket_v6,
+        ))
     }
 
     fn primary(&self) -> Rc<UdpSocket> {
@@ -97,8 +132,11 @@ impl OverlayEnv for GlommioEnv {
         self.out.push_back((from, to, datagram.to_vec()));
     }
 
-    fn bind(&mut self, port: Option<u16>) -> Result<SocketId> {
-        let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port.unwrap_or(0)));
+    fn bind(&mut self, port: Option<u16>, family: IpFamily) -> Result<SocketId> {
+        let addr = match family {
+            IpFamily::V4 => SocketAddr::from((Ipv4Addr::UNSPECIFIED, port.unwrap_or(0))),
+            IpFamily::V6 => SocketAddr::from((Ipv6Addr::UNSPECIFIED, port.unwrap_or(0))),
+        };
         let socket = UdpSocket::bind(addr)
             .map_err(|e| anyhow!("failed to bind overlay helper socket {addr}: {e}"))?;
         let id = SocketId(u32::try_from(self.sockets.len())?);
@@ -112,6 +150,42 @@ impl OverlayEnv for GlommioEnv {
             && let Some(slot) = self.sockets.get_mut(socket.0 as usize)
         {
             *slot = None;
+        }
+    }
+
+    fn tcp_connect(&mut self, to: SocketAddr) -> Result<TcpId> {
+        // Reap conns the core closed whose tasks have finished with them.
+        self.tcp
+            .retain(|_, state| !(state.borrow().closed && Rc::strong_count(state) == 1));
+        if self.tcp.len() >= MAX_TCP_CONNS {
+            return Err(anyhow!("overlay TCP conn limit reached ({MAX_TCP_CONNS})"));
+        }
+        let id = TcpId(self.next_tcp);
+        self.next_tcp += 1;
+        self.tcp.insert(
+            id,
+            Rc::new(RefCell::new(TcpConnState {
+                to,
+                out: VecDeque::new(),
+                closed: false,
+                spawned: false,
+            })),
+        );
+        Ok(id)
+    }
+
+    fn tcp_send(&mut self, conn: TcpId, bytes: &[u8]) {
+        if let Some(state) = self.tcp.get(&conn) {
+            let mut state = state.borrow_mut();
+            if !state.closed {
+                state.out.push_back(bytes.to_vec());
+            }
+        }
+    }
+
+    fn tcp_close(&mut self, conn: TcpId) {
+        if let Some(state) = self.tcp.get(&conn) {
+            state.borrow_mut().closed = true;
         }
     }
 }
@@ -177,9 +251,13 @@ async fn run_driver(
     repair_store: impl RepairStore,
     repair_requester: Option<OverlayRepairRequester>,
 ) -> Result<()> {
-    let mut env = GlommioEnv::bind_primary(config.bind_addr)?;
-    let transport =
-        OverlayQuicTransport::new(SocketId::PRIMARY, identity, &TransportOptions::default())?;
+    let (mut env, socket_v6) = GlommioEnv::bind_primary(config.bind_addr, config.bind_addr_v6)?;
+    let transport = OverlayQuicTransport::new(
+        SocketId::PRIMARY,
+        socket_v6,
+        identity,
+        &TransportOptions::default(),
+    )?;
     let source_mode = config.mode == OverlayMode::Source && source_rx.is_some();
     let mut core = OverlayCore::new(transport, &config, keypair, Instant::now());
     let mut buffer = vec![0u8; UDP_BUFFER_SIZE];

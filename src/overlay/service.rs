@@ -15,7 +15,7 @@ use crate::types::{PacketInfo, PacketView};
 use super::{
     OverlayConfig, OverlayMode, TurbineTree,
     discovery::AddressDiscovery,
-    env::{OverlayEnv, SocketId},
+    env::{IpFamily, OverlayEnv, SocketId},
     gossip::{
         AdvertOutcome, LightbringerGossip, MAX_ADVERT_ADDRS, MAX_ADVERT_VIA, PeerAdvert,
         PortTaggedAddr, Reachability, RepairEndpoint, SignedPeerAdvert,
@@ -954,7 +954,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             self.send_dialback_result(env, &requester, nonce, false);
             return;
         }
-        let socket = match env.bind(None) {
+        let socket = match env.bind(None, IpFamily::of(&target)) {
             Ok(socket) => socket,
             Err(e) => {
                 log::debug!("overlay: dial-back helper bind failed: {e}");

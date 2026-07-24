@@ -432,6 +432,90 @@ impl std::fmt::Debug for NatBox {
     }
 }
 
+/// RFC 6092 residential IPv6 firewall (nat-traversal.md §4): no address
+/// rewriting, but unsolicited inbound is dropped by default. Outbound
+/// traffic opens a flow (matched on the exact remote endpoint, refreshed by
+/// outbound only, expiring idle — the same discipline as NAT filtering);
+/// a PCP pinhole (§6.3) opens a local port to any remote for a lease.
+#[derive(Clone, Debug)]
+pub struct FirewallConfig {
+    pub idle_timeout: Duration,
+}
+
+impl Default for FirewallConfig {
+    fn default() -> Self {
+        Self {
+            idle_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FirewallStats {
+    pub filtered_drops: u64,
+    pub pinholes_installed: u64,
+}
+
+pub struct FirewallBox {
+    pub config: FirewallConfig,
+    /// (local socket, remote endpoint) → last outbound refresh (nanos).
+    flows: BTreeMap<(SocketAddr, (IpAddr, u16)), u64>,
+    /// Local port → pinhole lease expiry (nanos). Lease-based, not
+    /// idle-refreshed: renewal is the client's job (§6.3 half-life).
+    pinholes: BTreeMap<u16, u64>,
+    pub stats: FirewallStats,
+}
+
+impl FirewallBox {
+    pub fn new(config: FirewallConfig) -> Self {
+        Self {
+            config,
+            flows: BTreeMap::new(),
+            pinholes: BTreeMap::new(),
+            stats: FirewallStats::default(),
+        }
+    }
+
+    /// Record an outbound datagram: opens/refreshes the flow toward `dst`.
+    pub fn outbound(&mut self, now: u64, src: SocketAddr, dst: SocketAddr) {
+        self.flows.insert((src, (dst.ip(), dst.port())), now);
+    }
+
+    /// Admit or drop an inbound datagram from `src` addressed to local
+    /// socket `dst`. Inbound never refreshes flows (§4: only outbound
+    /// keepalives hold state open).
+    pub fn inbound(&mut self, now: u64, src: SocketAddr, dst: SocketAddr) -> Result<(), NatDropReason> {
+        if let Some(&expires) = self.pinholes.get(&dst.port()) {
+            if now <= expires {
+                return Ok(());
+            }
+            self.pinholes.remove(&dst.port());
+        }
+        let idle = self.config.idle_timeout.as_nanos() as u64;
+        let key = (dst, (src.ip(), src.port()));
+        match self.flows.get(&key) {
+            Some(&refreshed) if now.saturating_sub(refreshed) <= idle => Ok(()),
+            _ => {
+                self.flows.remove(&key);
+                self.stats.filtered_drops += 1;
+                Err(NatDropReason::Filtered)
+            }
+        }
+    }
+
+    /// Install (or renew) a PCP pinhole for `port` (§6.3): any remote may
+    /// reach the local socket at `port` until the lease expires.
+    pub fn install_pinhole(&mut self, now: u64, port: u16, lifetime: Duration) {
+        self.stats.pinholes_installed += 1;
+        self.pinholes.insert(port, now + lifetime.as_nanos() as u64);
+    }
+
+    /// A pinhole for `port` is currently live.
+    pub fn pinhole_live(&self, now: u64, port: u16) -> bool {
+        self.pinholes.get(&port).is_some_and(|&expires| now <= expires)
+    }
+}
+
 /// The §6.2 classifier and its observation/class types live in shared
 /// `overlay::nat` so the core and the simulator use one implementation
 /// (nat-traversal.md §6.2/§10 P3). Re-exported here for the sim call sites

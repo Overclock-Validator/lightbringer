@@ -109,6 +109,11 @@ pub enum TraceEvent {
     RepairFailed {
         host: u32,
     },
+    /// A v6 datagram died at the host's RFC 6092 stateful firewall.
+    FirewallDropped {
+        host: u32,
+        reason: &'static str,
+    },
 }
 
 pub struct Trace {
@@ -295,6 +300,11 @@ fn encode_event(buf: &mut Vec<u8>, event: &TraceEvent) {
         TraceEvent::RepairFailed { host } => {
             buf.push(19);
             buf.extend_from_slice(&host.to_le_bytes());
+        }
+        TraceEvent::FirewallDropped { host, reason } => {
+            buf.push(20);
+            buf.extend_from_slice(&host.to_le_bytes());
+            buf.extend_from_slice(reason.as_bytes());
         }
     }
 }

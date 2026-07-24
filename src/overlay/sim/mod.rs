@@ -21,7 +21,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BinaryHeap, VecDeque},
     hash::{Hash as _, Hasher},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -34,7 +34,7 @@ use crate::types::{PacketInfo, PacketView};
 
 use super::{
     config::{OverlayConfig, OverlayMode},
-    env::{OverlayEnv, SocketId},
+    env::{IpFamily, OverlayEnv, SocketId, TcpId},
     identity::OverlayIdentity,
     repair::RepairReq,
     service::{CoreEvent, OverlayCore},
@@ -44,7 +44,7 @@ use super::{
     },
 };
 
-use nat::{NatBox, NatConfig, NatStats};
+use nat::{FirewallBox, FirewallConfig, NatBox, NatConfig, NatStats};
 use net::LinkParams;
 use trace::{Trace, TraceEvent};
 
@@ -87,6 +87,12 @@ pub struct NodeOptions {
     /// confirm its own reachability (nat-traversal.md §6.2/§7, S2). Ignored
     /// when `advertised_addr` is set explicitly.
     pub zero_config: bool,
+    /// Dual-stack host (§6.3): a global v6 address and a second overlay
+    /// socket on `bind_port`. NATed hosts get an RFC 6092 default-deny
+    /// stateful firewall on the v6 path; public hosts' v6 is open.
+    pub ipv6: bool,
+    /// Idle timeout of the v6 firewall's flow state (`None` = 30s default).
+    pub v6_firewall_idle: Option<Duration>,
 }
 
 impl Default for NodeOptions {
@@ -105,6 +111,8 @@ impl Default for NodeOptions {
             initial_mtu: Some(OVERLAY_INITIAL_MTU),
             udp_repair: false,
             zero_config: false,
+            ipv6: true,
+            v6_firewall_idle: None,
         }
     }
 }
@@ -120,16 +128,24 @@ pub struct ProbeDatagram {
 
 struct HostEnvState {
     lan_ip: IpAddr,
+    /// The host's global v6 address, when dual-stack (§6.3).
+    lan_ip_v6: Option<IpAddr>,
     /// Indexed by `SocketId`; tombstoned (never shifted) on `close` so ids
     /// stay stable. Slot 0 is the primary socket.
     sockets: Vec<Option<SocketAddr>>,
     outbox: VecDeque<(SocketId, SocketAddr, Vec<u8>)>,
+    /// TCP intents queued through the env seam (§6.3 UPnP), drained by the
+    /// world into the host's gateway model.
+    tcp_connects: VecDeque<(TcpId, SocketAddr)>,
+    tcp_out: VecDeque<(TcpId, Vec<u8>)>,
+    tcp_closes: VecDeque<TcpId>,
+    next_tcp: u64,
     rng: StdRng,
     next_ephemeral: u16,
 }
 
 impl HostEnvState {
-    fn bind(&mut self, port: Option<u16>) -> Result<SocketId> {
+    fn bind(&mut self, port: Option<u16>, family: IpFamily) -> Result<SocketId> {
         let port = match port {
             Some(port) => port,
             None => {
@@ -138,7 +154,13 @@ impl HostEnvState {
                 port
             }
         };
-        let addr = SocketAddr::new(self.lan_ip, port);
+        let ip = match family {
+            IpFamily::V4 => self.lan_ip,
+            IpFamily::V6 => self
+                .lan_ip_v6
+                .ok_or_else(|| anyhow!("sim host has no v6 address"))?,
+        };
+        let addr = SocketAddr::new(ip, port);
         if self.sockets.iter().flatten().any(|&bound| bound == addr) {
             return Err(anyhow!("sim socket {addr} already bound"));
         }
@@ -180,12 +202,27 @@ impl OverlayEnv for SimEnv<'_> {
         self.state.outbox.push_back((from, to, datagram.to_vec()));
     }
 
-    fn bind(&mut self, port: Option<u16>) -> Result<SocketId> {
-        self.state.bind(port)
+    fn bind(&mut self, port: Option<u16>, family: IpFamily) -> Result<SocketId> {
+        self.state.bind(port, family)
     }
 
     fn close(&mut self, socket: SocketId) {
         self.state.close(socket);
+    }
+
+    fn tcp_connect(&mut self, to: SocketAddr) -> Result<TcpId> {
+        let id = TcpId(self.state.next_tcp);
+        self.state.next_tcp += 1;
+        self.state.tcp_connects.push_back((id, to));
+        Ok(id)
+    }
+
+    fn tcp_send(&mut self, conn: TcpId, bytes: &[u8]) {
+        self.state.tcp_out.push_back((conn, bytes.to_vec()));
+    }
+
+    fn tcp_close(&mut self, conn: TcpId) {
+        self.state.tcp_closes.push_back(conn);
     }
 }
 
@@ -255,9 +292,17 @@ enum HostKind {
     Probe(ProbeNode),
 }
 
+/// A host's v6 attachment (§6.3): a global address and, for NATed (home)
+/// hosts, the RFC 6092 default-deny stateful firewall in front of it.
+struct HostV6 {
+    addr: IpAddr,
+    firewall: Option<FirewallBox>,
+}
+
 struct Host {
     up: bool,
     nat_chain: Vec<NatBox>,
+    v6: Option<HostV6>,
     env: HostEnvState,
     kind: HostKind,
     timer_generation: u64,
@@ -377,6 +422,36 @@ impl SimWorld {
         }
     }
 
+    /// The host's globally routable v6 address (§6.3: IPv6 removes NAT, not
+    /// filtering — NATed hosts are still globally addressed on v6, behind a
+    /// stateful firewall rather than a rewriter).
+    fn host_ip_v6(&mut self, id: u32, natted: bool) -> IpAddr {
+        let suffix = (id + 1) as u16;
+        let ip = if natted {
+            IpAddr::from(Ipv6Addr::new(0x2001, 0xdb8, 0, suffix, 0, 0, 0, 2))
+        } else {
+            IpAddr::from(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, suffix))
+        };
+        self.ip_owner.insert(ip, id);
+        ip
+    }
+
+    fn host_v6(&mut self, id: u32, options_nat: &[NatConfig], ipv6: bool, idle: Option<Duration>) -> Option<HostV6> {
+        if !ipv6 {
+            return None;
+        }
+        let natted = !options_nat.is_empty();
+        let addr = self.host_ip_v6(id, natted);
+        let firewall = natted.then(|| {
+            let mut config = FirewallConfig::default();
+            if let Some(idle) = idle {
+                config.idle_timeout = idle;
+            }
+            FirewallBox::new(config)
+        });
+        Some(HostV6 { addr, firewall })
+    }
+
     fn transport_options(seed: u64, id: u32, options: &NodeOptions) -> TransportOptions {
         TransportOptions {
             keep_alive_interval: options.keep_alive_interval,
@@ -389,11 +464,22 @@ impl SimWorld {
         }
     }
 
-    fn env_state(&self, id: u32, lan_ip: IpAddr, sockets: Vec<SocketAddr>) -> HostEnvState {
+    fn env_state(
+        &self,
+        id: u32,
+        lan_ip: IpAddr,
+        lan_ip_v6: Option<IpAddr>,
+        sockets: Vec<SocketAddr>,
+    ) -> HostEnvState {
         HostEnvState {
             lan_ip,
+            lan_ip_v6,
             sockets: sockets.into_iter().map(Some).collect(),
             outbox: VecDeque::new(),
+            tcp_connects: VecDeque::new(),
+            tcp_out: VecDeque::new(),
+            tcp_closes: VecDeque::new(),
+            next_tcp: 0,
             rng: StdRng::from_seed(crypto::derive_bytes(self.seed, id, "env-rng")),
             next_ephemeral: EPHEMERAL_PORT_START,
         }
@@ -416,7 +502,11 @@ impl SimWorld {
     pub fn add_node(&mut self, options: NodeOptions) -> HostId {
         let id = self.hosts.len() as u32;
         let (host_ip, externals) = self.host_ips(id, &options.nat);
+        let v6 = self.host_v6(id, &options.nat, options.ipv6, options.v6_firewall_idle);
         let bind_addr = SocketAddr::new(host_ip, options.bind_port);
+        let bind_addr_v6 = v6
+            .as_ref()
+            .map(|v6| SocketAddr::new(v6.addr, options.bind_port));
         let repair_port = if options.bind_port < u16::MAX {
             options.bind_port + 1
         } else {
@@ -426,11 +516,19 @@ impl SimWorld {
         let advertised_addr = options.advertised_addr.or_else(|| {
             (!options.zero_config && options.nat.is_empty()).then_some(bind_addr)
         });
+        // A public dual-stack node's v6 is as operator-vouched as its v4
+        // bind; zero-config and NATed nodes must dial-back-confirm v6 (§6.3).
+        let advertised_addr_v6 = (advertised_addr.is_some() && options.advertised_addr.is_none())
+            .then_some(bind_addr_v6)
+            .flatten();
         let config = OverlayConfig {
             enabled: true,
             mode: options.mode,
             bind_addr,
+            bind_addr_v6,
             advertised_addr,
+            advertised_addr_v6,
+            gateway_addr: None,
             static_peers: options.static_peers.clone(),
             fanout: options.fanout,
             repair_addr: options
@@ -444,15 +542,20 @@ impl SimWorld {
         let identity =
             OverlayIdentity::from_keypair(&keypair).expect("sim identity always derivable");
         let transport_options = Self::transport_options(self.seed, id, &options);
+        let socket_v6 = bind_addr_v6.map(|_| SocketId(1));
         let transport =
-            OverlayQuicTransport::new(SocketId::PRIMARY, &identity, &transport_options)
+            OverlayQuicTransport::new(SocketId::PRIMARY, socket_v6, &identity, &transport_options)
                 .expect("sim transport construction is infallible");
         let core = OverlayCore::new(transport, &config, keypair.clone(), self.virtual_now());
 
+        let mut sockets = vec![bind_addr];
+        sockets.extend(bind_addr_v6);
+        let lan_ip_v6 = v6.as_ref().map(|v6| v6.addr);
         let host = Host {
             up: true,
             nat_chain: self.nat_chain(id, &options.nat, &externals),
-            env: self.env_state(id, host_ip, vec![bind_addr]),
+            v6,
+            env: self.env_state(id, host_ip, lan_ip_v6, sockets),
             kind: HostKind::Overlay(Box::new(OverlayNode {
                 core,
                 pubkey: keypair.pubkey(),
@@ -478,20 +581,29 @@ impl SimWorld {
     pub fn add_transport_node(&mut self, options: NodeOptions) -> HostId {
         let id = self.hosts.len() as u32;
         let (host_ip, externals) = self.host_ips(id, &options.nat);
+        let v6 = self.host_v6(id, &options.nat, options.ipv6, options.v6_firewall_idle);
         let bind_addr = SocketAddr::new(host_ip, options.bind_port);
+        let bind_addr_v6 = v6
+            .as_ref()
+            .map(|v6| SocketAddr::new(v6.addr, options.bind_port));
 
         let keypair = crypto::derive_keypair(self.seed, id);
         let identity =
             OverlayIdentity::from_keypair(&keypair).expect("sim identity always derivable");
         let transport_options = Self::transport_options(self.seed, id, &options);
+        let socket_v6 = bind_addr_v6.map(|_| SocketId(1));
         let transport =
-            OverlayQuicTransport::new(SocketId::PRIMARY, &identity, &transport_options)
+            OverlayQuicTransport::new(SocketId::PRIMARY, socket_v6, &identity, &transport_options)
                 .expect("sim transport construction is infallible");
 
+        let mut sockets = vec![bind_addr];
+        sockets.extend(bind_addr_v6);
+        let lan_ip_v6 = v6.as_ref().map(|v6| v6.addr);
         let host = Host {
             up: true,
             nat_chain: self.nat_chain(id, &options.nat, &externals),
-            env: self.env_state(id, host_ip, vec![bind_addr]),
+            v6,
+            env: self.env_state(id, host_ip, lan_ip_v6, sockets),
             kind: HostKind::Transport(Box::new(TransportNode {
                 transport,
                 pubkey: keypair.pubkey(),
@@ -592,7 +704,8 @@ impl SimWorld {
         let host = Host {
             up: true,
             nat_chain: self.nat_chain(id, &nat, &externals),
-            env: self.env_state(id, host_ip, Vec::new()),
+            v6: None,
+            env: self.env_state(id, host_ip, None, Vec::new()),
             kind: HostKind::Probe(ProbeNode {
                 received: Vec::new(),
             }),
@@ -608,7 +721,7 @@ impl SimWorld {
     pub fn probe_bind(&mut self, host: HostId, port: u16) -> SocketId {
         self.hosts[host.0 as usize]
             .env
-            .bind(Some(port))
+            .bind(Some(port), IpFamily::V4)
             .expect("probe bind")
     }
 
@@ -640,6 +753,27 @@ impl SimWorld {
 
     pub fn local_addr(&self, host: HostId) -> SocketAddr {
         self.hosts[host.0 as usize].env.sockets[0].expect("primary socket bound")
+    }
+
+    /// The dialable v6 address of a dual-stack host's overlay socket. On the
+    /// v6 path even NATed hosts are globally addressed (behind a firewall,
+    /// not a rewriter), so this never panics for them.
+    pub fn addr_v6(&self, host: HostId) -> SocketAddr {
+        let entry = &self.hosts[host.0 as usize];
+        let v6 = entry.v6.as_ref().expect("host is not dual-stack");
+        SocketAddr::new(
+            v6.addr,
+            entry.env.sockets[0].expect("primary socket bound").port(),
+        )
+    }
+
+    /// Firewall statistics of a dual-stack host's v6 path, if firewalled.
+    pub fn firewall_stats(&self, host: HostId) -> Option<nat::FirewallStats> {
+        self.hosts[host.0 as usize]
+            .v6
+            .as_ref()
+            .and_then(|v6| v6.firewall.as_ref())
+            .map(|firewall| firewall.stats)
     }
 
     pub fn overlay_pubkey(&self, host: HostId) -> Pubkey {
@@ -719,9 +853,14 @@ impl SimWorld {
             let transport_options = Self::transport_options(seed, host.0, &node.options);
             let identity = OverlayIdentity::from_keypair(&node.keypair)
                 .expect("sim identity always derivable");
-            let transport =
-                OverlayQuicTransport::new(SocketId::PRIMARY, &identity, &transport_options)
-                    .expect("sim transport construction is infallible");
+            let socket_v6 = node.config.bind_addr_v6.map(|_| SocketId(1));
+            let transport = OverlayQuicTransport::new(
+                SocketId::PRIMARY,
+                socket_v6,
+                &identity,
+                &transport_options,
+            )
+            .expect("sim transport construction is infallible");
             node.core = OverlayCore::new(transport, &node.config, node.keypair.clone(), now);
             node.delivered.clear();
             entry.up = true;
@@ -1078,32 +1217,40 @@ impl SimWorld {
         {
             let Self { hosts, trace, .. } = self;
             let entry = &mut hosts[sender as usize];
-            for (level, nat) in entry.nat_chain.iter_mut().enumerate() {
-                match nat.outbound(now, src, to) {
-                    Ok(pass) => {
-                        if pass.created {
+            if from.is_ipv6() {
+                // §6.3: the v6 path has no rewriter; the stateful firewall
+                // records the outbound flow so replies are admitted.
+                if let Some(firewall) = entry.v6.as_mut().and_then(|v6| v6.firewall.as_mut()) {
+                    firewall.outbound(now, from, to);
+                }
+            } else {
+                for (level, nat) in entry.nat_chain.iter_mut().enumerate() {
+                    match nat.outbound(now, src, to) {
+                        Ok(pass) => {
+                            if pass.created {
+                                trace.record(
+                                    now,
+                                    &TraceEvent::NatMapped {
+                                        host: sender,
+                                        level: level as u8,
+                                        internal: src,
+                                        external: pass.external,
+                                    },
+                                );
+                            }
+                            src = pass.external;
+                        }
+                        Err(reason) => {
                             trace.record(
                                 now,
-                                &TraceEvent::NatMapped {
+                                &TraceEvent::NatDropped {
                                     host: sender,
                                     level: level as u8,
-                                    internal: src,
-                                    external: pass.external,
+                                    reason: reason.as_str(),
                                 },
                             );
+                            return;
                         }
-                        src = pass.external;
-                    }
-                    Err(reason) => {
-                        trace.record(
-                            now,
-                            &TraceEvent::NatDropped {
-                                host: sender,
-                                level: level as u8,
-                                reason: reason.as_str(),
-                            },
-                        );
-                        return;
                     }
                 }
             }
@@ -1242,23 +1389,39 @@ impl SimWorld {
             }
             let mut dst = dst;
             let mut admitted = true;
-            for (level, nat) in entry.nat_chain.iter_mut().enumerate().rev() {
-                if dst.ip() != nat.external_ip {
-                    continue;
+            if dst.is_ipv6() {
+                // §6.3: v6 inbound crosses the RFC 6092 firewall unrewritten.
+                if let Some(firewall) = entry.v6.as_mut().and_then(|v6| v6.firewall.as_mut())
+                    && let Err(reason) = firewall.inbound(now, src, dst)
+                {
+                    trace.record(
+                        now,
+                        &TraceEvent::FirewallDropped {
+                            host: to_host,
+                            reason: reason.as_str(),
+                        },
+                    );
+                    admitted = false;
                 }
-                match nat.inbound(now, src, dst) {
-                    Ok(internal) => dst = internal,
-                    Err(reason) => {
-                        trace.record(
-                            now,
-                            &TraceEvent::NatDropped {
-                                host: to_host,
-                                level: level as u8,
-                                reason: reason.as_str(),
-                            },
-                        );
-                        admitted = false;
-                        break;
+            } else {
+                for (level, nat) in entry.nat_chain.iter_mut().enumerate().rev() {
+                    if dst.ip() != nat.external_ip {
+                        continue;
+                    }
+                    match nat.inbound(now, src, dst) {
+                        Ok(internal) => dst = internal,
+                        Err(reason) => {
+                            trace.record(
+                                now,
+                                &TraceEvent::NatDropped {
+                                    host: to_host,
+                                    level: level as u8,
+                                    reason: reason.as_str(),
+                                },
+                            );
+                            admitted = false;
+                            break;
+                        }
                     }
                 }
             }

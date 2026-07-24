@@ -151,7 +151,7 @@ fn low_seam_stream_reaches_natted_peer_over_existing_connection() {
 /// directions, reset surfaces as `Failed`, disconnect kills streams.
 #[test]
 fn mem_transport_stream_mirror() {
-    use crate::overlay::env::{OverlayEnv, SocketId};
+    use crate::overlay::env::{IpFamily, OverlayEnv, SocketId, TcpId};
     use anyhow::Result;
     use rand::{RngCore, SeedableRng, rngs::StdRng};
     use solana_sdk::{signature::Keypair, signer::Signer};
@@ -170,10 +170,15 @@ fn mem_transport_stream_mirror() {
             &mut self.rng
         }
         fn send(&mut self, _from: SocketId, _to: SocketAddr, _datagram: &[u8]) {}
-        fn bind(&mut self, _port: Option<u16>) -> Result<SocketId> {
+        fn bind(&mut self, _port: Option<u16>, _family: IpFamily) -> Result<SocketId> {
             unreachable!()
         }
         fn close(&mut self, _socket: SocketId) {}
+        fn tcp_connect(&mut self, _to: SocketAddr) -> Result<TcpId> {
+            unreachable!()
+        }
+        fn tcp_send(&mut self, _conn: TcpId, _bytes: &[u8]) {}
+        fn tcp_close(&mut self, _conn: TcpId) {}
     }
     let mut env = NullEnv {
         now: Instant::now(),

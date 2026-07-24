@@ -192,6 +192,12 @@ pub trait OverlayTransport {
     fn connection_addr(&self, pubkey: &Pubkey) -> Option<SocketAddr>;
     /// TLS-verified identities of all established connections.
     fn connected_peers(&self) -> Vec<Pubkey>;
+    /// Every established connection with its verified identity — unlike
+    /// [`Self::connection_addr`] (first connection per identity), this
+    /// surfaces secondary connections too, e.g. the v6 connection alongside
+    /// a peer's v4 one (§6.3: v6 dial-back rides the v6 connection).
+    #[allow(dead_code)] // consumed by the P4 v6 dial-back path
+    fn connections(&self) -> Vec<(Pubkey, SocketAddr)>;
     /// Open a bidirectional stream on the established connection with
     /// `pubkey` (overlay repair, §6.4). Returns `None` when no connection
     /// exists or stream limits are exhausted — dialing is never implied.
@@ -249,6 +255,9 @@ pub trait OverlayTransport {
 
 pub struct OverlayQuicTransport {
     socket: SocketId,
+    /// Secondary IPv6 socket (§6.3 dual-stack); egress toward a v6 remote
+    /// leaves here, and inbound on it feeds the same endpoint.
+    socket_v6: Option<SocketId>,
     endpoint: Endpoint,
     client_config: QuicClientConfig,
     connections: BTreeMap<SocketAddr, QuicConnection>,
@@ -314,6 +323,7 @@ struct StreamState {
 impl OverlayQuicTransport {
     pub fn new(
         socket: SocketId,
+        socket_v6: Option<SocketId>,
         identity: &OverlayIdentity,
         options: &TransportOptions,
     ) -> Result<Self> {
@@ -323,6 +333,7 @@ impl OverlayQuicTransport {
 
         Ok(Self {
             socket,
+            socket_v6,
             endpoint: Endpoint::new(
                 Arc::new(overlay_endpoint_config(options)),
                 Some(Arc::new(server_config)),
@@ -348,9 +359,21 @@ impl OverlayQuicTransport {
         })
     }
 
+    /// The local socket transmits toward `dest` must egress from: the v6
+    /// socket for v6 remotes when bound, the primary otherwise.
+    fn egress(&self, dest: SocketAddr) -> SocketId {
+        match self.socket_v6 {
+            Some(socket_v6) if dest.is_ipv6() => socket_v6,
+            _ => self.socket,
+        }
+    }
+
     fn ensure_connection(&mut self, now: Instant, peer: SocketAddr) -> Result<()> {
         if self.connections.contains_key(&peer) {
             return Ok(());
+        }
+        if peer.is_ipv6() && self.socket_v6.is_none() {
+            return Err(anyhow!("no overlay IPv6 socket bound; not dialing {peer}"));
         }
         if self.connections.len() >= MAX_CONNECTIONS {
             return Err(anyhow!(
@@ -397,7 +420,7 @@ impl OverlayQuicTransport {
                     );
                     let transmit = self.endpoint.refuse(incoming, &mut self.endpoint_buf);
                     let bytes = std::mem::take(&mut self.endpoint_buf);
-                    send_transmit(env, self.socket, &transmit, &bytes);
+                    send_transmit(env, self.egress(transmit.destination), &transmit, &bytes);
                     self.endpoint_buf = bytes;
                     return;
                 }
@@ -423,7 +446,12 @@ impl OverlayQuicTransport {
                     Err(error) => {
                         if let Some(transmit) = error.response {
                             let bytes = std::mem::take(&mut self.endpoint_buf);
-                            send_transmit(env, self.socket, &transmit, &bytes[..transmit.size]);
+                            send_transmit(
+                                env,
+                                self.egress(transmit.destination),
+                                &transmit,
+                                &bytes[..transmit.size],
+                            );
                             self.endpoint_buf = bytes;
                         }
                         log::warn!(
@@ -435,7 +463,12 @@ impl OverlayQuicTransport {
             }
             Some(DatagramEvent::Response(transmit)) => {
                 let bytes = std::mem::take(&mut self.endpoint_buf);
-                send_transmit(env, self.socket, &transmit, &bytes[..transmit.size]);
+                send_transmit(
+                    env,
+                    self.egress(transmit.destination),
+                    &transmit,
+                    &bytes[..transmit.size],
+                );
                 self.endpoint_buf = bytes;
             }
             None => {}
@@ -886,7 +919,7 @@ impl OverlayQuicTransport {
             }
 
             for (transmit, bytes) in transmits {
-                send_transmit(env, self.socket, &transmit, &bytes);
+                send_transmit(env, self.egress(transmit.destination), &transmit, &bytes);
             }
         }
     }
@@ -932,7 +965,10 @@ impl OverlayTransport for OverlayQuicTransport {
         from: SocketAddr,
         datagram: &[u8],
     ) {
-        if socket != self.socket && !self.probe_sockets.contains(&socket) {
+        if socket != self.socket
+            && Some(socket) != self.socket_v6
+            && !self.probe_sockets.contains(&socket)
+        {
             log::debug!("overlay: dropping datagram from {from} on unexpected {socket}");
             return;
         }
@@ -1008,6 +1044,14 @@ impl OverlayTransport for OverlayQuicTransport {
 
     fn connected_peers(&self) -> Vec<Pubkey> {
         self.by_pubkey.keys().copied().collect()
+    }
+
+    fn connections(&self) -> Vec<(Pubkey, SocketAddr)> {
+        self.connections
+            .iter()
+            .filter(|(_, connection)| connection.established)
+            .filter_map(|(&addr, connection)| connection.peer_pubkey.map(|pk| (pk, addr)))
+            .collect()
     }
 
     fn open_stream(&mut self, pubkey: &Pubkey) -> Option<OverlayStreamId> {
