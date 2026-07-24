@@ -3,9 +3,12 @@
 //! NAT-timeout keepalive coverage, plus world smoke tests.
 
 mod advert_security;
+mod classify_oracles;
 mod convergence;
 mod determinism;
 mod dialback_core;
+mod dialback_security;
+mod discovery_scenarios;
 mod gossip_oracles;
 mod keepalive;
 mod mtu;

@@ -169,6 +169,37 @@ mod tests {
     }
 
     #[test]
+    fn p3_control_frames_roundtrip_and_stay_tiny() {
+        // Address observation and dial-back frames are datagrams and must sit
+        // far under the 1242-byte budget (nat-traversal.md §6.2/§6.2.3).
+        let observed: SocketAddr = "198.51.100.7:40000".parse().unwrap();
+        let obs = OverlayFrame::address_observation(observed).encode().unwrap();
+        assert!(obs.len() < 32, "observation frame too large: {}", obs.len());
+        match OverlayFrame::decode(&obs).unwrap() {
+            OverlayFrame::AddressObservation { observed: got } => assert_eq!(got, observed),
+            other => panic!("decoded wrong frame: {other:?}"),
+        }
+
+        let req = OverlayFrame::dialback_request(0xDEAD_BEEF).encode().unwrap();
+        assert!(req.len() < 16);
+        match OverlayFrame::decode(&req).unwrap() {
+            OverlayFrame::DialBackRequest { nonce } => assert_eq!(nonce, 0xDEAD_BEEF),
+            other => panic!("decoded wrong frame: {other:?}"),
+        }
+
+        for ok in [true, false] {
+            let res = OverlayFrame::dialback_result(7, ok).encode().unwrap();
+            assert!(res.len() < 16);
+            match OverlayFrame::decode(&res).unwrap() {
+                OverlayFrame::DialBackResult { nonce, ok: got } => {
+                    assert_eq!((nonce, got), (7, ok));
+                }
+                other => panic!("decoded wrong frame: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn rejects_wrong_version_unknown_type_and_truncation() {
         let mut raw = OverlayFrame::shred(vec![1, 2, 3]).encode().unwrap();
         raw[0] = OVERLAY_PROTOCOL_VERSION + 1;

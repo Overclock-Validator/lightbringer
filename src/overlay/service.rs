@@ -724,11 +724,12 @@ impl<T: OverlayTransport> OverlayCore<T> {
     }
 
     /// §6.1's single send choke point, with the §6.2.3 F8 closure: an
-    /// established (TLS-verified) connection always takes the payload;
-    /// otherwise a `Direct` advert alone does NOT authorize traffic — the
-    /// payload is withheld and an identity confirm-dial started, so a lying
-    /// advert can never direct sustained traffic at a victim (the confirm-dial
-    /// carries no payload, and an identity mismatch quarantines the liar).
+    /// established (TLS-verified) connection takes the payload directly;
+    /// otherwise a `Direct` advert alone does NOT authorize traffic — the send
+    /// dials with the payload identity-gated, so the transport releases it only
+    /// once the connection authenticates as the advertised identity. A lying
+    /// advert therefore directs no sustained traffic at a victim: the mismatch
+    /// drops the payload undelivered and quarantines the lied-about address.
     fn send_to_peer(&mut self, env: &mut dyn OverlayEnv, pubkey: Pubkey, raw: Vec<u8>) {
         if let Some(addr) = self.transport.connection_addr(&pubkey) {
             if self.is_quarantined(&addr) {
@@ -782,9 +783,9 @@ impl<T: OverlayTransport> OverlayCore<T> {
     /// Resolve a completed connection against a pending dial-on-demand
     /// (§6.2.3 F8). Returns whether the connection was kept: a mismatch (the
     /// advertised address answered as a different identity — the advert lied)
-    /// quarantines the advertised identity and drops the connection so it
-    /// never becomes a fan-out target. The withheld payload was already
-    /// dropped by the transport's identity gate.
+    /// quarantines the lied-about address and drops the connection so it never
+    /// becomes a fan-out target. The gated payload was already dropped
+    /// undelivered by the transport's identity gate.
     fn resolve_confirm(
         &mut self,
         env: &mut dyn OverlayEnv,
@@ -989,6 +990,7 @@ impl<T: OverlayTransport> OverlayCore<T> {
             return;
         };
         let ok = event.identity == Some(probe.requester);
+        log::debug!("overlay: dial-back probe to {} resolved ok={ok}", event.addr);
         self.send_dialback_result(env, &probe.requester, probe.nonce, ok);
         self.transport.close_probe(env, event.probe);
         env.close(probe.socket);

@@ -156,11 +156,6 @@ impl AddressDiscovery {
             })
             .collect()
     }
-
-    #[cfg(test)]
-    pub fn observation_count(&self) -> usize {
-        self.observations.len()
-    }
 }
 
 #[cfg(test)]

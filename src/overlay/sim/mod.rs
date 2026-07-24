@@ -826,6 +826,24 @@ impl SimWorld {
         }
     }
 
+    /// The advert `host` currently holds in gossip for `pubkey` — i.e. what
+    /// that peer actually observes about the node, the §6.2 reachability
+    /// truth as seen by the network.
+    pub fn peer_advert(
+        &self,
+        host: HostId,
+        pubkey: &Pubkey,
+    ) -> Option<super::gossip::PeerAdvert> {
+        match &self.hosts[host.0 as usize].kind {
+            HostKind::Overlay(node) => node
+                .core
+                .gossip_snapshot(self.virtual_now())
+                .into_iter()
+                .find(|advert| advert.pubkey == *pubkey),
+            _ => None,
+        }
+    }
+
     /// The §6.2.3 dial-back-confirmed Direct candidate a host holds, if any.
     pub fn confirmed_direct(&self, host: HostId) -> Option<SocketAddr> {
         match &self.hosts[host.0 as usize].kind {

@@ -436,4 +436,6 @@ impl std::fmt::Debug for NatBox {
 /// `overlay::nat` so the core and the simulator use one implementation
 /// (nat-traversal.md §6.2/§10 P3). Re-exported here for the sim call sites
 /// that predate the move.
-pub use crate::overlay::nat::{NatClass, TaggedObservation, classify_observations};
+pub use crate::overlay::nat::{
+    AllocatorProfile, NatClass, TaggedObservation, classify_observations,
+};

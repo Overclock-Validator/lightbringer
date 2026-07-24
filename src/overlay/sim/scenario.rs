@@ -12,11 +12,12 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use super::{
     HostId, NodeOptions, SimRepairEvent, SimWorld, crypto,
-    nat::{NatClass, NatConfig, TaggedObservation, classify_observations},
+    nat::{AllocatorProfile, NatClass, NatConfig, TaggedObservation, classify_observations},
     net::LinkParams,
 };
 use crate::overlay::{
     OverlayMode,
+    gossip::Reachability,
     repair::{PeerSample, RepairReq, overlay_repair_targets},
 };
 
@@ -26,6 +27,10 @@ pub const SCENARIOS: &[&str] = &[
     "keepalive-nat",
     "keepalive-nat-control",
     "nat-classify",
+    "nat-classify-inproto",
+    "dialback-reachability",
+    "allocator-calibrate",
+    "f1-lifecycle",
     "repair-nat-matrix",
     "repair-liveness",
     "repair-performance",
@@ -48,6 +53,10 @@ pub fn run(name: &str, seed: u64, verbose: bool) -> Option<ScenarioOutcome> {
         "keepalive-nat" => Some(keepalive_nat(seed, verbose, true)),
         "keepalive-nat-control" => Some(keepalive_nat(seed, verbose, false)),
         "nat-classify" => Some(nat_classify(seed, verbose)),
+        "nat-classify-inproto" => Some(nat_classify_inproto(seed, verbose)),
+        "dialback-reachability" => Some(dialback_reachability(seed, verbose)),
+        "allocator-calibrate" => Some(allocator_calibrate(seed, verbose)),
+        "f1-lifecycle" => Some(f1_lifecycle(seed, verbose)),
         "repair-nat-matrix" => Some(repair_nat_matrix(seed, verbose)),
         "repair-liveness" => Some(repair_liveness(seed, verbose)),
         "repair-performance" => Some(repair_performance(seed, verbose)),
@@ -346,6 +355,356 @@ pub fn classify_one(world: &mut SimWorld, nat: Option<NatConfig>) -> Option<NatC
         .collect();
 
     classify_observations(client_addr, &observations)
+}
+
+/// Observers for the in-protocol §6.2 procedure: two share an inbound port
+/// on distinct IPs (the within-group symmetric check), one is on a different
+/// port (the across-group port-dependent check). Real overlay nodes, not
+/// probes — the subject dials them and they report its mapping in
+/// `AddressObservation` frames.
+const OBSERVER_PORTS: [u16; 3] = [3478, 3478, 5321];
+
+/// Subjects bind inside the NAT's external port pool (40000–59999) so a
+/// port-preserving allocator can actually present the internal port — matching
+/// the probe-based `classify_one`, which binds 51000. A default 65410 bind
+/// falls outside the pool and would demote preserving to sequential.
+const SUBJECT_BIND_PORT: u16 = 51_000;
+
+fn spawn_observers(world: &mut SimWorld, ports: &[u16]) -> Vec<HostId> {
+    ports
+        .iter()
+        .map(|&port| {
+            world.add_node(NodeOptions {
+                bind_port: port,
+                ..NodeOptions::default()
+            })
+        })
+        .collect()
+}
+
+fn observer_addrs(world: &SimWorld, observers: &[HostId]) -> Vec<std::net::SocketAddr> {
+    observers.iter().map(|&host| world.public_addr(host)).collect()
+}
+
+/// Deliverable (a) — the in-protocol classification matrix: real cores behind
+/// every `CLASSIFY_CASES` preset exchange `AddressObservation` frames with a
+/// spread of observer ports/IPs and classify exactly as the taxonomy predicts
+/// (field-note → PortDependent, symmetric-preserving → EIM). The probe-based
+/// `nat-classify` scenario remains the reference; this proves the same result
+/// falls out of the live protocol.
+pub fn nat_classify_inproto(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+
+    let mut subjects = Vec::new();
+    for (name, preset, expected) in CLASSIFY_CASES {
+        let observers = spawn_observers(&mut world, &OBSERVER_PORTS);
+        let subject = world.add_node(NodeOptions {
+            nat: preset.map(|make| make()).into_iter().collect(),
+            static_peers: observer_addrs(&world, &observers),
+            bind_port: SUBJECT_BIND_PORT,
+            zero_config: true,
+            ..NodeOptions::default()
+        });
+        subjects.push((*name, subject, *expected));
+    }
+    // Connections + observations settle within a couple of advert cycles.
+    world.run_for(Duration::from_secs(35));
+
+    let mut failures = Vec::new();
+    for (name, subject, expected) in subjects {
+        let got = world.nat_class(subject);
+        if got != Some(expected) {
+            failures.push(format!("{name}: got {got:?}, want {expected:?}"));
+        }
+    }
+    ScenarioOutcome {
+        name: "nat-classify-inproto",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            format!("{} presets classified in-protocol as predicted", CLASSIFY_CASES.len())
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+/// The reachability a peer should observe for a node behind each preset
+/// (nat-traversal.md §6.2.3/§7/§12-Q3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReachExpect {
+    /// Dial-back confirmed a Direct address.
+    Direct,
+    /// Coordinated carrying port-tagged observed hints (EIM/port-dependent).
+    CoordinatedHints,
+    /// Coordinated with empty observed (fully symmetric), via populated.
+    CoordinatedEmpty,
+}
+
+const REACHABILITY_CASES: &[(&str, Option<fn() -> NatConfig>, ReachExpect)] = &[
+    ("public", None, ReachExpect::Direct),
+    ("full-cone", Some(NatConfig::full_cone), ReachExpect::Direct),
+    (
+        "port-restricted-cone",
+        Some(NatConfig::port_restricted_cone),
+        ReachExpect::CoordinatedHints,
+    ),
+    (
+        "field-note-fiber",
+        Some(NatConfig::field_note_fiber),
+        ReachExpect::CoordinatedHints,
+    ),
+    (
+        "symmetric-sequential",
+        Some(|| NatConfig::symmetric_sequential(1)),
+        ReachExpect::CoordinatedEmpty,
+    ),
+    (
+        "symmetric-random",
+        Some(NatConfig::symmetric_random),
+        ReachExpect::CoordinatedEmpty,
+    ),
+    // Presents as EIM (port-preserving), but the fresh-source probe is
+    // port-filtered, so it stays Coordinated with port-tagged hints.
+    (
+        "symmetric-preserving",
+        Some(NatConfig::symmetric_preserving),
+        ReachExpect::CoordinatedHints,
+    ),
+];
+
+fn reach_matches(reach: &Reachability, expect: ReachExpect) -> bool {
+    match (reach, expect) {
+        (Reachability::Direct(addrs), ReachExpect::Direct) => !addrs.is_empty(),
+        (Reachability::Coordinated { observed, .. }, ReachExpect::CoordinatedHints) => {
+            !observed.is_empty()
+        }
+        (Reachability::Coordinated { observed, via }, ReachExpect::CoordinatedEmpty) => {
+            observed.is_empty() && !via.is_empty()
+        }
+        _ => false,
+    }
+}
+
+/// Deliverable (b) — the dial-back/reachability matrix: per preset, the advert
+/// a peer actually holds for the (zero-config) subject is Direct (public,
+/// full-cone — confirmed through a genuinely fresh source port) or Coordinated
+/// with the §12-Q3 hint policy (fully symmetric → empty observed, via
+/// populated; every other flavor → port-tagged observed hints).
+pub fn dialback_reachability(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+
+    let mut subjects = Vec::new();
+    for (name, preset, expect) in REACHABILITY_CASES {
+        let observers = spawn_observers(&mut world, &OBSERVER_PORTS);
+        let witness = observers[0];
+        let subject = world.add_node(NodeOptions {
+            nat: preset.map(|make| make()).into_iter().collect(),
+            static_peers: observer_addrs(&world, &observers),
+            bind_port: SUBJECT_BIND_PORT,
+            zero_config: true,
+            ..NodeOptions::default()
+        });
+        subjects.push((*name, subject, witness, *expect));
+    }
+    // Classification, then dial-back, both on advert cycles.
+    world.run_for(Duration::from_secs(45));
+
+    let mut failures = Vec::new();
+    for (name, subject, witness, expect) in subjects {
+        let subject_pk = world.overlay_pubkey(subject);
+        match world.peer_advert(witness, &subject_pk) {
+            Some(advert) if reach_matches(&advert.reachability, expect) => {}
+            Some(advert) => failures.push(format!(
+                "{name}: observed {:?}, want {expect:?}",
+                advert.reachability
+            )),
+            None => failures.push(format!("{name}: witness never learned the subject's advert")),
+        }
+    }
+    ScenarioOutcome {
+        name: "dialback-reachability",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            format!("{} reachability rows advertised as predicted", REACHABILITY_CASES.len())
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+const CALIBRATION_CASES: &[(&str, fn() -> NatConfig, AllocatorProfile)] = &[
+    (
+        "preserving",
+        NatConfig::symmetric_preserving,
+        AllocatorProfile::Preserving,
+    ),
+    (
+        "sequential-1",
+        || NatConfig::symmetric_sequential(1),
+        AllocatorProfile::Sequential { stride: 1 },
+    ),
+    (
+        "sequential-3",
+        || NatConfig::symmetric_sequential(3),
+        AllocatorProfile::Sequential { stride: 3 },
+    ),
+    (
+        "random",
+        NatConfig::symmetric_random,
+        AllocatorProfile::Random,
+    ),
+];
+
+/// Deliverable (d) — the allocator-calibration matrix (nat-traversal.md §6.2):
+/// an EDM subject's port-allocation discipline is inferred from the external
+/// ports observed toward ≥3 distinct helper endpoints. preserving /
+/// sequential(stride) / random each calibrate to the right profile.
+pub fn allocator_calibrate(seed: u64, verbose: bool) -> ScenarioOutcome {
+    const HELPERS: usize = 5;
+    let mut world = SimWorld::with_trace(seed, verbose);
+    world.set_default_link(
+        LinkParams::default().delay(Duration::from_millis(2), Duration::from_millis(6)),
+    );
+
+    let mut subjects = Vec::new();
+    for (name, preset, expected) in CALIBRATION_CASES {
+        let helpers: Vec<std::net::SocketAddr> = (0..HELPERS)
+            .map(|_| {
+                let helper = world.add_node(NodeOptions::default());
+                world.public_addr(helper)
+            })
+            .collect();
+        let subject = world.add_node(NodeOptions {
+            nat: vec![preset()],
+            static_peers: helpers,
+            bind_port: SUBJECT_BIND_PORT,
+            zero_config: true,
+            ..NodeOptions::default()
+        });
+        subjects.push((*name, subject, *expected));
+    }
+    world.run_for(Duration::from_secs(35));
+
+    let mut failures = Vec::new();
+    for (name, subject, expected) in subjects {
+        let got = world.calibrated_allocator(subject);
+        if got != Some(expected) {
+            failures.push(format!("{name}: got {got:?}, want {expected:?}"));
+        }
+    }
+    ScenarioOutcome {
+        name: "allocator-calibrate",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            format!("{} allocator disciplines calibrated as predicted", CALIBRATION_CASES.len())
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+/// Deliverable (e) — F1 end-to-end: a zero-config NATed node never advertises
+/// a useless or misleading address at any point in its lifecycle (boot →
+/// observations → classify → advertise), under observation loss and peer
+/// churn. A port-restricted subject stays Coordinated throughout — never
+/// Direct, and its observed hints are the external mapping, never the private
+/// LAN bind address the pre-P1 protocol would have flooded.
+pub fn f1_lifecycle(seed: u64, verbose: bool) -> ScenarioOutcome {
+    let mut world = SimWorld::with_trace(seed, verbose);
+    let lossy = LinkParams::default()
+        .delay(Duration::from_millis(10), Duration::from_millis(40))
+        .drop_probability(0.10);
+    world.set_default_link(lossy);
+
+    let observers = spawn_observers(&mut world, &OBSERVER_PORTS);
+    let witness = observers[0];
+    let subject = world.add_node(NodeOptions {
+        nat: vec![NatConfig::port_restricted_cone()],
+        static_peers: observer_addrs(&world, &observers),
+        zero_config: true,
+        ..NodeOptions::default()
+    });
+    let subject_pk = world.overlay_pubkey(subject);
+
+    let mut failures = Vec::new();
+    let mut restarted = false;
+    // Sample the whole lifecycle: F1 must hold at every checkpoint.
+    for step in 0..9 {
+        world.run_for(Duration::from_secs(6));
+        // Churn a witness mid-life (observation source loss + re-dial).
+        if !restarted && world.now_nanos() >= 30_000_000_000 {
+            world.restart_overlay_node(witness);
+            restarted = true;
+        }
+        // The subject must never confirm a Direct address behind a
+        // port-restricted NAT.
+        if let Some(addr) = world.confirmed_direct(subject) {
+            failures.push(format!("step {step}: confirmed Direct {addr} behind restricted NAT"));
+        }
+        // Whatever a peer observes must be Coordinated (never a Direct advert
+        // for a private/unconfirmed address).
+        if let Some(advert) = world.peer_advert(witness, &subject_pk) {
+            match &advert.reachability {
+                Reachability::Direct(addrs) => {
+                    failures.push(format!("step {step}: advertised Direct {addrs:?} (F1)"));
+                }
+                Reachability::Coordinated { observed, .. } => {
+                    // Hints are aiming addresses only; none may be the private
+                    // LAN bind (the F1 misadvertisement).
+                    for hint in observed {
+                        if is_private(hint.mapping.ip()) {
+                            failures.push(format!(
+                                "step {step}: observed hint {} is a private address (F1)",
+                                hint.mapping
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The witness must actually have learned the subject by the end (else the
+    // above vacuously "passes").
+    let learned = world.peer_advert(witness, &subject_pk).is_some();
+    if !learned {
+        failures.push("witness never learned the subject's advert".into());
+    }
+
+    ScenarioOutcome {
+        name: "f1-lifecycle",
+        seed,
+        trace_hash: world.trace_hash(),
+        events: world.trace.events(),
+        ok: failures.is_empty(),
+        summary: if failures.is_empty() {
+            "zero-config NATed node stayed Coordinated with no private/Direct misadvert".into()
+        } else {
+            failures.join("; ")
+        },
+    }
+}
+
+fn is_private(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_unspecified(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+    }
 }
 
 /// Deterministic ~1203-byte synthetic shred payload for the repair
