@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod crypto;
+pub mod highseam;
 pub mod nat;
 pub mod net;
 pub mod scenario;

@@ -174,6 +174,19 @@ impl<T: OverlayTransport> OverlayCore<T> {
         &self.transport
     }
 
+    /// Simulator/oracle access to the transport (e.g. establishing fake
+    /// connections in the high-seam harness).
+    #[allow(dead_code)]
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
+    /// Live gossip adverts, for simulator oracles.
+    #[allow(dead_code)]
+    pub fn gossip_snapshot(&self, now: Instant) -> Vec<PeerAdvert> {
+        self.gossip.peers(now)
+    }
+
     /// Sends dropped because the target was neither connected nor `Direct`.
     #[allow(dead_code)]
     pub fn dropped_unreachable(&self) -> u64 {

@@ -95,6 +95,16 @@ glommio = { git = "https://github.com/glommio/glommio.git", package = "glommio" 
 [build-dependencies]
 tonic-prost-build = "0.14"
 
+# Ed25519 in unoptimized builds is ~100x slower, which makes the advert
+# sign/verify path dominate `cargo test --features sim` (the high-seam
+# oracles verify tens of thousands of signatures).
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+
 [features]
 debug = []
 # Deterministic overlay simulator (docs/overlay/nat-traversal.md §6.9).

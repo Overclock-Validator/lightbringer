@@ -2,8 +2,10 @@
 //! two-node convergence under faults, NAT classification matrix, and
 //! NAT-timeout keepalive coverage, plus world smoke tests.
 
+mod advert_security;
 mod convergence;
 mod determinism;
+mod gossip_oracles;
 mod keepalive;
 mod mtu;
 mod nat_matrix;
@@ -50,6 +52,42 @@ fn smoke_natted_node_connects_to_public_node() {
     assert!(world.nat_stats(natted)[0].mappings_created >= 1);
     assert!(world.trace.events() > 0);
 }
+/// High-seam harness smoke: a line topology of MemTransport nodes floods
+/// signed adverts along established connections until every node knows
+/// every identity, at a scale the low seam could not touch cheaply.
+#[test]
+fn smoke_highseam_advert_flood_reaches_everyone() {
+    use super::highseam::{HighSeamNet, HighSeamNodeOptions};
+
+    const NODES: usize = 50;
+    let mut net = HighSeamNet::new(21);
+    for i in 0..NODES {
+        let static_peers = if i == 0 {
+            Vec::new()
+        } else {
+            vec![HighSeamNet::addr_for(i - 1)]
+        };
+        net.add_node(HighSeamNodeOptions {
+            static_peers,
+            ..HighSeamNodeOptions::default()
+        });
+    }
+    // Adverts fire every 10 ticks; give the line topology time to flood
+    // end to end.
+    net.run_ticks(120);
+
+    let now = net.now_instant();
+    for i in 0..NODES {
+        let known = net.core(i).gossip_snapshot(now).len();
+        // Everyone should have learned every other identity via the flood.
+        assert!(
+            known >= NODES - 1,
+            "node {i} knows only {known} of {} peers",
+            NODES - 1
+        );
+    }
+}
+
 /// Bursts of full-size datagrams over a clean FIFO link arrive completely
 /// and without spurious QUIC loss detection. Guards the link model's FIFO
 /// clamp: with unconstrained i.i.d. delays, reordering trips quinn's
