@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use solana_net_utils::MINIMUM_VALIDATOR_PORT_RANGE_WIDTH;
 
+use crate::overlay::{OverlayConfig, OverlayMode};
+
 const QUIC_PORT_OFFSET: u16 = 6;
 const DEFAULT_ALPENGLOW_RPC_HTTP: &str = "https://rpc.ag.validator1.net";
 
@@ -208,6 +210,7 @@ struct ConfigRaw {
     gossip: GossipConfig,
     influxdb: Option<InfluxDbConfigRaw>,
     block_confirmation: Option<BlockConfirmationConfig>,
+    overlay: Option<OverlayConfig>,
     log: Option<LogConfig>,
 }
 
@@ -221,19 +224,21 @@ impl Default for ConfigRaw {
             gossip: GossipConfig::default(),
             influxdb: None,
             block_confirmation: None,
+            overlay: None,
             log: None,
         }
     }
 }
 
 pub struct Config {
-    pub gossip_entrypoint: SocketAddr,
+    pub gossip_entrypoint: Option<SocketAddr>,
     pub storage: PathBuf,
     //pub rpc_addr: SocketAddr,
     pub grpc_addr: SocketAddr,
     pub gossip: GossipConfig,
     pub influxdb: Option<InfluxDbConfig>,
     pub block_confirmation: Option<BlockConfirmationConfig>,
+    pub overlay: Option<OverlayConfig>,
     pub log: Option<LogConfig>,
 }
 
@@ -241,14 +246,49 @@ impl TryFrom<ConfigRaw> for Config {
     type Error = anyhow::Error;
 
     fn try_from(value: ConfigRaw) -> Result<Self, Self::Error> {
-        let gossip_entrypoint_raw = value
-            .gossip_entrypoint
-            .ok_or_else(|| anyhow!("`gossip_entrypoint` must be specified in config"))?;
-        let gossip_entrypoint: SocketAddr = gossip_entrypoint_raw
-            .to_socket_addrs()
-            .map_err(|e| anyhow!("invalid `gossip_entrypoint`: {e}"))?
-            .find(SocketAddr::is_ipv4)
-            .ok_or_else(|| anyhow!("`gossip_entrypoint` did not resolve to an IPv4 address"))?;
+        let overlay_enabled = value
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.enabled);
+        let overlay_sink = value
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.enabled && overlay.mode == OverlayMode::Sink);
+        if overlay_enabled
+            && value
+                .overlay
+                .as_ref()
+                .and_then(|overlay| overlay.repair_addr)
+                .is_none()
+        {
+            return Err(anyhow!(
+                "`overlay.repair_addr` must be specified when overlay is enabled"
+            ));
+        }
+        if overlay_sink
+            && value
+                .overlay
+                .as_ref()
+                .and_then(|overlay| overlay.shred_version)
+                .is_none()
+        {
+            return Err(anyhow!(
+                "`overlay.shred_version` must be specified for overlay sink mode"
+            ));
+        }
+        let gossip_entrypoint = match value.gossip_entrypoint {
+            Some(gossip_entrypoint_raw) => Some(
+                gossip_entrypoint_raw
+                    .to_socket_addrs()
+                    .map_err(|e| anyhow!("invalid `gossip_entrypoint`: {e}"))?
+                    .find(SocketAddr::is_ipv4)
+                    .ok_or_else(|| {
+                        anyhow!("`gossip_entrypoint` did not resolve to an IPv4 address")
+                    })?,
+            ),
+            None if overlay_sink => None,
+            None => return Err(anyhow!("`gossip_entrypoint` must be specified in config")),
+        };
 
         let storage = PathBuf::from(value.storage);
 
@@ -311,6 +351,7 @@ impl TryFrom<ConfigRaw> for Config {
             gossip: value.gossip,
             influxdb,
             block_confirmation: value.block_confirmation,
+            overlay: value.overlay,
             log: value.log,
         })
     }
@@ -489,8 +530,63 @@ grpc_addr = "127.0.0.1:3001"
         let toml = REQUIRED.replace("127.0.0.1:8000", "localhost:8000");
         let raw = parse_toml(&toml);
         let cfg: Config = raw.try_into().expect("validate");
-        assert!(cfg.gossip_entrypoint.is_ipv4());
-        assert_eq!(cfg.gossip_entrypoint.port(), 8000);
+        let gossip_entrypoint = cfg.gossip_entrypoint.expect("gossip entrypoint");
+        assert!(gossip_entrypoint.is_ipv4());
+        assert_eq!(gossip_entrypoint.port(), 8000);
+    }
+
+    #[test]
+    fn overlay_sink_does_not_require_gossip_entrypoint() {
+        let toml = r#"
+storage = "/tmp/shred-store"
+rpc_addr = "127.0.0.1:3000"
+grpc_addr = "127.0.0.1:3001"
+
+[overlay]
+enabled = true
+mode = "sink"
+bind_addr = "127.0.0.1:65410"
+repair_addr = "127.0.0.1:65411"
+shred_version = 42
+"#;
+        let raw = parse_toml(toml);
+        let cfg: Config = raw.try_into().expect("validate");
+        assert!(cfg.gossip_entrypoint.is_none());
+        assert_eq!(cfg.overlay.expect("overlay").mode, OverlayMode::Sink);
+    }
+
+    #[test]
+    fn overlay_requires_repair_addr_when_enabled() {
+        let toml = format!(
+            "{REQUIRED}\n[overlay]\nenabled = true\nmode = \"source\"\nbind_addr = \"127.0.0.1:65410\"\n"
+        );
+        let raw = parse_toml(&toml);
+        let result: Result<Config, _> = raw.try_into();
+        assert!(
+            result.is_err(),
+            "expected missing overlay repair_addr to fail"
+        );
+    }
+
+    #[test]
+    fn overlay_sink_requires_shred_version() {
+        let toml = r#"
+storage = "/tmp/shred-store"
+rpc_addr = "127.0.0.1:3000"
+grpc_addr = "127.0.0.1:3001"
+
+[overlay]
+enabled = true
+mode = "sink"
+bind_addr = "127.0.0.1:65410"
+repair_addr = "127.0.0.1:65411"
+"#;
+        let raw = parse_toml(toml);
+        let result: Result<Config, _> = raw.try_into();
+        assert!(
+            result.is_err(),
+            "expected missing overlay shred_version to fail"
+        );
     }
 
     #[test]
