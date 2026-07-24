@@ -37,12 +37,32 @@ TTL, and exposes discovered repair peers for the repair integration that follows
 must not use Solana repair as a fallback; until the overlay repair requester is
 wired, generated sink repair requests are logged rather than sent to Solana.
 
-Transport is behind `OverlayQuicTransport`, a glommio driver around the
-`quinn-proto` sans-IO QUIC state machine. The runner owns this transport from a
-single glommio task because endpoint and connection state must be driven
-mutably: UDP receives are fed into `Endpoint::handle`, outgoing `Transmit`
-values are written through `glommio::net::UdpSocket`, and QUIC timers are polled
-from the same loop.
+The overlay core is sans-IO behind the seams from
+`docs/overlay/nat-traversal.md` §6.9. `OverlayEnv` (`src/overlay/env.rs`) is
+the low seam: virtual-clock `now`, seeded `rng`, non-blocking `send`, helper
+`bind`. `OverlayTransport` (`src/overlay/transport.rs`) is the high seam over
+connections/datagrams. `OverlayQuicTransport` extends quinn-proto's sans-IO
+shape upward — `on_datagram`/`on_timer`/`poll_timeout`/`poll_inbound`/
+`poll_event`, transmits flushed through `OverlayEnv::send` — and binds the
+TLS-recovered peer pubkey to connection state (`peer_identity`). QUIC
+keepalive is 10s and max idle timeout 30s (`TransportOptions`), which is what
+holds NAT mappings alive. `OverlayCore` (`src/overlay/service.rs`) is the
+event-driven runner state machine on top; advert scheduling is
+deadline-based, never a sleep. Production IO lives only in the thin driver
+`src/overlay/driver_glommio.rs` (socket ownership, kanal channels, timer
+waits); `start_overlay_runner` keeps its old signature.
+
+The deterministic discrete-event simulator (`src/overlay/sim/`, cargo
+feature `sim`) is a second driver over the same seams: seeded PRNGs
+everywhere, virtual time, a per-link fault model (FIFO by default — an
+explicit `reorder_probability` exists because unconstrained random delays
+trip QUIC loss detection), composable NAT boxes covering the §6.2 taxonomy
+(including the field-note dst-port-dependent preset), and seed-derived
+crypto (node keypairs, quinn rng/cids/reset key, rustls SecureRandom). Run
+scenarios with `cargo run --bin overlay-sim --features sim -- --seed N`; the
+printed trace hash is the reproducibility witness. Note trace hashes cover
+timing/endpoints/sizes/app payloads, not ciphertext bytes — ring generates
+ECDHE keys from its own entropy outside the rustls SecureRandom seam.
 
 Overlay QUIC identity reuses `identity.json`. `OverlayIdentity` follows the same
 pattern as Agave's TLS utilities: the Solana Ed25519 secret is encoded as

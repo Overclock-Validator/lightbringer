@@ -2,6 +2,11 @@
 //! two-node convergence under faults, NAT classification matrix, and
 //! NAT-timeout keepalive coverage, plus world smoke tests.
 
+mod convergence;
+mod determinism;
+mod keepalive;
+mod nat_matrix;
+
 use std::time::Duration;
 
 use super::{
