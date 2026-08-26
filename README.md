@@ -10,6 +10,13 @@ Lightbringer can also run as a standalone edge service, but the main intended us
 
 Because Lightbringer does not maintain an AccountsDB, vote engine, or full RPC layer, it can stay relatively small while still participating in Solana’s live data path.
 
+## Configuration
+
+See [CONFIG.md](CONFIG.md) for source and sink templates, every supported
+setting, overlay/NAT-traversal behavior, firewall requirements, and Compose
+notes. [Lightbringer.example.toml](Lightbringer.example.toml) is a safe
+starting point with the overlay disabled by default.
+
 Lightbringer currently:
 
 * Receives shreds via Turbine.
@@ -109,7 +116,7 @@ If you're also running Lightbringer via Compose (step 3), copy the app config to
 cp Lightbringer.example.toml Lightbringer.toml
 ```
 
-and set at least `gossip_entrypoint` to a real Solana gossip entrypoint address (see Configuration above). The example's `[influxdb]` block is already pointed at the compose stack.
+and set at least `gossip_entrypoint` to a real Solana gossip entrypoint address (see [CONFIG.md](CONFIG.md)). The example's `[influxdb]` block is already pointed at the compose stack.
 
 If you plan to expose Grafana externally, also provide a Cloudflare Tunnel token:
 
@@ -194,7 +201,6 @@ Future work:
 * Prometheus metrics.
 * Tracing hooks.
 * Additional operational tooling.
-
 
 
 
