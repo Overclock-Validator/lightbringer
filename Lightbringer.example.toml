@@ -1,4 +1,10 @@
-# Replace this TEST-NET address with a real Solana gossip entrypoint.
+# Copy this file to Lightbringer.toml and replace the example addresses before
+# starting. Gossip advertisements are not a reachability guarantee; if a
+# source does not receive Turbine traffic shortly after startup, try a
+# different reachable mainnet gossip entrypoint.
+#
+# Overlay source mode below consumes Solana gossip/Turbine. For a local sink,
+# see the [overlay] notes further down: it does not connect to Solana gossip.
 gossip_entrypoint = "203.0.113.10:8000"
 
 # Shred storage path.
@@ -14,6 +20,54 @@ grpc_addr = "127.0.0.1:3001"
 gossip_port = 65400
 port_range_start = 65401
 port_range_end = 65500
+
+# Authenticated QUIC overlay. This source mode receives, verifies, and
+# disseminates Solana shreds over the overlay. Keep bind_addr UDP reachable
+# where the node is public, port-mapped, or intended as a static bootstrap.
+[overlay]
+# Opt in after configuring reachable peers and addresses for this deployment.
+enabled = false
+mode = "source"
+bind_addr = "0.0.0.0:65410"
+
+# Set these only when the operator vouches for a stable public address. When
+# absent, Lightbringer uses address discovery and dial-back confirmation; it
+# can also try PCP, NAT-PMP, and UPnP against the default gateway.
+# advertised_addr = "198.51.100.10:65410"
+# gateway_addr = "192.0.2.1:5351"
+# portmap_local_ip = "192.0.2.10"
+
+# Optional dual-stack overlay socket. Confirmed IPv6 candidates are advertised
+# before IPv4. An operator-provided advertised_addr_v6 similarly bypasses
+# confirmation and must be accurate.
+# bind_addr_v6 = "[::]:65410"
+# advertised_addr_v6 = "[2001:db8::10]:65410"
+
+# Static public/bootstrap peers. Use an address that accepts overlay UDP, not
+# merely an address learned from gossip. These are outbound connections.
+static_peers = []
+fanout = 8
+peer_ttl_ms = 30000
+
+# P5 random-symmetric NAT fallback. Keep this off in ordinary deployments:
+# enabling it permits a bounded 256-socket / 1,024-port birthday volley that
+# can consume a meaningful CGN port budget and about 100 KiB per attempt.
+[overlay.nat]
+birthday_punch = false
+
+# To run a sink instead, set `mode = "sink"`, provide at least one source in
+# static_peers, and set the current cluster shred version below. Sink mode does
+# not construct GossipManager or bind Solana gossip/Turbine/repair sockets;
+# it verifies overlay shreds using the Solana leader schedule over RPC.
+# gossip_entrypoint is ignored in sink mode and may be removed.
+#
+# mode = "sink"
+# static_peers = ["198.51.100.20:65410"]
+# shred_version = 50093 # Replace with the current cluster value.
+#
+# Leave repair_addr unset for sinks: overlay stream repair is advertised and
+# served over established authenticated connections.
+# repair_addr = "198.51.100.10:65411"
 
 # Compose mounts the InfluxDB token here.
 # Remove this section when running without InfluxDB.
